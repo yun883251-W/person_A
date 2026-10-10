@@ -1,0 +1,35 @@
+# 本地凭据
+.env
+.env.*
+!.env.example
+
+# Python 环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# 运行时生成的知识库数据
+data/index/*
+!data/index/.gitkeep
+!data/index/vectors/
+data/index/vectors/*
+!data/index/vectors/.gitkeep
+
+# 日志
+logs/
+*.log
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
