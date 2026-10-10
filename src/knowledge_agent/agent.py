@@ -20,6 +20,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from threading import Lock
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -50,6 +51,106 @@ from .retrieval import IndexNotBuiltError, KnowledgeRetriever
 from .schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationTurn:
+    """One committed, complete conversation turn."""
+
+    question: str
+    retrieval_question: str
+    messages: tuple[BaseMessage, ...]
+    result: AnswerResult
+
+
+class ConversationHistory:
+    """Keep complete turns isolated by an explicit session identifier."""
+
+    def __init__(self, max_turns: int) -> None:
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
+            raise ValueError("max_turns must be a positive integer")
+        self._max_turns = max_turns
+        self._sessions: dict[str, list[ConversationTurn]] = {}
+
+    @staticmethod
+    def _session_key(session_id: str) -> str:
+        if not isinstance(session_id, str):
+            raise TypeError("session_id must be a string")
+        key = session_id.strip()
+        if not key:
+            raise ValueError("session_id must not be blank")
+        return key
+
+    def turns(self, session_id: str) -> tuple[ConversationTurn, ...]:
+        return tuple(self._sessions.get(self._session_key(session_id), ()))
+
+    def messages(self, session_id: str) -> tuple[BaseMessage, ...]:
+        return tuple(
+            message
+            for turn in self.turns(session_id)
+            for message in turn.messages
+        )
+
+    def append(self, session_id: str, turn: ConversationTurn) -> None:
+        key = self._session_key(session_id)
+        turns = self._sessions.setdefault(key, [])
+        turns.append(turn)
+        if len(turns) > self._max_turns:
+            del turns[: len(turns) - self._max_turns]
+
+    def clear(self, session_id: str) -> None:
+        self._sessions.pop(self._session_key(session_id), None)
+
+
+_FOLLOWUP_REFERENCE_RE = re.compile(
+    r"(?:这(?:个|些|段|种)?|那(?:个|些|段|种)?|它|上述|上面|前面|刚才|继续|"
+    r"其(?:中|他)?|\b(?:this|that|it|these|those|above|previous)\b)",
+    re.IGNORECASE,
+)
+
+
+def resolve_followup_question(
+    question: str,
+    turns: Sequence[ConversationTurn],
+) -> str:
+    """Resolve a referential follow-up into a self-contained retrieval query."""
+    kind = classify_question(question)
+    cleaned = question.strip()
+    if not turns or (
+        kind != "needs_clarification"
+        and _FOLLOWUP_REFERENCE_RE.search(cleaned) is None
+    ):
+        return cleaned
+
+    recent_questions = [turn.question for turn in turns[-2:]]
+    context = "；".join(recent_questions)
+    return f"先前问题：{context}\n当前追问：{cleaned}"
+
+
+def _complete_history_messages(messages: Sequence[object]) -> tuple[BaseMessage, ...] | None:
+    """Return a system-free history only when every tool exchange is complete."""
+    history = tuple(
+        message
+        for message in messages
+        if isinstance(message, BaseMessage) and not isinstance(message, SystemMessage)
+    )
+    requested: set[str] = set()
+    completed: set[str] = set()
+    for message in history:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                call_id = str(call.get("id", "")).strip()
+                if not call_id or call_id in requested:
+                    return None
+                requested.add(call_id)
+        elif isinstance(message, ToolMessage):
+            call_id = str(message.tool_call_id).strip()
+            if call_id not in requested or call_id in completed:
+                return None
+            completed.add(call_id)
+    if requested != completed:
+        return None
+    return history
+
+
 class KnowledgeAgent:
     """Connect the chat client, system prompt, and lazy retrieval service."""
 
@@ -64,13 +165,20 @@ class KnowledgeAgent:
         self.model = model if model is not None else initialize_chat_model()
         self.system_prompt = SYSTEM_PROMPT
         self.retriever = retriever if retriever is not None else KnowledgeRetriever()
+        self.history = ConversationHistory(self.config.max_history_turns)
 
-    def prepare_question(self, question: str) -> PreparedQuestion:
+    def prepare_question(
+        self,
+        question: str,
+        *,
+        retrieval_question: str | None = None,
+    ) -> PreparedQuestion:
         """Validate and classify a question, proactively retrieving when required."""
         return prepare_question(
             question,
             retriever=self.retriever,
             max_context_chars=self.config.max_context_chars,
+            retrieval_question=retrieval_question,
         )
 
     def prepare_model_turn(
@@ -111,15 +219,68 @@ class KnowledgeAgent:
             max_context_chars=self.config.max_context_chars,
         )
 
-    def ask(self, question: str) -> AnswerResult:
+    def ask(self, question: str, session_id: str | None = None) -> AnswerResult:
         """Run one complete question-answer turn and return its public result."""
-        prepared = self.prepare_question(question)
-        if prepared.terminal_result is not None:
-            return prepared.terminal_result
+        turns: tuple[ConversationTurn, ...] = ()
+        history: tuple[BaseMessage, ...] = ()
+        retrieval_question: str | None = None
+        if session_id is not None:
+            turns = self.history.turns(session_id)
+            history = self.history.messages(session_id)
+            retrieval_question = resolve_followup_question(question, turns)
 
-        turn = self.prepare_model_turn(prepared)
-        result = self.run_model_loop(turn, prepared.state)
-        return self.finalize_answer(result, prepared.state)
+        prepared = self.prepare_question(
+            question,
+            retrieval_question=retrieval_question,
+        )
+        if prepared.terminal_result is not None:
+            result = prepared.terminal_result
+            if session_id is not None:
+                messages: tuple[BaseMessage, ...] = (
+                    HumanMessage(content=prepared.state.original_question),
+                    AIMessage(content=result.answer),
+                )
+                self._commit_turn(session_id, prepared.state, result, messages)
+            return result
+
+        turn = self.prepare_model_turn(prepared, history=history)
+        model_result = self.run_model_loop(turn, prepared.state)
+        result = self.finalize_answer(model_result, prepared.state)
+        if session_id is not None:
+            current_messages = prepared.state.messages[1 + len(history) :]
+            self._commit_turn(session_id, prepared.state, result, current_messages)
+        return result
+
+    def _commit_turn(
+        self,
+        session_id: str,
+        state: TurnState,
+        result: AnswerResult,
+        messages: Sequence[object],
+    ) -> None:
+        """Commit only a completed turn; failures and partial tool exchanges are dropped."""
+        if result.status in {"service_error", "limit_reached"}:
+            return
+        complete_messages = _complete_history_messages(messages)
+        if not complete_messages:
+            return
+        self.history.append(
+            session_id,
+            ConversationTurn(
+                question=state.original_question,
+                retrieval_question=state.retrieval_question or state.original_question,
+                messages=complete_messages,
+                result=result,
+            ),
+        )
+
+    def get_session_history(self, session_id: str) -> tuple[ConversationTurn, ...]:
+        """Return an immutable snapshot of the session's retained complete turns."""
+        return self.history.turns(session_id)
+
+    def clear_session(self, session_id: str) -> None:
+        """Remove all retained turns for one session."""
+        self.history.clear(session_id)
 
     def finalize_answer(
         self,
@@ -666,6 +827,7 @@ def prepare_question(
     *,
     retriever: KnowledgeRetriever,
     max_context_chars: int,
+    retrieval_question: str | None = None,
 ) -> PreparedQuestion:
     """Prepare one question and enforce retrieval before knowledge answers.
 
@@ -676,9 +838,16 @@ def prepare_question(
     """
     kind = classify_question(question)
     cleaned_question = question.strip()
+    cleaned_retrieval_question = (
+        retrieval_question.strip() if retrieval_question is not None else cleaned_question
+    )
+    if not cleaned_retrieval_question:
+        raise ValueError("retrieval_question must not be blank")
+    if cleaned_retrieval_question != cleaned_question and kind == "needs_clarification":
+        kind = "knowledge"
     state = TurnState(
         original_question=cleaned_question,
-        retrieval_question=cleaned_question,
+        retrieval_question=cleaned_retrieval_question,
     )
 
     if kind == "greeting":
@@ -721,7 +890,7 @@ def prepare_question(
         )
 
     search = create_search_executor(retriever, state)
-    search(cleaned_question)
+    search(cleaned_retrieval_question)
     if state.retrieval_status == "failed":
         index_missing = state.retrieval_error_code == "index_not_built"
         return _terminal_preparation(
@@ -770,6 +939,9 @@ class PreparedModelTurn:
     max_retries: int
 
 
+# 统一引用约定：模型只输出本轮资料中的 [S1] 等 source_id 标记。
+# finalize_answer 通过本轮 source_map 校验标记，再由程序用索引元数据生成文件名、小节和行号。
+# prompts.SYSTEM_PROMPT 第三节也须遵守此约定；旧文案的修改任务见 prompts.py 中的 TODO。
 _SOURCE_CITATION_INSTRUCTION = (
     "For citations, use only the source_id tokens present in the reference "
     "materials (for example [S1]). Do not write source paths, headings, or line "
@@ -1488,19 +1660,131 @@ def finalize_answer(
 
 # 第二阶段：增加多轮会话能力与应用接入。此阶段仍不执行验证。
 
-# TODO 16：管理会话历史并理解连续追问。
-# 以显式会话标识隔离不同对话，保存每轮用户问题与完整的必要模型、工具消息。
-# 对“这个怎么用”等追问，结合最近历史整理明确的检索问题，并重新获取本轮资料。
-# 历史答案不是新的知识库证据，不能直接沿用旧来源代替当前问题的检索。
-# 按完整问答轮裁剪历史，保留系统规则，不能留下没有对应请求或结果的工具消息。
-# 发生异常或中断时不把半轮工具交互作为正常历史提交；提供清空会话的能力。
+class AgentApplicationError(RuntimeError):
+    """Base error intended for presentation by an application adapter or CLI."""
 
-# TODO 17：整理应用生命周期和后续命令行接入方式。
-# 应用可复用模型客户端和检索服务；会话状态保持独立，不放入全局共享客户端。
-# 明确开始会话、单次提问、清空会话与索引刷新之间的调用顺序。
-# 第一版支持单会话同步问答，索引刷新安排在完整问答之间。
-# 把 Agent 配置、结果类型和错误约定提供给 cli，避免 cli 重写检索或模型循环。
-# 全部开发项完成后，再进入下方离线测试、真实模型联调及端到端评估。
+
+class SessionNotStartedError(AgentApplicationError):
+    """Raised when a session operation is requested before starting a session."""
+
+
+class ApplicationBusyError(AgentApplicationError):
+    """Raised when overlapping synchronous application operations are attempted."""
+
+
+class KnowledgeAgentApplication:
+    """Own the reusable services and one synchronous conversation lifecycle.
+
+    A CLI only needs to call :meth:`start_session`, :meth:`ask`,
+    :meth:`clear_session`, and :meth:`refresh_index`.  The operation lock keeps
+    an index refresh from overlapping a model/tool loop, so each answer observes
+    one index snapshot.  Conversation state remains owned by this instance's
+    ``KnowledgeAgent`` rather than by a shared model client or retriever.
+    """
+
+    def __init__(
+        self,
+        config: AgentConfig | None = None,
+        *,
+        model: object | None = None,
+        retriever: KnowledgeRetriever | None = None,
+    ) -> None:
+        self.agent = KnowledgeAgent(config, model=model, retriever=retriever)
+        self._session_id: str | None = None
+        self._operation: str | None = None
+        self._operation_lock = Lock()
+
+    @property
+    def config(self) -> AgentConfig:
+        """Expose the effective limits without duplicating configuration in a CLI."""
+        return self.agent.config
+
+    @property
+    def session_id(self) -> str | None:
+        """Return the active session identifier, if a session has been started."""
+        return self._session_id
+
+    def _begin_operation(self, operation: str) -> None:
+        if not self._operation_lock.acquire(blocking=False):
+            active = self._operation or "another operation"
+            raise ApplicationBusyError(
+                f"cannot start {operation} while {active} is in progress"
+            )
+        self._operation = operation
+
+    def _finish_operation(self) -> None:
+        self._operation = None
+        self._operation_lock.release()
+
+    def _require_session(self) -> str:
+        if self._session_id is None:
+            raise SessionNotStartedError("start_session() must be called first")
+        return self._session_id
+
+    def start_session(self, session_id: str = "cli") -> str:
+        """Start a fresh session and return its normalized identifier."""
+        self._begin_operation("start_session")
+        try:
+            if self._session_id is not None:
+                raise AgentApplicationError("a session is already active")
+            key = ConversationHistory._session_key(session_id)
+            self.agent.clear_session(key)
+            self._session_id = key
+            return key
+        finally:
+            self._finish_operation()
+
+    def ask(self, question: str) -> AnswerResult:
+        """Run one complete turn in the active session."""
+        self._begin_operation("ask")
+        try:
+            return self.agent.ask(question, session_id=self._require_session())
+        finally:
+            self._finish_operation()
+
+    def clear_session(self) -> None:
+        """Clear retained turns while keeping the current session active."""
+        self._begin_operation("clear_session")
+        try:
+            self.agent.clear_session(self._require_session())
+        finally:
+            self._finish_operation()
+
+    def end_session(self) -> None:
+        """Discard the active session and require an explicit subsequent start."""
+        self._begin_operation("end_session")
+        try:
+            session_id = self._require_session()
+            self.agent.clear_session(session_id)
+            self._session_id = None
+        finally:
+            self._finish_operation()
+
+    def get_session_history(self) -> tuple[ConversationTurn, ...]:
+        """Return an immutable snapshot of the active session history."""
+        self._begin_operation("get_session_history")
+        try:
+            return self.agent.get_session_history(self._require_session())
+        finally:
+            self._finish_operation()
+
+    def refresh_index(self) -> Any:
+        """Refresh the shared retriever strictly between complete answer turns."""
+        self._begin_operation("refresh_index")
+        try:
+            return self.agent.retriever.refresh()
+        finally:
+            self._finish_operation()
+
+
+def create_agent_application(
+    config: AgentConfig | None = None,
+    *,
+    model: object | None = None,
+    retriever: KnowledgeRetriever | None = None,
+) -> KnowledgeAgentApplication:
+    """Create the application boundary used by a future command-line adapter."""
+    return KnowledgeAgentApplication(config, model=model, retriever=retriever)
 
 
 # 第三阶段：开发全部完成后统一验证。以下 TODO 暂不执行。
@@ -1512,6 +1796,8 @@ def finalize_answer(
 # 测试数据独立于真实知识库，不调用 DeepSeek 或 Ollama，也不修改真实索引。
 
 # TODO 19：集中验证异常、引用和资料边界。
+# 确认 SYSTEM_PROMPT 与附加引用指令均只要求模型输出本轮 [S1] 等来源标记。
+# 检查合法标记由程序生成完整引用；未知标记、旧轮次来源或模型手写引用不能作为可信来源。
 # 覆盖未知工具、非法参数、重复调用 ID、缺少工具结果、循环上限和上下文超限。
 # 覆盖模型失败、检索失败、资料不足等状态，确认它们不会都被当作正常空答案。
 # 覆盖未知来源、伪造行号、仅命中但未引用的片段，以及两个 26- 文件的区分。

@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "person-a-knowledge-agent"
 version = "0.1.0"
-description = "基于本地 Markdown 文档的知识库问答 Agent 项目骨架"
+description = "基于本地 Markdown 文档的知识库问答 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["langchain-deepseek>=0.1", "langchain-ollama>=0.2"]
 
-# 实现阶段选定模型提供方与检索组件后，再添加实际依赖。
-# cli.py 实现入口后，再注册 project.scripts。
+[project.scripts]
+person-a = "knowledge_agent.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
