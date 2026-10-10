@@ -55,3 +55,55 @@ class RetrievalResult:
     keyword_rank: int | None = None
     vector_score: float | None = None
     keyword_score: float | None = None
+
+
+AnswerStatus = Literal[
+    "success",
+    "insufficient_evidence",
+    "needs_clarification",
+    "out_of_scope",
+    "service_error",
+    "limit_reached",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerSource:
+    """A source that was actually supplied to and cited by the answer."""
+
+    chunk_id: str
+    source_path: str
+    heading_path: tuple[str, ...]
+    start_line: int
+    end_line: int
+    content_hash: str
+    index_version: str
+    retrieval_score: float | None = None
+
+    @classmethod
+    def from_retrieval_result(cls, result: RetrievalResult) -> "AnswerSource":
+        chunk = result.chunk
+        return cls(
+            chunk_id=result.chunk_id,
+            source_path=chunk.source_path,
+            heading_path=chunk.heading_path,
+            start_line=chunk.start_line,
+            end_line=chunk.end_line,
+            content_hash=chunk.content_hash,
+            index_version=result.index_version,
+            retrieval_score=result.fused_score,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerResult:
+    """Structured public result of one Agent answer."""
+
+    question: str
+    answer: str
+    status: AnswerStatus
+    sources: tuple[AnswerSource, ...] = ()
+    index_version: str | None = None
+    model_calls: int = 0
+    tool_calls: int = 0
+    stop_reason: str | None = None

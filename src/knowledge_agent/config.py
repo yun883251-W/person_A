@@ -58,6 +58,79 @@ class RetrievalSettings:
     project_root: Path = PROJECT_ROOT
 
 
+@dataclass(frozen=True, slots=True)
+class ChatSettings:
+    provider: str
+    model: str
+    base_url: str
+    api_key: str | None = None
+    request_timeout: float = 60.0
+    max_retries: int = 2
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentConfig:
+    """Hard limits for one answer and for retained conversation history."""
+
+    max_model_calls: int = 4
+    max_tool_calls: int = 6
+    max_followup_searches: int = 2
+    max_context_chars: int = 24_000
+    max_history_turns: int = 6
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_model_calls",
+            "max_tool_calls",
+            "max_context_chars",
+            "max_history_turns",
+        ):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} 必须大于 0")
+        if self.max_followup_searches < 0:
+            raise ValueError("max_followup_searches 不能小于 0")
+
+
+def get_chat_settings() -> ChatSettings:
+    """Return chat settings without falling back to embedding configuration."""
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+
+    def value(name: str, default: str = "") -> str:
+        return os.environ.get(name, dotenv.get(name, default))
+
+    def optional_float(name: str) -> float | None:
+        raw = value(name).strip()
+        return float(raw) if raw else None
+
+    def optional_int(name: str) -> int | None:
+        raw = value(name).strip()
+        return int(raw) if raw else None
+
+    provider = value("CHAT_PROVIDER").strip()
+    model = value("CHAT_MODEL").strip()
+    missing = [
+        name
+        for name, configured in (("CHAT_PROVIDER", provider), ("CHAT_MODEL", model))
+        if not configured
+    ]
+    if missing:
+        raise ValueError(f"缺少对话模型配置: {', '.join(missing)}")
+
+    api_key = value("CHAT_API_KEY").strip()
+    return ChatSettings(
+        provider=provider,
+        model=model,
+        base_url=value("CHAT_BASE_URL").strip(),
+        api_key=api_key or None,
+        request_timeout=float(value("CHAT_REQUEST_TIMEOUT", "60")),
+        max_retries=int(value("CHAT_MAX_RETRIES", "2")),
+        temperature=optional_float("CHAT_TEMPERATURE"),
+        max_output_tokens=optional_int("CHAT_MAX_OUTPUT_TOKENS"),
+    )
+
+
 def get_ingest_settings() -> IngestSettings:
     """Return raw ingestion settings; path and range checks happen at ingestion."""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
