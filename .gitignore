@@ -18,11 +18,11 @@ build/
 dist/
 
 # 运行时生成的知识库数据
+# 发布索引时整个 data/index 目录会被原子替换（os.replace + rmtree 旧目录），
+# 所以不要在其中跟踪任何占位文件 —— 每次建库都会被删除。
 data/index/*
-!data/index/.gitkeep
-!data/index/vectors/
-data/index/vectors/*
-!data/index/vectors/.gitkeep
+# 建库/更新被强杀时遗留的临时目录（.index.build-* / .index.update-* / .index.backup-*）
+data/.index.*/
 
 # 日志
 logs/
