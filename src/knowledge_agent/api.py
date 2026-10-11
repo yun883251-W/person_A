@@ -8,7 +8,9 @@
 使用贯穿服务生命周期的固定工作线程串行执行 Agent 和数据库操作。
 HTTP 接口异步等待任务，SQLite 连接在同一个工作线程创建、使用和关闭。
 
-计划接口：
+网页入口与接口：
+GET    /                                本地知识库问答页面
+GET    /assets/{path}                   页面静态资源
 GET    /health                          服务存活检查
 POST   /sessions                        创建会话
 GET    /sessions                        分页列出会话
@@ -43,10 +45,13 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .agent import ApplicationBusyError, TurnPersistenceError
+from .config import PROJECT_ROOT
 from .models import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
@@ -274,7 +279,7 @@ def create_app(
     *,
     cors_origins: tuple[str, ...] = (),
 ) -> FastAPI:
-    """Create the local API; cross-origin browser access is opt-in per origin."""
+    """Serve the local UI and API; additional browser origins are opt-in."""
 
     allowed_origins = _validated_cors_origins(cors_origins)
 
@@ -312,6 +317,22 @@ def create_app(
             allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["Content-Type"],
         )
+
+    # 只公开网页资源目录；仓库、配置、文档和数据库不通过静态路由暴露。
+    web_directory = PROJECT_ROOT / "web"
+    application.mount(
+        "/assets",
+        StaticFiles(directory=web_directory / "assets", check_dir=False),
+        name="assets",
+    )
+
+    @application.get("/", response_class=FileResponse, include_in_schema=False)
+    async def web_index() -> FileResponse:
+        page = web_directory / "index.html"
+        if not page.is_file():
+            # 网页缺失时保留普通 404，不使用会话专属错误码或覆盖 API 路由。
+            raise StarletteHTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return FileResponse(page, media_type="text/html")
 
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -553,7 +574,7 @@ def create_app(
         summary="在会话中提问",
         description=(
             "在已有会话中执行一轮问答，完成后一次性返回完整结果（非流式）。status 是"
-            "业务状态：answered 表示已回答，其他状态可能表示资料不足、需要澄清、超出"
+            "业务状态：success 表示已回答，其他状态可能表示资料不足、需要澄清、超出"
             "范围或达到调用限制，应与 HTTP 状态分别判断。成功完成的问答轮会写入历史。"
         ),
         responses={
@@ -1074,7 +1095,7 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
 # 验证保存后响应丢失的场景，客户端可查到历史，不发生服务端自动重试导致的重复问答。
 # 关闭时等待在途任务并在工作线程清理，模型长请求不会阻塞 /health 所在事件循环。
 
-# TODO 20：完成真实 API 联调，再接入网页。
+# TODO 20：完成真实 API 与网页联调。
 # 先确认已发布索引及模型配置可用，显式启动本机服务，通过 /docs 完成一次新建、提问和查历史。
 # 重启服务后使用同一会话继续追问，核对 SQLite 历史、回答引用和知识库版本。
 # 使用临时会话验证清空与删除，记录各接口实际结果；不拿用户重要聊天记录做破坏性验证。

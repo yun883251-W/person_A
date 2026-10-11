@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f8f7f2">
+    <meta name="description" content="从本地文档出发，学习 Python、LangChain 与 AI Agent。让每个答案都有可以回看的来源。">
+    <title>知页 · LangChain 学习助手</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#question">跳到提问输入框</a>
+    <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 8a8.5 8.5 0 0 0-14.2-3L3 8m0-5v5h5M4 16a8.5 8.5 0 0 0 14.2 3L21 16m0 5v-5h-5"/></symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+      <symbol id="icon-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+      <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></symbol>
+      <symbol id="icon-clear" viewBox="0 0 24 24"><path d="m15 3 6 6-11 11H5l-3-3L15 3ZM8 11l6 6M10 20h11"/></symbol>
+      <symbol id="icon-book" viewBox="0 0 24 24"><path d="M12 5v15M3 4.5c3.5-.8 6.5-.3 9 1.5 2.5-1.8 5.5-2.3 9-1.5V19c-3.5-.8-6.5-.3-9 1.5-2.5-1.8-5.5-2.3-9-1.5V4.5Z"/></symbol>
+      <symbol id="icon-nodes" viewBox="0 0 24 24"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h6a3 3 0 0 1 3 3v6M6 9v9h9"/></symbol>
+      <symbol id="icon-code" viewBox="0 0 24 24"><path d="m7 7-5 5 5 5M17 7l5 5-5 5M14 4l-4 16"/></symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v.2"/></symbol>
+    </svg>
+
+    <div class="app-shell">
+      <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="关闭会话侧栏" tabindex="-1"></button>
+
+      <aside id="sidebar" class="sidebar" aria-label="会话导航">
+        <div class="sidebar-brand">
+          <a class="brand" href="/" aria-label="知页首页">
+            <span class="brand-mark" aria-hidden="true"><svg class="icon"><use href="#icon-book"/></svg></span>
+            <span class="brand-name">知页<span class="brand-caption">LANGCHAIN 学习助手</span></span>
+          </a>
+          <button id="sidebar-close" class="icon-button sidebar-close" type="button" aria-label="关闭会话侧栏"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
+        </div>
+
+        <button id="new-session" class="new-session" type="button">
+          <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+          <span>开启新对话</span>
+          <span class="button-trailing" aria-hidden="true">↗</span>
+        </button>
+
+        <label class="session-search" for="session-search">
+          <svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg>
+          <input id="session-search" type="search" placeholder="查找会话" autocomplete="off" aria-label="查找会话">
+        </label>
+
+        <div class="sidebar-section-heading">
+          <h2>最近的学习</h2>
+          <button id="refresh-sessions" class="icon-button" type="button" title="刷新会话列表" aria-label="刷新会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg></button>
+        </div>
+        <nav class="session-navigation" aria-label="历史会话">
+          <ul id="session-list" class="session-list"></ul>
+          <button id="load-more-sessions" class="load-more-sessions" type="button" hidden>加载更多会话 <span aria-hidden="true">↓</span></button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="library-label"><svg class="icon" aria-hidden="true"><use href="#icon-book"/></svg><span>你的文档，回答的依据</span></div>
+          <p>循着来源，把知识读懂。</p>
+          <div id="service-status" class="service-status" data-state="checking" role="status" aria-live="polite">正在检查服务</div>
+        </div>
+      </aside>
+
+      <section class="workspace" aria-label="知识库问答">
+        <header class="workspace-header">
+          <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="打开会话侧栏" aria-expanded="false" aria-controls="sidebar"><svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg></button>
+          <div class="session-heading">
+            <h1 id="current-title">新的学习会话</h1>
+            <p id="session-subtitle">让每个问题，都有迹可循。</p>
+          </div>
+          <div class="header-actions" aria-label="当前会话操作">
+            <button id="refresh-history" class="icon-button" type="button" title="刷新历史" aria-label="刷新当前会话历史"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg></button>
+            <span class="toolbar-divider" aria-hidden="true"></span>
+            <button id="clear-session" class="icon-button" type="button" title="清空当前会话" aria-label="清空当前会话历史"><svg class="icon" aria-hidden="true"><use href="#icon-clear"/></svg></button>
+            <button id="delete-session" class="icon-button icon-button--danger" type="button" title="删除当前会话" aria-label="删除当前会话"><svg class="icon" aria-hidden="true"><use href="#icon-trash"/></svg></button>
+          </div>
+        </header>
+
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden>
+          <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
+          <span id="notice-text"></span>
+          <button id="notice-dismiss" class="icon-button" type="button" aria-label="关闭提示"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
+        </div>
+
+        <main id="conversation-scroll" class="conversation-scroll" tabindex="-1" aria-label="对话内容">
+          <section id="welcome" class="welcome" aria-labelledby="welcome-title">
+            <div class="welcome-illustration" aria-hidden="true">
+              <svg class="welcome-art" viewBox="0 0 244 158" xmlns="http://www.w3.org/2000/svg" fill="none">
+                <ellipse cx="122" cy="127" rx="74" ry="9" fill="#e3e7db" opacity=".55"/>
+                <path d="M46 58h-15v42h24M194 47h20v40h-15" stroke="#b5c5b5" stroke-width="1.5" stroke-dasharray="3 5"/>
+                <circle cx="31" cy="53" r="5" fill="#f8f7f2" stroke="#8ba88e" stroke-width="1.5"/>
+                <circle cx="214" cy="91" r="5" fill="#f8f7f2" stroke="#8ba88e" stroke-width="1.5"/>
+                <rect x="191" y="23" width="21" height="21" rx="6" transform="rotate(10 191 23)" fill="#e9eee2" stroke="#a9bca4"/>
+                <path d="m196 30 5 1m-7 4 9 2" stroke="#79967b" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M61 55c22-9 43-6 61 5 18-11 39-14 61-5v67c-24-6-44-5-61 5-17-10-37-11-61-5V55Z" fill="#41644c"/>
+                <path d="M68 43c20-5 38-1 54 10v66c-17-10-35-13-54-8V43Z" fill="#fffdf5" stroke="#56775a" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M176 43c-20-5-38-1-54 10v66c17-10 35-13 54-8V43Z" fill="#f0f0e3" stroke="#56775a" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M122 54v64" stroke="#c1cdb5"/>
+                <path d="M79 61c10-1 20 1 29 6m-29 6c10-1 20 1 29 6m-29 6c8-1 16 0 23 3m31-21c10-5 20-7 30-6m-30 18c10-5 20-7 30-6m-30 18c8-4 16-6 23-6" stroke="#c1c9b4" stroke-width="2" stroke-linecap="round"/>
+                <path d="M148 42v28l7-5 7 1V40" fill="#c5a276"/>
+                <circle cx="49" cy="117" r="2.5" fill="#c5a276"/>
+                <path d="M78 20v8m-4-4h8M187 105v7m-3.5-3.5h7" stroke="#a7b69c" stroke-width="1.5" stroke-linecap="round"/>
+                <circle cx="115" cy="22" r="2" fill="#bcc7b1"/>
+              </svg>
+            </div>
+            <p class="welcome-eyebrow"><span aria-hidden="true"></span>从你的知识库出发</p>
+            <h2 id="welcome-title" class="welcome-title">把文档里的知识，<br><em>变成你的理解。</em></h2>
+            <p class="welcome-description">学习 Python、LangChain 与 AI Agent。<br class="mobile-break">提出问题，一起沿着文档找到答案。</p>
+            <div class="welcome-divider" aria-hidden="true"><span></span><svg class="icon"><use href="#icon-book"/></svg><span></span></div>
+            <p class="suggestions-label">不妨从一个小问题开始</p>
+            <div class="suggestions">
+              <button class="suggestion-card" type="button" data-prompt="请结合知识库中的文档，解释 RAG 的工作流程，以及它与直接调用大模型的区别。">
+                <span class="suggestion-top"><span class="suggestion-icon"><svg class="icon" aria-hidden="true"><use href="#icon-book"/></svg></span><span class="suggestion-category">理解一个概念</span></span>
+                <span class="suggestion-title">RAG 是怎么工作的？</span>
+                <span class="suggestion-bottom">从检索到生成，串起完整流程<svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg></span>
+              </button>
+              <button class="suggestion-card" type="button" data-prompt="根据知识库，Agent 和 Chain 有什么区别？请比较它们的工作方式和适用场景，并标明来源。">
+                <span class="suggestion-top"><span class="suggestion-icon"><svg class="icon" aria-hidden="true"><use href="#icon-nodes"/></svg></span><span class="suggestion-category">理清概念差异</span></span>
+                <span class="suggestion-title">Agent 和 Chain 有何不同？</span>
+                <span class="suggestion-bottom">比较工作方式，找到适用场景<svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg></span>
+              </button>
+              <button class="suggestion-card" type="button" data-prompt="请依据知识库中的示例，讲解如何使用 LangGraph 构建一个基础 Agent，并说明节点、边和状态分别起什么作用。">
+                <span class="suggestion-top"><span class="suggestion-icon"><svg class="icon" aria-hidden="true"><use href="#icon-code"/></svg></span><span class="suggestion-category">跟着示例动手</span></span>
+                <span class="suggestion-title">用 LangGraph 构建 Agent</span>
+                <span class="suggestion-bottom">理解节点、边与状态如何配合<svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg></span>
+              </button>
+            </div>
+          </section>
+          <section id="conversation" class="conversation" aria-label="问答记录" aria-live="polite" aria-relevant="additions" hidden></section>
+        </main>
+
+        <div class="composer-area">
+          <form id="composer-form" class="composer-form">
+            <label class="visually-hidden" for="question">输入你的学习问题</label>
+            <textarea id="question" name="question" rows="2" maxlength="10000" placeholder="有什么想深入了解的？" aria-describedby="composer-hint char-count"></textarea>
+            <div class="composer-footer">
+              <p id="composer-hint" class="composer-hint"><kbd>Enter</kbd> 发送<span aria-hidden="true"> · </span><kbd>Shift + Enter</kbd> 换行</p>
+              <div class="composer-actions">
+                <span id="char-count" class="char-count" aria-live="off">0 / 10,000</span>
+                <button id="send-button" class="send-button" type="submit" disabled><span>发送</span><svg class="icon" aria-hidden="true"><use href="#icon-up"/></svg></button>
+              </div>
+            </div>
+          </form>
+          <p class="composer-note"><span class="note-dot" aria-hidden="true"></span>带着问题阅读，带着来源理解。</p>
+        </div>
+      </section>
+    </div>
+
+    <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+      <div class="dialog-icon" aria-hidden="true"><svg class="icon"><use href="#icon-info"/></svg></div>
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-description">请确认是否继续。</p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" class="button button--secondary" type="button" autofocus>取消</button>
+        <button id="confirm-accept" class="button danger" type="button">确认</button>
+      </div>
+    </dialog>
+    <noscript><div class="noscript-notice">此页面需要启用 JavaScript 才能加载会话和发送问题。</div></noscript>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>
