@@ -99,6 +99,67 @@ def _execute_registration(
         )
 
 
+def _start_tool_trace(
+    context: object,
+    *,
+    name: str | None,
+    call_id: str | None,
+) -> tuple[object | None, int | None]:
+    recorder = getattr(context, "trace_recorder", None)
+    if recorder is None:
+        return None, None
+    return recorder, recorder.start_event(
+        "tool",
+        "model",
+        tool_name=name,
+        tool_call_id=call_id,
+    )
+
+
+def _finish_tool_trace(
+    recorder: object | None,
+    handle: int | None,
+    output: Any,
+    *,
+    executed: bool,
+) -> None:
+    if recorder is None or handle is None:
+        return
+
+    output_status = output.get("status") if isinstance(output, Mapping) else None
+    error = output.get("error") if isinstance(output, Mapping) else None
+    error_code = error.get("code") if isinstance(error, Mapping) else None
+    result_count: int | None = None
+    index_version: str | None = None
+    if isinstance(output, Mapping):
+        raw_results = output.get("results")
+        raw_chunks = output.get("chunks")
+        if isinstance(raw_results, list):
+            result_count = len(raw_results)
+        elif isinstance(raw_chunks, list):
+            result_count = len(raw_chunks)
+        raw_index_version = output.get("index_version")
+        if raw_index_version is not None:
+            index_version = str(raw_index_version)
+
+    status = (
+        "skipped"
+        if not executed
+        else "error"
+        if output_status == "error"
+        else "empty"
+        if output_status == "empty"
+        else "success"
+    )
+    recorder.finish_event(
+        handle,
+        status,
+        result_count=result_count,
+        index_version=index_version,
+        error_code=str(error_code) if error_code is not None else None,
+    )
+
+
 @runtime_checkable
 class ToolRegistry(Protocol[ExecutionContextT]):
     """Interface for registering, exposing, and executing approved tools."""
@@ -227,49 +288,40 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
 
         for call in calls:
             if not isinstance(call, Mapping):
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=None,
-                        name=None,
-                        status="error",
-                        output=_tool_call_error(
-                            "invalid_tool_call", "The tool call must be an object."
-                        ),
-                    )
+                recorder, trace_handle = _start_tool_trace(
+                    context, name=None, call_id=None
                 )
+                output = _tool_call_error(
+                    "invalid_tool_call", "The tool call must be an object."
+                )
+                results.append(ToolCallResult(None, None, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             raw_id = call.get("id")
             call_id = raw_id.strip() if isinstance(raw_id, str) else None
             raw_name = call.get("name")
             name = raw_name.strip() if isinstance(raw_name, str) else None
+            recorder, trace_handle = _start_tool_trace(
+                context, name=name, call_id=call_id
+            )
 
             if not call_id:
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=None,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "invalid_tool_call_id",
-                            "The tool call ID must be a non-empty string.",
-                        ),
-                    )
+                output = _tool_call_error(
+                    "invalid_tool_call_id",
+                    "The tool call ID must be a non-empty string.",
                 )
+                results.append(ToolCallResult(None, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             if call_id in completed_tool_call_ids:
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=call_id,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "duplicate_tool_call_id",
-                            "This tool call ID has already been handled in the current turn.",
-                        ),
-                    )
+                output = _tool_call_error(
+                    "duplicate_tool_call_id",
+                    "This tool call ID has already been handled in the current turn.",
                 )
+                results.append(ToolCallResult(call_id, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             # A usable ID is terminally handled even if later validation fails.
@@ -277,31 +329,21 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
 
             registration = self._registrations.get(name) if name else None
             if registration is None:
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=call_id,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "unknown_tool", "The requested tool is not available."
-                        ),
-                    )
+                output = _tool_call_error(
+                    "unknown_tool", "The requested tool is not available."
                 )
+                results.append(ToolCallResult(call_id, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             raw_arguments = call.get("args")
             if not isinstance(raw_arguments, Mapping):
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=call_id,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "invalid_tool_arguments",
-                            "Tool arguments must be an object.",
-                        ),
-                    )
+                output = _tool_call_error(
+                    "invalid_tool_arguments",
+                    "Tool arguments must be an object.",
                 )
+                results.append(ToolCallResult(call_id, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             try:
@@ -311,17 +353,12 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
                     .model_dump()
                 )
             except Exception:  # noqa: BLE001 - schemas may raise custom errors
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=call_id,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "invalid_tool_arguments",
-                            "Tool arguments do not match the required schema.",
-                        ),
-                    )
+                output = _tool_call_error(
+                    "invalid_tool_arguments",
+                    "Tool arguments do not match the required schema.",
                 )
+                results.append(ToolCallResult(call_id, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             tool_calls = getattr(context, "tool_calls", None)
@@ -335,17 +372,12 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
                 raise TypeError("context.followup_searches must be an integer")
 
             if tool_calls >= max_tool_calls:
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=call_id,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "tool_budget_exhausted",
-                            "The tool-call budget for this turn has been exhausted.",
-                        ),
-                    )
+                output = _tool_call_error(
+                    "tool_budget_exhausted",
+                    "The tool-call budget for this turn has been exhausted.",
                 )
+                results.append(ToolCallResult(call_id, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             if (
@@ -353,17 +385,12 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
                 and max_followup_searches is not None
                 and followup_searches >= max_followup_searches
             ):
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=call_id,
-                        name=name,
-                        status="error",
-                        output=_tool_call_error(
-                            "followup_search_budget_exhausted",
-                            "The follow-up search budget for this turn has been exhausted.",
-                        ),
-                    )
+                output = _tool_call_error(
+                    "followup_search_budget_exhausted",
+                    "The follow-up search budget for this turn has been exhausted.",
                 )
+                results.append(ToolCallResult(call_id, name, "error", output))
+                _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
             setattr(context, "tool_calls", tool_calls + 1)
@@ -372,6 +399,7 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
 
             output = _execute_registration(registration, context, arguments)
             results.append(_tool_call_result(call_id, name, output))
+            _finish_tool_trace(recorder, trace_handle, output, executed=True)
 
         return tuple(results)
 

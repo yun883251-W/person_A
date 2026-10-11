@@ -20,7 +20,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from types import MappingProxyType
 from typing import Any, Literal
@@ -64,6 +64,7 @@ from .tools.knowledge import (
     create_search_executor,
 )
 from .tools.registry import InMemoryToolRegistry, create_tool_registry
+from .trace import TraceRecorder, finish_trace_safely
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +201,7 @@ class KnowledgeAgent:
         question: str,
         *,
         retrieval_question: str | None = None,
+        trace_recorder: TraceRecorder | None = None,
     ) -> PreparedQuestion:
         """Validate and classify a question, proactively retrieving when required."""
         return prepare_question(
@@ -207,6 +209,7 @@ class KnowledgeAgent:
             retriever=self.retriever,
             max_context_chars=self.config.max_context_chars,
             retrieval_question=retrieval_question,
+            trace_recorder=trace_recorder,
         )
 
     def prepare_model_turn(
@@ -257,6 +260,7 @@ class KnowledgeAgent:
         skill_id: str | None = None,
     ) -> AnswerResult:
         """Run one complete question-answer turn and return its public result."""
+        trace_recorder = TraceRecorder(requested_skill_id=skill_id)
         if skill_id is not None:
             # Fail before retrieval/model work; the selected skill is turn-local.
             load_skill(skill_id)
@@ -271,9 +275,10 @@ class KnowledgeAgent:
         prepared = self.prepare_question(
             question,
             retrieval_question=retrieval_question,
+            trace_recorder=trace_recorder,
         )
         if prepared.terminal_result is not None:
-            result = prepared.terminal_result
+            result = _attach_completed_trace(prepared.terminal_result, prepared.state)
             if session_id is not None:
                 messages: tuple[BaseMessage, ...] = (
                     HumanMessage(content=prepared.state.original_question),
@@ -284,7 +289,10 @@ class KnowledgeAgent:
 
         turn = self.prepare_model_turn(prepared, history=history, skill_id=skill_id)
         model_result = self.run_model_loop(turn, prepared.state)
-        result = self.finalize_answer(model_result, prepared.state)
+        result = _attach_completed_trace(
+            self.finalize_answer(model_result, prepared.state),
+            prepared.state,
+        )
         if session_id is not None:
             current_messages = prepared.state.messages[1 + len(history) :]
             self._commit_turn(session_id, prepared.state, result, current_messages)
@@ -364,10 +372,24 @@ class TurnState:
     status: AnswerStatus | None = None
     stop_reason: str | None = None
     retrieval_error_code: str | None = None
+    trace_recorder: TraceRecorder | None = None
 
     def __post_init__(self) -> None:
         if self.retrieval_question is None:
             self.retrieval_question = self.original_question
+
+
+def _attach_completed_trace(result: AnswerResult, state: TurnState) -> AnswerResult:
+    """Finalize and attach this turn's optional execution trace."""
+    if state.trace_recorder is None:
+        return result
+    failed = result.status in {"service_error", "limit_reached"}
+    trace = finish_trace_safely(
+        state.trace_recorder,
+        "failed" if failed else "completed",
+        error_code=result.stop_reason if failed else None,
+    )
+    return replace(result, trace=trace)
 
 
 ToolExecutor = Callable[..., Any]
@@ -777,6 +799,7 @@ def prepare_question(
     retriever: KnowledgeRetriever,
     max_context_chars: int,
     retrieval_question: str | None = None,
+    trace_recorder: TraceRecorder | None = None,
 ) -> PreparedQuestion:
     """Prepare one question and enforce retrieval before knowledge answers.
 
@@ -785,6 +808,11 @@ def prepare_question(
     always contains explicitly delimited reference material for the next model
     invocation.
     """
+    classify_event = (
+        trace_recorder.start_event("classify", "program")
+        if trace_recorder is not None
+        else None
+    )
     kind = classify_question(question)
     cleaned_question = question.strip()
     cleaned_retrieval_question = (
@@ -794,9 +822,12 @@ def prepare_question(
         raise ValueError("retrieval_question must not be blank")
     if cleaned_retrieval_question != cleaned_question and kind == "needs_clarification":
         kind = "knowledge"
+    if trace_recorder is not None and classify_event is not None:
+        trace_recorder.finish_event(classify_event, "success")
     state = TurnState(
         original_question=cleaned_question,
         retrieval_question=cleaned_retrieval_question,
+        trace_recorder=trace_recorder,
     )
 
     if kind == "greeting":
@@ -840,7 +871,35 @@ def prepare_question(
 
     search = create_search_executor(retriever, state)
     state.tool_calls += 1
-    search(cleaned_retrieval_question)
+    retrieval_event = (
+        trace_recorder.start_event(
+            "initial_retrieval",
+            "program",
+            tool_name="search_knowledge",
+        )
+        if trace_recorder is not None
+        else None
+    )
+    search_result = search(cleaned_retrieval_question)
+    if trace_recorder is not None and retrieval_event is not None:
+        result_status = search_result.get("status")
+        raw_results = search_result.get("results")
+        result_count = len(raw_results) if isinstance(raw_results, list) else None
+        error = search_result.get("error")
+        error_code = error.get("code") if isinstance(error, Mapping) else None
+        trace_recorder.finish_event(
+            retrieval_event,
+            (
+                "error"
+                if result_status == "error"
+                else "empty"
+                if result_status == "empty"
+                else "success"
+            ),
+            result_count=result_count,
+            index_version=search_result.get("index_version"),
+            error_code=error_code,
+        )
     if state.retrieval_status == "failed":
         index_missing = state.retrieval_error_code == "index_not_built"
         return _terminal_preparation(
@@ -887,6 +946,7 @@ class PreparedModelTurn:
     messages: tuple[BaseMessage, ...]
     tools: KnowledgeTools
     max_retries: int
+    skill_id: str | None = None
 
 
 # 统一引用约定：模型只输出本轮资料中的 [S1] 等 source_id 标记。
@@ -924,43 +984,73 @@ def prepare_model_turn(
         raise ValueError("max_retries must be a non-negative integer")
 
     state = prepared.state
+    skill_event = (
+        state.trace_recorder.start_event("skill_prepare", "program")
+        if state.trace_recorder is not None
+        else None
+    )
+    if (
+        skill_id is None
+        and state.trace_recorder is not None
+        and skill_event is not None
+    ):
+        state.trace_recorder.finish_event(skill_event, "skipped")
     tools = create_knowledge_tools(
         search_executor=create_search_executor(retriever, state),
         section_executor=create_section_executor(retriever, state),
     )
-    selected_skill = prepare_skill(skill_id, tools.registry) if skill_id is not None else None
-    if selected_skill is not None:
-        tools = KnowledgeTools(
-            definitions=selected_skill.registry.list_definitions(),
-            executors=MappingProxyType(
-                {
-                    name: executor
-                    for name, executor in tools.executors.items()
-                    if name in selected_skill.allowed_tools
-                }
-            ),
-            registry=selected_skill.registry,
+    try:
+        selected_skill = (
+            prepare_skill(skill_id, tools.registry) if skill_id is not None else None
         )
-    bound_model = bind_chat_tools(model, tools.definitions)
-    turn_prompt = f"{system_prompt.rstrip()}\n\n{_SOURCE_CITATION_INSTRUCTION}"
-    if selected_skill is not None:
-        turn_prompt = f"{turn_prompt}\n\n{selected_skill.instructions}"
-    messages: tuple[BaseMessage, ...] = (
-        SystemMessage(content=turn_prompt),
-        *history,
-        HumanMessage(
-            content=(
-                f"USER_QUESTION\n{state.original_question}\nEND_USER_QUESTION\n\n"
-                f"{prepared.evidence_context}"
+        if selected_skill is not None:
+            tools = KnowledgeTools(
+                definitions=selected_skill.registry.list_definitions(),
+                executors=MappingProxyType(
+                    {
+                        name: executor
+                        for name, executor in tools.executors.items()
+                        if name in selected_skill.allowed_tools
+                    }
+                ),
+                registry=selected_skill.registry,
             )
-        ),
-    )
-    state.messages[:] = messages
+        bound_model = bind_chat_tools(model, tools.definitions)
+        turn_prompt = f"{system_prompt.rstrip()}\n\n{_SOURCE_CITATION_INSTRUCTION}"
+        if selected_skill is not None:
+            turn_prompt = f"{turn_prompt}\n\n{selected_skill.instructions}"
+        messages: tuple[BaseMessage, ...] = (
+            SystemMessage(content=turn_prompt),
+            *history,
+            HumanMessage(
+                content=(
+                    f"USER_QUESTION\n{state.original_question}\nEND_USER_QUESTION\n\n"
+                    f"{prepared.evidence_context}"
+                )
+            ),
+        )
+        state.messages[:] = messages
+    except Exception:  # noqa: BLE001 - record the boundary, then preserve the exception
+        if (
+            skill_id is not None
+            and state.trace_recorder is not None
+            and skill_event is not None
+        ):
+            state.trace_recorder.finish_event(
+                skill_event, "error", error_code="skill_prepare_failed"
+            )
+        raise
+
+    if selected_skill is not None and state.trace_recorder is not None:
+        state.trace_recorder.mark_skill_prepared(skill_id)
+        if skill_event is not None:
+            state.trace_recorder.finish_event(skill_event, "success")
     return PreparedModelTurn(
         model=bound_model,
         messages=messages,
         tools=tools,
         max_retries=retries,
+        skill_id=skill_id,
     )
 
 ModelTurnKind = Literal["tool_requests", "final_answer", "empty_response"]
@@ -1000,19 +1090,41 @@ def invoke_model_turn(
 ) -> ModelTurnResult:
     """Synchronously invoke the model and choose the next agent action."""
     state.model_calls += 1
-    message = invoke_chat_model(
-        turn.model,
-        tuple(state.messages),
-        max_retries=turn.max_retries,
+    model_event = (
+        state.trace_recorder.start_event("model", "program")
+        if state.trace_recorder is not None
+        else None
     )
+    if turn.skill_id is not None and state.trace_recorder is not None:
+        state.trace_recorder.mark_skill_applied(turn.skill_id)
+    try:
+        message = invoke_chat_model(
+            turn.model,
+            tuple(state.messages),
+            max_retries=turn.max_retries,
+        )
+    except ChatModelInvocationError as exc:
+        if state.trace_recorder is not None and model_event is not None:
+            state.trace_recorder.finish_event(
+                model_event,
+                "error",
+                error_code=_model_error_code(exc),
+            )
+        raise
     state.messages.append(message)
 
     if message.tool_calls:
+        if state.trace_recorder is not None and model_event is not None:
+            state.trace_recorder.finish_event(model_event, "success")
         return ModelTurnResult(kind="tool_requests", message=message)
 
     answer = _message_text(message)
     if not answer:
+        if state.trace_recorder is not None and model_event is not None:
+            state.trace_recorder.finish_event(model_event, "empty")
         return ModelTurnResult(kind="empty_response", message=message)
+    if state.trace_recorder is not None and model_event is not None:
+        state.trace_recorder.finish_event(model_event, "success")
     return ModelTurnResult(kind="final_answer", message=message, answer=answer)
 
 ToolCallStatus = Literal["success", "error"]
@@ -1240,21 +1352,25 @@ def continue_model_loop(
         state.stop_reason = "model_empty_response"
     return result
 
+def _model_error_code(exc: ChatModelInvocationError) -> str:
+    """Return the stable, non-sensitive public category for a model failure."""
+    if isinstance(exc, ChatModelAuthenticationError):
+        return "model_authentication_failed"
+    if isinstance(exc, ChatModelTimeoutError):
+        return "model_timeout"
+    if isinstance(exc, ChatModelNotFoundError):
+        return "model_not_found"
+    if isinstance(exc, ChatModelRequestError):
+        return "model_request_invalid"
+    if isinstance(exc, ChatModelServiceError):
+        return "model_service_unavailable"
+    return "model_invocation_failed"
+
+
 def _record_model_failure(state: TurnState, exc: ChatModelInvocationError) -> None:
     """Record a stable, non-sensitive public category for a model failure."""
     state.status = "service_error"
-    if isinstance(exc, ChatModelAuthenticationError):
-        state.stop_reason = "model_authentication_failed"
-    elif isinstance(exc, ChatModelTimeoutError):
-        state.stop_reason = "model_timeout"
-    elif isinstance(exc, ChatModelNotFoundError):
-        state.stop_reason = "model_not_found"
-    elif isinstance(exc, ChatModelRequestError):
-        state.stop_reason = "model_request_invalid"
-    elif isinstance(exc, ChatModelServiceError):
-        state.stop_reason = "model_service_unavailable"
-    else:
-        state.stop_reason = "model_invocation_failed"
+    state.stop_reason = _model_error_code(exc)
 
 
 def run_model_loop(
@@ -1368,6 +1484,47 @@ def _answer_index_version(sources: Sequence[AnswerSource]) -> str | None:
 
 
 def finalize_answer(
+    result: ModelTurnResult | None,
+    state: TurnState,
+) -> AnswerResult:
+    """Finalize an answer and record the citation-validation outcome."""
+    recorder = state.trace_recorder
+    finalize_event = (
+        recorder.start_event("finalize", "program") if recorder is not None else None
+    )
+    try:
+        answer_result = _finalize_answer(result, state)
+    except Exception:
+        if recorder is not None and finalize_event is not None:
+            recorder.finish_event(
+                finalize_event,
+                "error",
+                error_code="answer_finalization_failed",
+            )
+        raise
+
+    if recorder is not None and finalize_event is not None:
+        if answer_result.status in {"service_error", "limit_reached"}:
+            trace_status = "error"
+        elif answer_result.status == "insufficient_evidence":
+            trace_status = "empty"
+        elif answer_result.status in {"needs_clarification", "out_of_scope"}:
+            trace_status = "skipped"
+        else:
+            trace_status = "success"
+        recorder.finish_event(
+            finalize_event,
+            trace_status,
+            result_count=len(answer_result.sources),
+            index_version=answer_result.index_version,
+            error_code=(
+                answer_result.stop_reason if trace_status != "success" else None
+            ),
+        )
+    return answer_result
+
+
+def _finalize_answer(
     result: ModelTurnResult | None,
     state: TurnState,
 ) -> AnswerResult:

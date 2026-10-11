@@ -616,6 +616,184 @@
     return details;
   }
 
+  const traceStageLabels = {
+    classify: "理解问题", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
+    model: "模型调用", tool: "工具调用", finalize: "整理回答与核验引用",
+  };
+  const traceStatusLabels = { success: "完成", empty: "无结果", error: "失败", skipped: "已跳过" };
+  const traceOutcomeLabels = { completed: "流程完成", failed: "执行失败", interrupted: "执行中断" };
+  const traceSkillLabels = {
+    "concept-explanation": "概念讲解", "concept-comparison": "概念比较", "code-explanation": "代码解读",
+  };
+  const traceReasonLabels = {
+    answer_completed: "回答完成", greeting_handled: "已回复问候", scope_explained: "已说明助手范围",
+    question_is_ambiguous: "问题需要澄清", question_out_of_scope: "问题超出当前范围",
+    index_not_built: "索引尚未建立", initial_retrieval_failed: "初始检索失败",
+    initial_retrieval_empty: "初始检索没有结果", evidence_context_limit: "资料超出上下文限制",
+    model_call_budget_exhausted: "达到模型调用上限", tool_budget_exhausted: "达到工具调用上限",
+    followup_search_budget_exhausted: "达到补充检索上限", model_empty_response: "模型未返回有效内容",
+    model_did_not_finish: "模型未生成最终回答", model_requested_clarification: "模型请求澄清",
+    model_reported_insufficient_evidence: "模型报告资料不足", partial_answer: "资料只能支持部分回答",
+    model_authentication_failed: "模型鉴权失败", model_timeout: "模型调用超时",
+    model_not_found: "模型不存在", model_request_invalid: "模型请求无效",
+    model_service_unavailable: "模型服务不可用", model_invocation_failed: "模型调用失败",
+    missing_citations: "回答缺少可核验引用", unknown_citation: "回答含有未知来源标记",
+    unverified_citation_metadata: "回答中的来源信息无法核验", invalid_agent_parameters: "执行参数无效",
+    invalid_tool_call: "工具调用格式无效", invalid_tool_call_id: "工具调用标识无效",
+    duplicate_tool_call_id: "工具调用标识重复", unknown_tool: "请求的工具不可用",
+    invalid_tool_arguments: "工具参数无效", tool_execution_failed: "工具执行失败",
+    index_version_changed: "本轮索引版本发生变化", section_read_failed: "章节读取失败",
+    skill_prepare_failed: "Skill 准备失败", answer_finalization_failed: "回答整理失败",
+    trace_recording_failed: "执行记录未能完整生成", unfinished_event: "阶段结束状态未完整记录",
+    turn_failed: "本轮执行失败", turn_interrupted: "本轮执行中断",
+  };
+
+  function traceText(value, fallback = "未提供") {
+    return typeof value === "string" && value.trim() ? value : fallback;
+  }
+
+  function traceLabel(labels, value, fallback = "未记录") {
+    const text = traceText(value, "");
+    return Object.prototype.hasOwnProperty.call(labels, text) ? labels[text] : (text || fallback);
+  }
+
+  function traceReason(value) {
+    const code = traceText(value, "");
+    if (!code) return "未提供";
+    const label = traceLabel(traceReasonLabels, code);
+    return label === code ? code : `${label}（${code}）`;
+  }
+
+  function traceNumber(value, suffix = "") {
+    return Number.isInteger(value) && value >= 0 ? `${value.toLocaleString("zh-CN")}${suffix}` : "未记录";
+  }
+
+  function traceDuration(value) {
+    if (!Number.isInteger(value) || value < 0) return "未记录";
+    return value < 1000
+      ? `${value.toLocaleString("zh-CN")} ms`
+      : `${(value / 1000).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 秒`;
+  }
+
+  function traceStartedAt(value) {
+    if (typeof value !== "string" || !value.trim()) return "未记录";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "未记录";
+    return new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).format(date);
+  }
+
+  function traceSkill(value, fallback) {
+    const id = traceText(value, "");
+    if (!id) return fallback;
+    const label = traceLabel(traceSkillLabels, id);
+    return label === id ? id : `${label}（${id}）`;
+  }
+
+  function traceFields(entries, className = "trace-fields") {
+    const list = element("dl", className);
+    for (const [label, value] of entries) {
+      const item = element("div", "trace-field");
+      item.append(element("dt", null, label), element("dd", null, value));
+      list.append(item);
+    }
+    return list;
+  }
+
+  function renderTraceEvent(event) {
+    const item = element("li", "trace-event");
+    if (Number.isInteger(event.sequence) && event.sequence >= 0) item.value = event.sequence + 1;
+    const heading = element("div", "trace-event-heading");
+    const title = event.stage === "tool" && event.initiator === "model"
+      ? "模型追加工具调用" : traceLabel(traceStageLabels, event.stage, "未命名阶段");
+    heading.append(element("strong", null, title));
+    const status = element("span", "trace-status", traceLabel(traceStatusLabels, event.status, "状态未记录"));
+    status.dataset.status = traceText(event.status, "unknown");
+    heading.append(status); item.append(heading);
+    const fields = [
+      ["发起方", traceLabel({ program: "程序", model: "模型" }, event.initiator)],
+      ["开始于本轮", traceDuration(event.started_offset_ms)],
+      ["阶段耗时", traceDuration(event.duration_ms)],
+    ];
+    if (traceText(event.tool_name, "")) fields.push(["工具", event.tool_name]);
+    if (Number.isInteger(event.result_count) && event.result_count >= 0) {
+      const label = event.stage === "finalize" ? "引用来源数量" : "返回结果数量";
+      fields.push([label, traceNumber(event.result_count, " 个")]);
+    }
+    if (traceText(event.index_version, "")) fields.push(["阶段索引版本", event.index_version]);
+    if (traceText(event.tool_call_id, "")) fields.push(["工具调用 ID", event.tool_call_id]);
+    if (traceText(event.error_code, "")) fields.push(["原因 / 错误码", traceReason(event.error_code)]);
+    item.append(traceFields(fields, "trace-fields trace-event-fields"));
+    return item;
+  }
+
+  function renderExecutionDetails(result) {
+    const details = element("details", "execution-details");
+    const summary = element("summary", "execution-summary");
+    summary.append(element("span", "execution-summary-title", "执行详情"));
+    // 摘要只读取这轮 API 数据，不使用当前 Skill 下拉框或内部对话消息补全历史。
+    const trace = result.trace && typeof result.trace === "object" && !Array.isArray(result.trace)
+      && result.trace.schema_version === 1 ? result.trace : null;
+    const overview = trace
+      ? `${traceLabel(traceOutcomeLabels, trace.outcome)} · ${traceDuration(trace.duration_ms) === "未记录" ? "耗时未记录" : traceDuration(trace.duration_ms)}`
+      : "调用统计";
+    summary.append(element("span", "execution-summary-meta", overview));
+    details.append(summary);
+    const body = element("div", "execution-body");
+    body.append(traceFields([
+      ["模型调用", traceNumber(result.model_calls, " 次")],
+      ["工具调用", traceNumber(result.tool_calls, " 次")],
+      ["结束原因", traceReason(result.stop_reason)],
+      ["回答引用的索引版本", traceText(result.index_version)],
+    ]));
+    body.append(element("p", "trace-note", "工具次数包含程序发起的初始检索；被拒绝的请求可能留有阶段记录，但不计为已执行工具。模型次数按 Agent 调用轮数统计。"));
+    if (!trace) {
+      const explanation = result.trace != null
+        ? "此执行记录的格式暂不支持，以上为可用的调用统计。"
+        : result.turn_id ? "历史记录未保存详细过程。" : "本轮暂未提供详细过程。";
+      body.append(element("p", "trace-empty", explanation));
+      details.append(body);
+      return details;
+    }
+    body.append(traceFields([
+      ["流程状态", traceLabel(traceOutcomeLabels, trace.outcome)],
+      ["Agent 处理耗时", traceDuration(trace.duration_ms)],
+      ["开始时间（本地）", traceStartedAt(trace.started_at)],
+      ["执行记录 ID", traceText(trace.trace_id)],
+    ]));
+    body.append(element("p", "trace-note", "处理耗时截至 Agent 生成本轮结果，不包含服务排队、会话写入和 HTTP 传输。模型阶段包含内部重试的等待，但重试不单独增加模型调用次数。"));
+    body.append(element("h4", "trace-section-title", "本轮 Skill"));
+    body.append(traceFields([
+      ["已选择", traceSkill(trace.requested_skill_id, "未选择")],
+      ["已准备", traceSkill(trace.prepared_skill_id, "未准备")],
+      ["实际应用", traceSkill(trace.applied_skill_id, "未应用")],
+    ], "trace-fields trace-skill-fields"));
+    body.append(element("p", "trace-note", "“实际应用”表示已携带技能说明开始调用模型，不代表调用成功或模型遵循全部步骤。"));
+    if (traceText(trace.error_code, "")) {
+      const warning = element("p", "trace-alert", `本轮原因 / 错误码：${traceReason(trace.error_code)}`);
+      warning.dataset.kind = "error"; body.append(warning);
+    }
+    body.append(element("h4", "trace-section-title", "执行阶段"));
+    const events = Array.isArray(trace.events)
+      ? trace.events.filter((event) => event && typeof event === "object" && !Array.isArray(event))
+        .slice().sort((left, right) => left.sequence - right.sequence)
+      : [];
+    if (events.length) {
+      const list = element("ol", "trace-events");
+      for (const event of events) list.append(renderTraceEvent(event));
+      body.append(list);
+    } else {
+      body.append(element("p", "trace-empty", "本轮没有可展示的阶段记录，不能据此判断没有执行任何操作。"));
+    }
+    if (trace.events_truncated === true) {
+      const warning = element("p", "trace-alert", "阶段记录已达到数量上限，部分步骤未保留；以上仅展示已记录的步骤，调用总数仍以本轮统计为准。");
+      warning.dataset.kind = "warning"; body.append(warning);
+    }
+    details.append(body);
+    return details;
+  }
+
   function message(role, text, result = null) {
     const article = element("article", `message message--${role}`);
     article.append(element("div", "message-avatar", role === "user" ? "你" : "A"));
@@ -637,6 +815,7 @@
       const copy = element("button", "copy-answer", "复制回答"); copy.type = "button";
       copy.addEventListener("click", () => copyText(text, copy)); meta.append(copy);
       content.append(meta);
+      content.append(renderExecutionDetails(result));
     }
     article.append(content); return article;
   }

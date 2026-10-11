@@ -191,6 +191,35 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
 .source-heading { display: block; color: #4e6044; font-size: 11px; line-height: 1.8; }
 .source-detail { display: block; margin-top: 5px; color: #849074; font-size: 10px; line-height: 1.7; }
 .source-card p { margin: 4px 0; }
+.execution-details { min-width: 0; margin-top: 12px; border: 1px solid #dde4d4; border-radius: 9px; background: #f8faf3; }
+.execution-summary { padding: 11px 13px; color: #60774c; font-size: 11px; line-height: 1.8; cursor: pointer; overflow-wrap: anywhere; }
+.execution-summary::marker { color: #8b9e70; }
+.execution-summary:hover { background: #f0f4e7; color: var(--green); border-radius: 8px; }
+.execution-summary:focus-visible { outline-offset: 2px; border-radius: 8px; }
+.execution-summary-title { font-weight: 600; }
+.execution-summary-meta { margin-left: 10px; color: #7d896f; font-size: 10px; }
+.execution-details[open] > .execution-summary { border-bottom: 1px solid #e0e6d7; }
+.execution-body { min-width: 0; padding: 14px; color: #586a50; font-size: 11px; line-height: 1.7; }
+.trace-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; }
+.trace-field { min-width: 0; }
+.trace-field dt { color: #818e74; font-size: 10px; }
+.trace-field dd { margin: 3px 0 0; color: #4b6042; font-size: 11px; overflow-wrap: anywhere; }
+.trace-section-title { margin: 18px 0 10px; color: #4b6240; font-size: 11px; font-weight: 600; }
+.trace-note { margin: 9px 0 14px; color: #7d896e; font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
+.trace-empty { margin: 10px 0 0; padding: 9px 11px; border: 1px dashed #d5dfc7; border-radius: 6px; background: #f2f5ec; color: #78866c; font-size: 10px; line-height: 1.8; }
+.trace-events { margin: 0; padding-left: 25px; }
+.trace-event { min-width: 0; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #e0e6d7; border-radius: 7px; background: #fffefa; }
+.trace-event:last-child { margin-bottom: 0; }
+.trace-event::marker { color: #829573; font-family: var(--mono); font-size: 10px; }
+.trace-event-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; margin-bottom: 8px; }
+.trace-event-heading strong { min-width: 0; color: #49623d; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+.trace-status { display: inline-block; flex: 0 0 auto; max-width: 100%; padding: 1px 6px; border: 1px solid #dbe4ce; border-radius: 4px; background: #eff4e7; color: #627d48; font-size: 9px; overflow-wrap: anywhere; }
+.trace-status[data-status="empty"], .trace-status[data-status="skipped"] { border-color: #e4ddc1; background: #f8f4e7; color: #8e7946; }
+.trace-status[data-status="error"] { border-color: #e8cfc4; background: #faf0e9; color: #a05f48; }
+.trace-event-fields { gap: 7px 13px; }
+.trace-event-fields .trace-field dd { font-size: 10px; }
+.trace-alert { margin: 12px 0 0; padding: 9px 11px; border: 1px solid #e4dbbd; border-radius: 6px; background: #faf5e6; color: #8e7642; font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
+.trace-alert[data-kind="error"] { border-color: #e8cfc4; background: #fbf0e9; color: #995e49; }
 .loading-message .message-body { display: flex; align-items: center; gap: 10px; color: #859274; font-size: 12px; }
 .thinking-dots { display: inline-flex; align-items: center; gap: 4px; min-height: 15px; }
 .thinking-dots span { display: block; width: 4px; height: 4px; border-radius: 50%; background: #8da271; animation: thinking 1.2s ease-in-out infinite; }
@@ -424,6 +453,12 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
   .code-block pre, .prose pre { padding: 13px; font-size: 11px; }
   .source-card { margin: 7px; padding: 9px 10px; }
   .source-path { font-size: 9px; }
+  .execution-summary { padding: 10px; }
+  .execution-summary-meta { display: block; margin: 3px 0 0 13px; }
+  .execution-body { padding: 11px; }
+  .trace-fields { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .trace-events { padding-left: 19px; }
+  .trace-event { padding: 9px; }
   .notice { gap: 8px; margin: 10px 15px 0; padding: 9px 11px; font-size: 11px; }
   .operation-status { margin: 10px 15px 0; padding: 9px 11px; font-size: 11px; }
   .confirm-dialog { padding: 23px; }

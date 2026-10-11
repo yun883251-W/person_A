@@ -42,6 +42,7 @@ from langchain_core.messages import (
 )
 
 from .schemas import AnswerResult, AnswerSource
+from .trace import trace_from_dict, trace_to_dict
 
 
 # 第一阶段：存储层及应用接入开发。
@@ -958,18 +959,21 @@ def _result_to_json(result: AnswerResult) -> str:
         }
         for source in result.sources
     ]
+    payload = {
+        "version": MESSAGE_SERIALIZATION_VERSION,
+        "question": result.question,
+        "answer": result.answer,
+        "status": result.status,
+        "sources": sources,
+        "index_version": result.index_version,
+        "model_calls": result.model_calls,
+        "tool_calls": result.tool_calls,
+        "stop_reason": result.stop_reason,
+    }
+    if result.trace is not None:
+        payload["trace"] = trace_to_dict(result.trace)
     return json.dumps(
-        {
-            "version": MESSAGE_SERIALIZATION_VERSION,
-            "question": result.question,
-            "answer": result.answer,
-            "status": result.status,
-            "sources": sources,
-            "index_version": result.index_version,
-            "model_calls": result.model_calls,
-            "tool_calls": result.tool_calls,
-            "stop_reason": result.stop_reason,
-        },
+        payload,
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
@@ -990,7 +994,7 @@ def _result_from_json(value: str) -> AnswerResult:
         "tool_calls",
         "stop_reason",
     }
-    _require_fields(root, fields, set(), "result_json")
+    _require_fields(root, fields, {"trace"}, "result_json")
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
         raise ValueError(f"Unsupported result serialization version: {root['version']!r}")
     question = _require_string(root["question"], "result_json.question")
@@ -1058,6 +1062,12 @@ def _result_from_json(value: str) -> AnswerResult:
                 retrieval_score=float(score) if score is not None else None,
             )
         )
+    trace = None
+    if "trace" in root and root["trace"] is not None:
+        try:
+            trace = trace_from_dict(root["trace"])
+        except (TypeError, ValueError):
+            pass
     return AnswerResult(
         question=question,
         answer=answer,
@@ -1067,6 +1077,7 @@ def _result_from_json(value: str) -> AnswerResult:
         model_calls=root["model_calls"],
         tool_calls=root["tool_calls"],
         stop_reason=stop_reason,
+        trace=trace,
     )
 
 

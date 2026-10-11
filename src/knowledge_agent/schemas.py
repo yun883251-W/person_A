@@ -10,7 +10,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from .trace import TurnTrace
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,3 +110,4 @@ class AnswerResult:
     model_calls: int = 0
     tool_calls: int = 0
     stop_reason: str | None = None
+    trace: TurnTrace | None = None

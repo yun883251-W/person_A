@@ -35,6 +35,7 @@ python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --po
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -84,6 +85,14 @@ from .session_store import (
     StoredTurn,
 )
 from .skill_loader import discover_skills
+from .trace import (
+    TraceInitiator,
+    TraceOutcome,
+    TraceStage,
+    TraceStatus,
+    TurnTrace,
+    trace_to_dict,
+)
 
 # 第一阶段：应用生命周期与接口开发。
 
@@ -95,6 +104,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8000
 LOCAL_API_WORKERS = 1
+_LOGGER = logging.getLogger(__name__)
 
 SessionId = Annotated[
     str,
@@ -198,6 +208,46 @@ class AnswerSourceResponse(_PublicModel):
     retrieval_score: float | None = None
 
 
+class TraceEventResponse(_PublicModel):
+    """One observable execution stage, without messages or tool payloads."""
+
+    sequence: int = Field(ge=0, strict=True)
+    stage: TraceStage
+    initiator: TraceInitiator
+    status: TraceStatus
+    started_offset_ms: int | None = Field(default=None, ge=0, strict=True)
+    duration_ms: int | None = Field(default=None, ge=0, strict=True)
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    result_count: int | None = Field(default=None, ge=0, strict=True)
+    index_version: str | None = None
+    error_code: str | None = None
+
+
+class TurnTraceResponse(_PublicModel):
+    """Completed turn summary shared by answers and persisted history."""
+
+    schema_version: Literal[1] = 1
+    trace_id: str
+    started_at: str = Field(description="带 UTC 偏移的 ISO 8601 开始时间")
+    duration_ms: int | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        description="Agent 处理耗时，不含排队、会话提交与 HTTP 传输；缺失时为 null",
+    )
+    events: list[TraceEventResponse] = Field(default_factory=list)
+    outcome: TraceOutcome
+    requested_skill_id: str | None = None
+    prepared_skill_id: str | None = None
+    applied_skill_id: str | None = Field(
+        default=None,
+        description="已携带该技能指令开始模型调用；不代表调用成功或模型遵循全部指令",
+    )
+    error_code: str | None = None
+    events_truncated: bool = False
+
+
 class AnswerResponse(_PublicModel):
     session_id: SessionId
     question: str
@@ -208,6 +258,10 @@ class AnswerResponse(_PublicModel):
     model_calls: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     stop_reason: str | None = None
+    trace: TurnTraceResponse | None = Field(
+        default=None,
+        description="本轮结束后的执行摘要；没有可用记录时为 null，不是实时进度",
+    )
 
 
 class ErrorResponse(_PublicModel):
@@ -229,6 +283,10 @@ class TurnResponse(_PublicModel):
     model_calls: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     stop_reason: str | None = None
+    trace: TurnTraceResponse | None = Field(
+        default=None,
+        description="随本轮回答保存的执行摘要；旧记录或不可用摘要为 null",
+    )
 
 
 class TurnListResponse(_PublicModel):
@@ -842,6 +900,7 @@ def create_app(
             "在已有会话中执行一轮问答，完成后一次性返回完整结果（非流式）。status 是"
             "业务状态：success 表示已回答，其他状态可能表示资料不足、需要澄清、超出"
             "范围或达到调用限制，应与 HTTP 状态分别判断。成功完成的问答轮会写入历史。"
+            "trace 为可选的执行摘要，记录实际阶段与耗时，不包含内部消息或推理内容。"
         ),
         responses={
             404: {"model": ErrorResponse, "description": "会话不存在"},
@@ -915,7 +974,7 @@ def create_app(
         description=(
             "按时间正序返回已完成的完整问答轮，每个 item 同时包含问题、完整回答及引用，"
             "而不是把单条消息拆开分页。limit 为本页上限（1—100），offset 为跳过的"
-            "问答轮数；响应回显两者。"
+            "问答轮数；响应回显两者。trace 返回已保存的执行摘要，旧记录可能为 null。"
         ),
         responses={
             404: {"model": ErrorResponse, "description": "会话不存在"},
@@ -1378,6 +1437,19 @@ def _session_response(record: SessionRecord) -> SessionResponse:
     )
 
 
+def _trace_response(trace: TurnTrace | None) -> TurnTraceResponse | None:
+    """Use the trace allow-list; a malformed optional summary cannot hide an answer."""
+    if trace is None:
+        return None
+    try:
+        return TurnTraceResponse.model_validate(trace_to_dict(trace))
+    except (TypeError, ValueError, AttributeError):
+        # This conversion has no business side effects. Do not log trace content,
+        # retry a turn, or turn a usable answer into an HTTP failure.
+        _LOGGER.warning("trace_response_unavailable")
+        return None
+
+
 def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
     """Convert an answer without serializing any Agent or model state."""
     return AnswerResponse(
@@ -1390,6 +1462,7 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
         model_calls=result.model_calls,
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
+        trace=_trace_response(result.trace),
     )
 
 
@@ -1407,6 +1480,7 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
         model_calls=result.model_calls,
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
+        trace=_trace_response(result.trace),
     )
 
 
