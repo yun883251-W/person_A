@@ -86,6 +86,8 @@
           </div>
         </header>
 
+        <div id="operation-status" class="operation-status" role="status" aria-live="polite" hidden></div>
+
         <div id="notice" class="notice" role="status" aria-live="polite" hidden>
           <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
           <span id="notice-text"></span>
@@ -176,6 +178,7 @@
           <button id="knowledge-refresh" class="button button--secondary" type="button">刷新状态</button>
         </div>
         <div id="knowledge-status-cards" class="knowledge-status-cards"></div>
+        <p id="knowledge-version-note" class="knowledge-inline-note" role="status" aria-live="polite" hidden></p>
         <div class="knowledge-actions">
           <button id="knowledge-build" class="button button--secondary" type="button">完整重建</button>
           <button id="knowledge-update" class="button" type="button">更新索引</button>
@@ -191,8 +194,25 @@
           <ul id="knowledge-document-list" class="knowledge-document-list"></ul>
         </div>
         <div class="knowledge-preview">
-          <div class="knowledge-section-heading"><h3 id="knowledge-preview-title">原文预览</h3></div>
+          <div class="knowledge-section-heading">
+            <h3 id="knowledge-preview-title">原文预览</h3>
+            <button id="knowledge-preview-reload" class="button button--secondary" type="button" aria-controls="knowledge-preview-content" disabled>重新读取</button>
+          </div>
           <p id="knowledge-preview-meta" class="knowledge-preview-meta">选择左侧文档查看原文。</p>
+          <p id="knowledge-preview-warning" class="knowledge-inline-note" role="status" aria-live="polite" hidden></p>
+          <div class="knowledge-preview-toolbar" role="group" aria-label="原文分页">
+            <div class="knowledge-preview-navigation">
+              <button id="knowledge-preview-prev" class="button button--secondary" type="button" aria-controls="knowledge-preview-content" disabled>上一页</button>
+              <span id="knowledge-preview-page" role="status" aria-live="polite">尚未加载原文</span>
+              <button id="knowledge-preview-next" class="button button--secondary" type="button" aria-controls="knowledge-preview-content" disabled>下一页</button>
+            </div>
+            <form id="knowledge-preview-jump-form" class="knowledge-preview-jump-form">
+              <label for="knowledge-preview-line">跳至行号</label>
+              <input id="knowledge-preview-line" type="number" min="1" step="1" inputmode="numeric" required disabled>
+              <button id="knowledge-preview-jump-button" class="button button--secondary" type="submit" aria-controls="knowledge-preview-content" disabled>跳转</button>
+              <span class="knowledge-preview-page-size">每页最多 200 行</span>
+            </form>
+          </div>
           <pre id="knowledge-preview-content" tabindex="0"></pre>
         </div>
       </section>

@@ -15,15 +15,23 @@
     "knowledge-status-cards", "knowledge-build", "knowledge-update",
     "knowledge-upload-form", "knowledge-file", "knowledge-document-count",
     "knowledge-document-list", "knowledge-preview-title", "knowledge-preview-meta",
-    "knowledge-preview-content",
+    "knowledge-preview-content", "operation-status", "knowledge-version-note",
+    "knowledge-preview-warning", "knowledge-preview-prev", "knowledge-preview-next",
+    "knowledge-preview-page", "knowledge-preview-jump-form", "knowledge-preview-line",
+    "knowledge-preview-jump-button", "knowledge-preview-reload",
   ].map((id) => [id, byId(id)]));
   const PAGE_SIZE = 100;
+  const PREVIEW_PAGE_SIZE = 200;
   const STORAGE_KEY = "person-a.current-session";
+  const KNOWLEDGE_PENDING_KEY = "person-a.pending-knowledge-operation";
   const state = {
     sessions: [], sessionOffset: 0, hasMore: false, current: null, turns: [],
     operation: null, pendingQuestion: "", needsRefresh: false,
-    knowledgeBusy: false, knowledgeDocuments: [], knowledgeStatus: null,
-    knowledgePreviewPath: null,
+    knowledgeBusy: false, knowledgeOperation: null, knowledgeNeedsRefresh: false,
+    knowledgeDocuments: [], knowledgeDocumentsLoaded: false, knowledgeDocumentsStale: true,
+    knowledgeStatus: null, knowledgeStatusStale: true,
+    knowledgePreviewPath: null, knowledgePreview: null, knowledgePreviewRequest: null,
+    knowledgePreviewReferenceHash: null, knowledgePreviewChanged: false,
   };
   const statusLabels = {
     success: "基于知识库回答", insufficient_evidence: "资料不足",
@@ -47,12 +55,19 @@
     network_error: "无法连接服务，请确认 FastAPI 仍在运行。",
     request_timeout: "等待服务响应超时。",
     invalid_response: "服务返回了无法识别的数据，请检查 API 服务。",
-    document_changed: "当前原文已与回答引用时不同，下面显示的是最新内容。",
+    document_changed: "原文已变化或被移除，无法按原来的内容核对。",
+    document_not_found: "文档已不存在，请刷新文档列表。",
+    document_too_large: "文档超过原文预览的大小限制。",
+    invalid_document_path: "文档路径无效，无法读取原文。",
     document_exists: "同名文档已存在，请改名后上传。",
     invalid_filename: "文件名无效，只能上传单个 Markdown 文件。",
     invalid_encoding: "文档必须使用 UTF-8 编码。",
     upload_too_large: "文档超过上传大小限制。",
     knowledge_busy: "知识库正在处理其他操作，请稍后刷新状态。",
+    service_busy: "服务正在处理其他操作，请稍后刷新状态。",
+    knowledge_storage_error: "无法读取或写入知识库目录，请检查目录及权限。",
+    index_incomplete: "已发布索引不完整，请检查索引文件。",
+    index_corrupt: "索引清单无法读取，请检查索引文件。",
     index_ingest_failed: "索引更新失败，请检查文档和模型服务。",
     index_refresh_failed: "索引已发布，但运行中的服务未能加载新版本。",
   };
@@ -117,6 +132,58 @@
     ui["knowledge-message"].textContent = message;
   }
 
+  function isBusy() { return Boolean(state.operation || state.knowledgeBusy); }
+  function chatControlsLocked() { return isBusy() || state.knowledgeNeedsRefresh; }
+
+  function setKnowledgeOperation(operation) {
+    state.knowledgeOperation = operation;
+    state.knowledgeBusy = Boolean(operation);
+    updateControls();
+  }
+
+  function setKnowledgeNeedsRefresh(value) {
+    state.knowledgeNeedsRefresh = value;
+    // 只记录是否存在未确认操作；刷新页面后仍需先查询状态，不能自动重发。
+    try {
+      if (value) sessionStorage.setItem(KNOWLEDGE_PENDING_KEY, "pending");
+      else sessionStorage.removeItem(KNOWLEDGE_PENDING_KEY);
+    } catch { /* 浏览器禁用存储时，本页仍保留恢复状态。 */ }
+  }
+
+  function knowledgeErrorMessage(error) {
+    return error.code === "validation_error"
+      ? "知识库请求参数无效，请检查文件名、文件内容或预览行号。"
+      : error.message;
+  }
+
+  function mutationOutcomeUnknown(error) {
+    return ["network_error", "request_timeout", "invalid_response", "internal_error"].includes(error.code)
+      || error.status >= 500;
+  }
+
+  function invalidateKnowledgeData() {
+    state.knowledgeStatusStale = true;
+    state.knowledgeDocumentsStale = true;
+    renderKnowledgeStatus(); renderKnowledgeDocuments();
+  }
+
+  function renderOperationStatus() {
+    const labels = {
+      build: "正在完整重建索引，暂不能提问。关闭知识库窗口不会取消操作。",
+      update: "正在更新索引，暂不能提问。关闭知识库窗口不会取消操作。",
+      upload: "正在上传文档，完成后可继续提问。",
+      preview: "正在读取原文，请稍候。",
+      refresh: "正在读取文档与索引状态，请稍候。",
+    };
+    const text = state.knowledgeOperation ? labels[state.knowledgeOperation]
+      : state.knowledgeNeedsRefresh ? "知识库操作结果尚未确认。请打开「知识库管理」刷新状态，再继续提问或更新。"
+      : state.operation === "send" ? "正在生成回答，完成后可操作知识库。"
+      : state.needsRefresh ? "上一轮问答结果尚未确认。请先刷新会话历史，再上传资料或更新索引。" : "";
+    ui["operation-status"].textContent = text;
+    ui["operation-status"].hidden = !text;
+    ui["operation-status"].dataset.kind = (state.knowledgeNeedsRefresh || state.needsRefresh) && !isBusy() ? "warning" : "info";
+  }
+
   const knowledgeStateLabels = {
     pending: "待加入索引", synced: "已同步", modified: "原文已修改",
     removed: "原文已移除", unreadable: "无法读取", unknown: "状态未知",
@@ -133,22 +200,55 @@
       ["发布状态", status ? (indexStateLabels[status.disk_status] || status.disk_status) : "—"],
       ["待同步变化", pending == null ? "—" : `${pending} 项`],
       ["文档 / 片段", status ? `${status.indexed_document_count ?? "—"} / ${status.chunk_count ?? "—"}` : "—"],
-      ["当前版本", status?.published_version || "—"],
+      ["已发布版本", status?.published_version || "未确认"],
+      ["问答使用版本", status?.active_version || "未确认"],
     ];
     ui["knowledge-status-cards"].replaceChildren(...cards.map(([label, value]) => {
       const card = element("div", "knowledge-status-card");
       card.append(element("span", null, label), element("strong", null, value));
       return card;
     }));
+    ui["knowledge-status-cards"].dataset.stale = String(state.knowledgeStatusStale);
+    const notes = [];
+    let kind = "info";
+    if (state.knowledgeStatusStale) {
+      notes.push(status ? "以下为上次读取的状态，当前状态尚未确认。" : "尚未取得索引状态。");
+      kind = "warning";
+    }
+    if (status) {
+      if (["incomplete", "corrupt", "unknown"].includes(status.disk_status) || status.error) {
+        notes.push("索引状态异常，需检查知识库目录或索引文件。"); kind = "error";
+      }
+      if (status.published_version && status.active_version) {
+        if (status.published_version === status.active_version) {
+          notes.push("此次读取时，已发布版本与问答使用版本一致。");
+        } else {
+          notes.push("已发布版本与问答使用版本不同，当前问答尚未使用所示的已发布版本。");
+          if (kind !== "error") kind = "warning";
+        }
+      } else if (status.published_version) {
+        notes.push("问答使用版本未确认，可能尚未加载；不能据此认定已切换到新索引。");
+        if (kind !== "error") kind = "warning";
+      } else if (status.active_version) {
+        notes.push("磁盘发布版本未确认，问答仍持有已加载的索引快照。");
+        if (kind !== "error") kind = "warning";
+      } else if (status.disk_status === "not_built") {
+        notes.push("尚未建库，上传资料后需要建立索引。");
+      }
+    }
+    ui["knowledge-version-note"].textContent = notes.join(" ");
+    ui["knowledge-version-note"].hidden = !notes.length;
+    ui["knowledge-version-note"].dataset.kind = kind;
   }
 
   function renderKnowledgeDocuments() {
-    ui["knowledge-document-count"].textContent = `${state.knowledgeDocuments.length} 个文档`;
+    ui["knowledge-document-count"].textContent = state.knowledgeDocumentsLoaded
+      ? `${state.knowledgeDocuments.length} 条记录${state.knowledgeDocumentsStale ? " · 上次读取" : ""}` : "尚未读取";
     const fragment = document.createDocumentFragment();
     for (const documentRecord of state.knowledgeDocuments) {
       const item = element("li");
       const button = element("button"); button.type = "button";
-      button.disabled = state.knowledgeBusy || !documentRecord.exists || documentRecord.sync_status === "unreadable";
+      button.disabled = isBusy() || !documentRecord.exists || documentRecord.sync_status === "unreadable";
       button.setAttribute("aria-current", String(documentRecord.path === state.knowledgePreviewPath));
       button.append(element("span", "knowledge-document-path", documentRecord.path));
       const detail = element("span", "knowledge-document-state", knowledgeStateLabels[documentRecord.sync_status] || documentRecord.sync_status);
@@ -157,94 +257,240 @@
       button.addEventListener("click", () => openKnowledgeDocument(documentRecord.path, documentRecord.content_hash));
       item.append(button); fragment.append(item);
     }
-    if (!state.knowledgeDocuments.length) fragment.append(element("li", "empty-sessions", "还没有 Markdown 文档。"));
+    if (!state.knowledgeDocuments.length) fragment.append(element("li", "empty-sessions",
+      state.knowledgeDocumentsLoaded ? "还没有 Markdown 文档。" : "刷新状态后查看文档。"));
     ui["knowledge-document-list"].replaceChildren(fragment);
   }
 
   function updateKnowledgeControls() {
-    const busy = state.knowledgeBusy;
-    for (const id of ["knowledge-refresh", "knowledge-build", "knowledge-update", "knowledge-file"]) ui[id].disabled = busy;
-    ui["knowledge-upload-form"].querySelector("button").disabled = busy;
-    ui["knowledge-dialog"].setAttribute("aria-busy", String(busy));
+    const busy = isBusy();
+    ui["knowledge-refresh"].disabled = busy;
+    for (const id of ["knowledge-build", "knowledge-update", "knowledge-file"]) {
+      ui[id].disabled = busy || state.knowledgeNeedsRefresh || state.needsRefresh;
+    }
+    ui["knowledge-upload-form"].querySelector("button").disabled = busy || state.knowledgeNeedsRefresh || state.needsRefresh;
+    // 知识库操作过程中仍能重新打开弹窗查看提示，但不能发起第二个请求。
+    ui["knowledge-open"].disabled = Boolean(state.operation);
+    ui["knowledge-dialog"].setAttribute("aria-busy", String(state.knowledgeBusy));
+    const preview = state.knowledgePreview;
+    ui["knowledge-preview-prev"].disabled = busy || !preview || preview.start_line <= 1;
+    ui["knowledge-preview-next"].disabled = busy || !preview || preview.end_line >= preview.total_lines;
+    const noLines = !preview || preview.total_lines === 0;
+    ui["knowledge-preview-line"].disabled = busy || noLines;
+    ui["knowledge-preview-jump-button"].disabled = busy || noLines;
+    ui["knowledge-preview-reload"].disabled = busy || !state.knowledgePreviewRequest;
     renderKnowledgeDocuments();
   }
 
   async function loadKnowledgeData() {
+    invalidateKnowledgeData();
+    // 所有业务请求串行发送；成功响应才更新显示，不把旧数据当作当前状态。
+    const status = await request("/knowledge/status");
+    state.knowledgeStatus = status; state.knowledgeStatusStale = false;
+    renderKnowledgeStatus();
     const documents = [];
     for (let offset = 0; ; offset += PAGE_SIZE) {
       const page = await request(`/knowledge/documents?limit=${PAGE_SIZE}&offset=${offset}`);
       documents.push(...page.items);
       if (page.items.length < PAGE_SIZE) break;
     }
-    const status = await request("/knowledge/status");
-    state.knowledgeDocuments = documents; state.knowledgeStatus = status;
+    state.knowledgeDocuments = documents;
+    state.knowledgeDocumentsLoaded = true; state.knowledgeDocumentsStale = false;
+    setKnowledgeNeedsRefresh(false);
     renderKnowledgeDocuments(); renderKnowledgeStatus();
   }
 
-  async function openKnowledgeManager() {
-    closeSidebar();
-    if (!ui["knowledge-dialog"].open) ui["knowledge-dialog"].showModal();
-    if (state.knowledgeBusy) return;
-    state.knowledgeBusy = true; updateKnowledgeControls(); knowledgeMessage("正在读取文档与索引状态…");
-    try { await loadKnowledgeData(); knowledgeMessage(""); }
-    catch (error) { knowledgeMessage(error.message, "error"); }
-    finally { state.knowledgeBusy = false; updateKnowledgeControls(); }
+  function knowledgeReadFailure(error) {
+    const prefix = state.knowledgeStatusStale
+      ? "当前状态未能确认。" : "索引状态已读取，但文档列表未能刷新。";
+    return `${prefix} ${knowledgeErrorMessage(error)} 请稍后点击「刷新状态」。`;
   }
 
-  async function openKnowledgeDocument(path, contentHash = null, startLine = 1) {
-    if (state.knowledgeBusy) return;
-    state.knowledgeBusy = true; state.knowledgePreviewPath = path; updateKnowledgeControls();
+  async function openKnowledgeManager() {
+    if (state.operation) { notice("当前会话操作尚未完成，请稍后打开知识库管理。", "info"); return false; }
+    closeSidebar();
+    if (!ui["knowledge-dialog"].open) ui["knowledge-dialog"].showModal();
+    if (state.knowledgeBusy) return false;
+    const recovering = state.knowledgeNeedsRefresh;
+    setKnowledgeOperation("refresh"); knowledgeMessage("正在读取文档与索引状态…");
+    try {
+      await loadKnowledgeData();
+      knowledgeMessage(state.needsRefresh
+        ? "上一轮问答结果尚未确认，请关闭此窗口并刷新会话历史，再上传资料或更新索引。"
+        : recovering ? "已读取当前状态。上次操作的最终结果未收到，请核对版本和文档后再决定是否重试。" : "");
+      return true;
+    } catch (error) { knowledgeMessage(knowledgeReadFailure(error), "error"); return false; }
+    finally { setKnowledgeOperation(null); }
+  }
+
+  function previewWarning(message) {
+    ui["knowledge-preview-warning"].textContent = message;
+    ui["knowledge-preview-warning"].hidden = !message;
+    ui["knowledge-preview-warning"].dataset.kind = "warning";
+  }
+
+  async function openKnowledgeDocument(path, contentHash = null, startLine = 1, options = {}) {
+    if (isBusy()) return;
+    if (!Number.isInteger(startLine) || startLine < 1) {
+      previewWarning("请输入有效的正整数行号。"); return;
+    }
+    const continuing = options.continuing && path === state.knowledgePreviewPath;
+    if (!continuing) {
+      state.knowledgePreviewReferenceHash = options.referenceHash || null;
+      state.knowledgePreviewChanged = false;
+    }
+    state.knowledgePreviewPath = path; state.knowledgePreview = null;
+    state.knowledgePreviewRequest = { path, contentHash, startLine };
+    setKnowledgeOperation("preview");
     ui["knowledge-preview-title"].textContent = path;
     ui["knowledge-preview-meta"].textContent = "正在读取原文…";
     ui["knowledge-preview-content"].textContent = "";
-    const params = new URLSearchParams({ path, start_line: String(startLine), limit: "1000" });
-    if (contentHash) params.set("content_hash", contentHash);
+    ui["knowledge-preview-page"].textContent = "正在读取…";
+    previewWarning(state.knowledgePreviewChanged ? "原文曾发生变化，正在读取当前内容。" : "");
     try {
-      const preview = await request(`/knowledge/documents/content?${params}`);
-      ui["knowledge-preview-meta"].textContent = `第 ${preview.start_line}–${preview.end_line} 行，共 ${preview.total_lines} 行${preview.truncated ? " · 预览已截断" : ""}`;
-      ui["knowledge-preview-content"].textContent = preview.content;
-    } catch (error) {
-      if (error.code === "document_changed" && contentHash) {
-        knowledgeMessage(error.message, "error");
-        state.knowledgeBusy = false; updateKnowledgeControls();
-        return openKnowledgeDocument(path, null, startLine);
+      let preview;
+      let requestedLine = startLine;
+      let requestedHash = contentHash;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const params = new URLSearchParams({ path, start_line: String(requestedLine), limit: String(PREVIEW_PAGE_SIZE) });
+        if (requestedHash) params.set("content_hash", requestedHash);
+        try {
+          preview = await request(`/knowledge/documents/content?${params}`);
+          break;
+        } catch (error) {
+          if (attempt === 0 && error.code === "document_changed" && requestedHash) {
+            // 始终持有同一把页面操作锁；变化后从第 1 行读取，防止新文件变短导致越界。
+            state.knowledgePreviewChanged = true;
+            requestedHash = null; requestedLine = 1;
+            invalidateKnowledgeData();
+          } else { throw error; }
+        }
       }
-      knowledgeMessage(error.message, "error");
+      state.knowledgePreview = preview;
+      state.knowledgePreviewRequest = { path, contentHash: preview.content_hash, startLine: Math.max(1, preview.start_line) };
+      const empty = preview.total_lines === 0;
+      ui["knowledge-preview-meta"].textContent = empty ? "这是一个空文档。"
+        : `第 ${preview.start_line}–${preview.end_line} 行，共 ${preview.total_lines} 行 · 每页最多 ${PREVIEW_PAGE_SIZE} 行`;
+      ui["knowledge-preview-page"].textContent = empty ? "无可预览内容"
+        : `${preview.start_line}–${preview.end_line} / ${preview.total_lines} 行`;
+      ui["knowledge-preview-content"].textContent = preview.content;
+      ui["knowledge-preview-content"].scrollTop = 0;
+      ui["knowledge-preview-line"].max = String(Math.max(1, preview.total_lines));
+      ui["knowledge-preview-line"].value = String(Math.max(1, preview.start_line));
+      if (state.knowledgePreviewReferenceHash && preview.content_hash !== state.knowledgePreviewReferenceHash) {
+        previewWarning("当前原文与回答引用时不同，下面显示最新内容；旧引用的行号不能用于核对当前文本。");
+      } else if (state.knowledgePreviewChanged) {
+        previewWarning("原文在预览期间发生了变化，已重新读取最新内容；此前看到的分页内容属于旧版本。");
+      } else { previewWarning(""); }
+    } catch (error) {
+      previewWarning(knowledgeErrorMessage(error));
       ui["knowledge-preview-meta"].textContent = "无法读取原文。";
-    } finally {
-      state.knowledgeBusy = false; updateKnowledgeControls();
+      ui["knowledge-preview-page"].textContent = "可点击「重新读取」重试";
+    } finally { setKnowledgeOperation(null); }
+  }
+
+  function changePreviewPage(direction) {
+    if (isBusy() || !state.knowledgePreview) return;
+    const preview = state.knowledgePreview;
+    const line = direction > 0 ? preview.end_line + 1 : Math.max(1, preview.start_line - PREVIEW_PAGE_SIZE);
+    if (preview.total_lines === 0 || line > preview.total_lines) return;
+    void openKnowledgeDocument(preview.path, preview.content_hash, line, { continuing: true });
+  }
+
+  function jumpToPreviewLine(event) {
+    event.preventDefault();
+    if (isBusy() || !state.knowledgePreview) return;
+    const preview = state.knowledgePreview;
+    const line = Number(ui["knowledge-preview-line"].value);
+    if (!Number.isInteger(line) || line < 1 || line > preview.total_lines) {
+      previewWarning(`请输入 1 到 ${preview.total_lines} 之间的整数行号。`); return;
     }
+    void openKnowledgeDocument(preview.path, preview.content_hash, line, { continuing: true });
   }
 
   async function uploadKnowledgeDocument(event) {
     event.preventDefault();
     const file = ui["knowledge-file"].files[0];
-    if (!file || state.knowledgeBusy) return;
-    state.knowledgeBusy = true; updateKnowledgeControls(); knowledgeMessage("正在上传文档…");
+    if (!file || isBusy() || state.knowledgeNeedsRefresh || state.needsRefresh) return;
+    setKnowledgeNeedsRefresh(true);
+    setKnowledgeOperation("upload"); invalidateKnowledgeData(); knowledgeMessage("正在上传文档…");
+    let uploaded = false;
     try {
       await request(`/knowledge/documents?filename=${encodeURIComponent(file.name)}`, {
         method: "POST", rawBody: file, contentType: "text/markdown; charset=utf-8", timeout: 0,
       });
+      uploaded = true; setKnowledgeNeedsRefresh(false);
       ui["knowledge-upload-form"].reset();
       await loadKnowledgeData();
       knowledgeMessage("上传成功，待更新索引。", "success");
-    } catch (error) { knowledgeMessage(error.message, "error"); }
-    finally { state.knowledgeBusy = false; updateKnowledgeControls(); }
+    } catch (error) {
+      if (uploaded) {
+        knowledgeMessage(`上传已成功，尚未更新索引。${knowledgeReadFailure(error)} 无需重新上传。`, "warning");
+      } else {
+        setKnowledgeNeedsRefresh(mutationOutcomeUnknown(error));
+        knowledgeMessage(`${knowledgeErrorMessage(error)}${state.knowledgeNeedsRefresh
+          ? " 上传结果尚未确认，请刷新状态并核对文件是否已存在，不要重复上传。" : ""}`, "error");
+      }
+    } finally { setKnowledgeOperation(null); }
+  }
+
+  function describeIndexOperation(result) {
+    const version = result.published_version ? `（${result.published_version}）` : "（版本未确认）";
+    if (result.published !== true) {
+      return { text: result.published === false ? "本次操作未能完成索引发布。" : "本次索引发布结果尚未确认。", kind: "error" };
+    }
+    const published = `索引已发布${version}。`;
+    if (result.refreshed === false || result.error_category === "refresh") {
+      return { text: `${published}运行时刷新失败，当前问答可能仍使用旧索引。`, kind: "warning" };
+    }
+    if (result.published_version && result.active_version && result.published_version !== result.active_version) {
+      return { text: `${published}问答使用版本与已发布版本不一致，请核对版本状态。`, kind: "warning" };
+    }
+    if (result.succeeded !== true) {
+      return { text: `${published}操作未全部成功，请查看当前状态。`, kind: "warning" };
+    }
+    if (result.refreshed === true) {
+      return { text: `${published}服务端已完成运行时刷新。`, kind: "success" };
+    }
+    return { text: `${published}本次未返回运行时刷新结果，问答使用版本以状态栏为准。`, kind: "info" };
   }
 
   async function runKnowledgeIndex(operation) {
-    if (state.knowledgeBusy) return;
-    state.knowledgeBusy = true; updateKnowledgeControls();
+    if (isBusy() || state.knowledgeNeedsRefresh || state.needsRefresh || !["build", "update"].includes(operation)) return;
+    setKnowledgeNeedsRefresh(true);
+    setKnowledgeOperation(operation); invalidateKnowledgeData();
     knowledgeMessage(operation === "build" ? "正在完整重建索引，请勿重复提交…" : "正在更新索引，请勿重复提交…");
+    let result = null;
+    let operationError = null;
     try {
-      const result = await request(`/knowledge/index/${operation}`, { method: "POST", timeout: 0 });
-      await loadKnowledgeData();
-      knowledgeMessage(`索引更新完成，已发布版本 ${result.published_version || "未知"}。`, "success");
+      result = await request(`/knowledge/index/${operation}`, { method: "POST", timeout: 0 });
+      if (!result || result.operation !== operation || typeof result.succeeded !== "boolean") {
+        throw new ApiError("invalid_response", 200);
+      }
+      setKnowledgeNeedsRefresh(false);
     } catch (error) {
-      // 请求失联或失败后只查询真实状态，不自动重复会写入索引的操作。
-      try { await loadKnowledgeData(); } catch { /* 保留原始操作错误。 */ }
-      knowledgeMessage(`${error.message} 已重新查询当前状态，请确认发布版本后再决定是否重试。`, "error");
-    } finally { state.knowledgeBusy = false; updateKnowledgeControls(); }
+      operationError = error;
+      // HTTP 失败也可能附带“已发布但刷新失败”的真实结果。
+      const returnedOperation = error.body?.operation;
+      result = returnedOperation?.operation === operation && typeof returnedOperation.succeeded === "boolean"
+        ? returnedOperation : null;
+      setKnowledgeNeedsRefresh(!result && mutationOutcomeUnknown(error));
+    }
+    try {
+      let refreshError = null;
+      try { await loadKnowledgeData(); }
+      catch (error) { refreshError = error; }
+      const summary = result ? describeIndexOperation(result)
+        : { text: knowledgeErrorMessage(operationError), kind: "error" };
+      if (refreshError) {
+        knowledgeMessage(`${summary.text} ${knowledgeReadFailure(refreshError)}`, result ? "warning" : "error");
+      } else {
+        const tail = operationError
+          ? " 已读取当前索引状态和文档列表，请核对版本后再决定是否重试；状态读取不代表上次操作成功。"
+          : " 文档列表与索引状态已刷新。";
+        knowledgeMessage(summary.text + tail, summary.kind);
+      }
+    } finally { setKnowledgeOperation(null); }
   }
 
   // 模型输出始终作为文本构建 DOM，不将 Markdown/HTML 交给 innerHTML 执行。
@@ -354,12 +600,16 @@
     for (const source of sources) {
       const card = element("button", "source-card"); card.type = "button";
       card.title = "打开引用原文";
+      card.disabled = isBusy();
       card.append(element("div", "source-path", source.source_path));
       if (source.heading_path?.length) card.append(element("div", "source-heading", source.heading_path.join(" › ")));
       card.append(element("div", "source-detail", `原文第 ${source.start_line}–${source.end_line} 行`));
       card.addEventListener("click", async () => {
-        await openKnowledgeManager();
-        await openKnowledgeDocument(source.source_path, source.content_hash, source.start_line);
+        if (isBusy()) return;
+        const opened = await openKnowledgeManager();
+        if (opened) await openKnowledgeDocument(source.source_path, source.content_hash, source.start_line, {
+          referenceHash: source.content_hash,
+        });
       });
       details.append(card);
     }
@@ -427,7 +677,7 @@
       button.dataset.sessionId = session.session_id;
       button.title = session.title || "未命名会话";
       button.setAttribute("aria-current", session.session_id === state.current?.session_id ? "true" : "false");
-      button.disabled = Boolean(state.operation);
+      button.disabled = chatControlsLocked();
       button.append(element("span", "session-item-title", session.title || "未命名会话"));
       button.append(element("span", "session-item-date", displayDate(session.updated_at)));
       button.addEventListener("click", () => selectSession(session.session_id));
@@ -436,27 +686,32 @@
     if (!sessions.length) fragment.append(element("li", "empty-sessions", search ? "已加载会话中没有匹配项" : "从一个问题，开始你的学习记录。"));
     ui["session-list"].replaceChildren(fragment);
     ui["load-more-sessions"].hidden = !state.hasMore;
-    ui["load-more-sessions"].disabled = Boolean(state.operation);
+    ui["load-more-sessions"].disabled = chatControlsLocked();
   }
 
   function updateControls() {
-    const busy = Boolean(state.operation);
+    const busy = chatControlsLocked();
     for (const id of ["new-session", "refresh-sessions", "load-more-sessions"]) ui[id].disabled = busy;
     for (const id of ["refresh-history", "clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
     ui.question.disabled = busy;
     ui["skill-select"].disabled = busy;
     ui["send-button"].disabled = busy || state.needsRefresh || !ui.question.value.trim();
     ui["send-button"].setAttribute("aria-label", state.operation === "send" ? "正在生成回答" : "发送问题");
-    ui["composer-form"].setAttribute("aria-busy", String(state.operation === "send"));
+    ui["composer-form"].setAttribute("aria-busy", String(isBusy()));
     ui["current-title"].textContent = state.current?.title || (state.current ? "未命名会话" : "新的学习会话");
     ui["session-subtitle"].textContent = state.current ? "历史保存在本机 · 可继续追问" : "Python / LangChain · 本地文档知识库";
     ui["composer-hint"].textContent = state.operation === "send"
       ? "正在等待完整回答。离开页面不会取消后台任务。"
+      : state.knowledgeBusy ? "知识库操作进行中，完成后可继续提问。"
+      : state.knowledgeNeedsRefresh ? "请先打开「知识库管理」刷新状态，确认上次操作结果。"
       : state.needsRefresh ? "请先点击上方「刷新历史」确认本轮结果，再继续提问。"
       : state.operation ? "正在同步会话…" : "Enter 发送 · Shift + Enter 换行";
     ui["char-count"].textContent = `${ui.question.value.length.toLocaleString("zh-CN")} / 10,000`;
     for (const button of document.querySelectorAll("[data-prompt]")) button.disabled = busy;
+    for (const button of document.querySelectorAll("button.source-card")) button.disabled = isBusy();
     renderSessions();
+    updateKnowledgeControls();
+    renderOperationStatus();
   }
 
   function setOperation(operation) { state.operation = operation; updateControls(); }
@@ -490,7 +745,7 @@
   }
 
   async function selectSession(id) {
-    if (state.operation) return;
+    if (chatControlsLocked()) return;
     closeSidebar(); notice(""); setOperation("history");
     try {
       const record = await request(`/sessions/${encodeURIComponent(id)}`);
@@ -504,7 +759,7 @@
   }
 
   async function refreshHistory() {
-    if (state.operation || !state.current) return;
+    if (chatControlsLocked() || !state.current) return;
     notice(""); setOperation("history");
     try {
       state.turns = await loadHistory(state.current.session_id);
@@ -521,7 +776,7 @@
   async function sendQuestion(event) {
     event.preventDefault();
     const question = ui.question.value.trim();
-    if (!question || state.operation || state.needsRefresh) return;
+    if (!question || chatControlsLocked() || state.needsRefresh) return;
     if (question.length > 10000) { notice(errorMessages.validation_error); return; }
     notice(""); closeSidebar(); setOperation("send");
     let submitted = false;
@@ -576,9 +831,10 @@
   }
 
   async function manageSession(kind) {
-    if (state.operation || !state.current) return;
+    if (chatControlsLocked() || !state.current) return;
     const id = state.current.session_id;
     if (!await confirmAction(kind)) return;
+    if (chatControlsLocked() || state.current?.session_id !== id) return;
     notice(""); setOperation(kind);
     try {
       await request(`/sessions/${encodeURIComponent(id)}${kind === "clear" ? "/messages" : ""}`, { method: "DELETE", timeout: 0 });
@@ -609,7 +865,7 @@
   }
 
   async function refreshSessions(append = false) {
-    if (state.operation) return;
+    if (chatControlsLocked()) return;
     notice(""); setOperation("sessions");
     try { await loadSessions(append); }
     catch (error) { notice(error.message); }
@@ -625,7 +881,7 @@
     }
   });
   ui["new-session"].addEventListener("click", () => {
-    if (state.operation) return;
+    if (chatControlsLocked()) return;
     resetConversation(); notice(""); closeSidebar(); ui.question.focus();
   });
   ui["session-search"].addEventListener("input", renderSessions);
@@ -643,6 +899,14 @@
   ui["knowledge-upload-form"].addEventListener("submit", uploadKnowledgeDocument);
   ui["knowledge-build"].addEventListener("click", () => runKnowledgeIndex("build"));
   ui["knowledge-update"].addEventListener("click", () => runKnowledgeIndex("update"));
+  ui["knowledge-preview-prev"].addEventListener("click", () => changePreviewPage(-1));
+  ui["knowledge-preview-next"].addEventListener("click", () => changePreviewPage(1));
+  ui["knowledge-preview-jump-form"].addEventListener("submit", jumpToPreviewLine);
+  ui["knowledge-preview-reload"].addEventListener("click", () => {
+    if (isBusy() || !state.knowledgePreviewRequest) return;
+    const { path, contentHash, startLine } = state.knowledgePreviewRequest;
+    void openKnowledgeDocument(path, contentHash, startLine, { continuing: true });
+  });
   ui["menu-toggle"].addEventListener("click", () => {
     document.body.classList.add("sidebar-open"); ui["menu-toggle"].setAttribute("aria-expanded", "true");
     ui["sidebar-close"].focus();
@@ -656,26 +920,37 @@
   });
   for (const button of document.querySelectorAll("[data-prompt]")) {
     button.addEventListener("click", () => {
-      if (state.operation) return;
+      if (chatControlsLocked()) return;
       ui.question.value = button.dataset.prompt; fitInput(); updateControls(); ui.question.focus();
     });
   }
   window.addEventListener("beforeunload", (event) => {
-    if (state.operation === "send" || state.knowledgeBusy) { event.preventDefault(); event.returnValue = ""; }
+    if (state.operation === "send" || ["upload", "build", "update"].includes(state.knowledgeOperation)) {
+      event.preventDefault(); event.returnValue = "";
+    }
   });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) void checkHealth(); });
   window.addEventListener("online", checkHealth);
   window.addEventListener("offline", checkHealth);
 
   async function initialize() {
+    try { state.knowledgeNeedsRefresh = sessionStorage.getItem(KNOWLEDGE_PENDING_KEY) === "pending"; }
+    catch { /* 可选的断连恢复标记。 */ }
+    renderKnowledgeStatus();
     renderConversation(); setOperation("sessions"); void checkHealth();
     try {
-      const [skills] = await Promise.all([request("/skills"), loadSessions()]);
-      for (const skill of skills.items) {
-        const option = element("option", null, skill.description);
-        option.value = skill.skill_id;
-        ui["skill-select"].append(option);
+      // 一个请求失败时，仍等另一个请求结束后再释放页面业务锁。
+      const [skillsResult, sessionsResult] = await Promise.allSettled([request("/skills"), loadSessions()]);
+      if (skillsResult.status === "fulfilled") {
+        for (const skill of skillsResult.value.items) {
+          const option = element("option", null, skill.description);
+          option.value = skill.skill_id;
+          ui["skill-select"].append(option);
+        }
       }
+      const errors = [skillsResult, sessionsResult]
+        .filter((result) => result.status === "rejected").map((result) => result.reason.message);
+      if (errors.length) notice([...new Set(errors)].join(" "));
     }
     catch (error) { notice(error.message); }
     finally { setOperation(null); }
