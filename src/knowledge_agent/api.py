@@ -1,4 +1,4 @@
-"""FastAPI HTTP 服务模块（待开发）。
+"""FastAPI HTTP 服务模块。
 
 模块功能：接收网页或其他客户端的 HTTP 请求，校验输入，调用现有 Agent
 和会话存储接口，将回答、引用、会话信息与错误转换为约定的 JSON 响应。
@@ -18,146 +18,1041 @@ GET    /sessions/{session_id}/messages    分页读取已完成问答轮
 DELETE /sessions/{session_id}/messages   清空历史，保留会话
 DELETE /sessions/{session_id}            删除会话及其历史
 
-当前只有模块说明和 TODO，尚未定义可运行的 FastAPI 应用或路由。
-用户先完成 TODO 01—16，再集中执行 TODO 17—20；本阶段不安装依赖、
-启动服务、调用模型、操作真实聊天数据库或运行测试。
-
 开发参考：
 https://fastapi.tiangolo.com/advanced/events/
 https://fastapi.tiangolo.com/async/
 https://docs.python.org/3.10/library/concurrent.futures.html
+
+安装 API 依赖：
+python -m pip install -e ".[api]"
+
+启动本机单进程服务：
+python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
 """
 
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from threading import Lock, get_ident
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+from .agent import ApplicationBusyError, TurnPersistenceError
+from .models import (
+    ChatModelAuthenticationError,
+    ChatModelInvocationError,
+    ChatModelTimeoutError,
+)
+from .schemas import AnswerResult, AnswerSource, AnswerStatus
+from .session_store import (
+    DuplicateSessionError,
+    DuplicateTurnError,
+    SessionRecord,
+    SessionNotFoundError,
+    SessionStoreError,
+    SessionStoreLockedError,
+    StoredTurn,
+)
 
 # 第一阶段：应用生命周期与接口开发。
 
-# TODO 01：声明 API 依赖和启动方式。
-# 在 pyproject.toml 的可选依赖 api 中规划 fastapi、uvicorn，选择兼容项目 Python 版本的组合。
-# 请求/响应模型使用 Pydantic，与现有依赖版本保持一致；当前不执行安装。
-# 规划 create_app() 应用工厂，后续使用以下方式启动：
-# python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
-# 模块导入和应用工厂声明路由时不连接 SQLite、不创建模型客户端、不加载向量索引。
-# 第一版使用单进程；不要直接增加 workers 来绕过当前单会话和数据库连接的约束。
+MAX_TITLE_LENGTH = 200
+MAX_QUESTION_LENGTH = 10_000
+MAX_PAGE_SIZE = 100
+LOCAL_API_HOST = "127.0.0.1"
+LOCAL_API_PORT = 8000
+LOCAL_API_WORKERS = 1
 
-# TODO 02：定义请求参数与公开响应模型。
-# CreateSessionRequest 可含 title；session_id 由存储层生成，不允许创建操作覆盖已有会话。
-# AskRequest 包含 question，去掉首尾空白后不能为空，并设置明确的长度上限。
-# 校验路径中的 session_id 和分页 limit/offset；limit 设置上限，offset 不得为负数。
-# SessionResponse 对应 SessionRecord；列表响应包含 items、limit、offset。
-# AnswerResponse 包含 session_id 和 AnswerResult 的公开字段：answer、status、sources、
-# index_version、model_calls、tool_calls、stop_reason，必要时保留 question。
-# 历史响应按“完整问答轮”组织，包含 turn_id、turn_no、question 和公开回答结果。
-# 不将 StoredTurn.messages 中的内部工具交互、完整模型请求或配置直接返回给前端。
-# 禁止未知请求字段，避免拼错字段被悄悄忽略；明确 HTTP 422 的参数校验响应格式。
+SessionId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    ),
+    Field(
+        description="会话 ID，只能包含字母、数字、点、下划线和连字符",
+        examples=["demo-session-001"],
+    ),
+]
+PageLimit = Annotated[
+    int,
+    Field(ge=1, le=MAX_PAGE_SIZE, description="本页最多返回的记录数"),
+]
+PageOffset = Annotated[
+    int,
+    Field(ge=0, description="按既定顺序跳过的记录数"),
+]
 
-# TODO 03：实现可注入依赖的 FastAPI 应用工厂。
-# create_app 可接受运行时工厂或等价的依赖注入入口，便于后续用假服务隔离验证。
-# 注册路由、响应模型、错误处理器和 lifespan；不在这里重写检索或 Agent 工具循环。
-# 每个 FastAPI 实例拥有自己的运行时状态，不能让多个测试应用共享一个模块级活动会话。
-# health、会话管理和问答的依赖分开，未配置 DeepSeek 时仍可查询已保存的聊天记录。
 
-# TODO 04：设计固定工作线程中的服务运行时。
-# 第一版使用一个长期存在的 ThreadPoolExecutor(max_workers=1) 或等价的固定线程执行器。
-# SQLiteSessionStore 的构造、initialize、CRUD、Agent 操作和 close 都在该线程执行。
-# HTTP 路由只提交完整业务任务并等待结果，不在事件循环线程直接访问 SQLite 连接。
-# 普通 def 路由由框架调度到线程池，不保证每次是同一线程；不能据此全局复用现有连接。
-# 保持 SQLite 默认的线程检查，不用 check_same_thread=False 掩盖生命周期设计问题。
-# 运行时持有存储对象，首次问答时才创建 Agent 应用和模型；客户端与检索服务可继续复用。
-# 明确共享存储的所有权，AgentApplication.close() 已会关闭注入的存储，避免重复转交所有权。
+class _PublicModel(BaseModel):
+    """Base for the deliberately small, stable HTTP JSON contract."""
 
-# TODO 05：用 lifespan 管理初始化和关闭。
-# 服务启动时准备执行器，在其工作线程初始化会话存储；配置错误或初始化失败应清理已建资源。
-# 不在启动、/docs、/health 或会话列表请求中探测 DeepSeek、下载模型或重新建库。
-# 关闭时停止接受新业务任务，等待已在执行的任务结束，再在同一工作线程关闭应用/存储。
-# 最后释放执行器；不要从事件循环线程直接关闭工作线程创建的 SQLite 连接。
-# 模型和数据库保持有限超时，关闭过程不能假定 cancel() 能强行中止已运行的线程任务。
-# 初始化中途失败、服务正常关闭和测试退出都应走一致的资源释放路径。
+    model_config = ConfigDict(extra="forbid")
 
-# TODO 06：封装异步等待、忙碌状态和请求取消。
-# 路由使用 async def，等待专用执行器中的完整业务任务；不直接同步调用 application.ask。
-# 第一版只接受一个在执行的业务任务，忙时返回 503 和明确的 service_busy 错误。
-# 忙碌判断必须发生在提交任务之前，不向执行器无限排队；健康检查可直接返回，不等待模型。
-# 新建、问答、清空和删除等所有会话操作都通过同一调度入口，避免问答中删除历史。
-# HTTP 客户端断开或等待被取消，不代表底层模型调用停止，已经执行的任务仍负责 finally 清理。
-# 忙碌标记以工作线程任务真正结束为准，不能因 HTTP 协程取消就提前释放。
-# 第一版不自动重试提问请求；超时/断开后应先查询会话历史，说明请求可能已经生成并保存答案。
-# 若以后要求重试也绝不重复追加，需要另行设计并持久化请求幂等键，不能声称当前已有此保证。
 
-# TODO 07：实现 GET /health。
-# 返回服务名称、版本及存活状态；该接口表示进程可以响应，不表示模型和知识库已经可用。
-# 不为健康检查创建会话、请求模型、生成 Embedding 或扫描全部文档。
-# 如展示 busy/closing 等运行时状态，只读取线程安全的简单状态，不跨线程查询 SQLite。
+class CreateSessionRequest(_PublicModel):
+    title: str | None = Field(
+        default=None,
+        max_length=MAX_TITLE_LENGTH,
+        description="可选的会话标题；空白标题会被视为未提供",
+        examples=["演示知识库问答"],
+    )
 
-# TODO 08：实现会话创建、列表和详情接口。
-# POST /sessions 在工作线程调用 store.create_session(title=...)，返回 201 和 SessionResponse。
-# GET /sessions 调用 list_sessions，保留稳定的更新时间排序和分页参数，返回 200。
-# GET /sessions/{session_id} 调用 get_session，不存在返回 404。
-# 这些接口只访问存储，不初始化聊天模型、不恢复模型上下文、不隐式创建不存在的会话。
-# 会话创建完成并提交后才返回成功；同名标题可以存在，身份以 session_id 区分。
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
-# TODO 09：实现指定会话的提问接口。
-# POST /sessions/{session_id}/messages 接收 AskRequest，先确认会话存在，再准备聊天应用。
-# 在一次工作线程任务内执行 resume_session(session_id) → ask(question) → end_session()。
-# 仅在成功激活会话后进入对应的 finally 清理；退出保留 SQLite 中已提交的问答轮。
-# 不能把上一请求留下的 application.session_id 当成本请求会话，所有请求明确使用路径中的 ID。
-# Agent 初始化失败时保持存储可用，下次可以重试初始化，不留下半创建的全局应用。
-# 返回 Agent 已完成引用替换的回答，不再生成 [S1] 编号，也不自己填写来源文件与行号。
-# 每次 HTTP 请求结束只结束活动会话；应用与共享连接在 lifespan 结束时再关闭。
 
-# TODO 10：实现历史读取、清空与会话删除接口。
-# GET /sessions/{session_id}/messages 检查会话存在后调用 load_turns，按旧到新顺序返回完整轮次。
-# limit/offset 控制数据库读取范围；不能拿内存最近几轮冒充数据库全部历史。
-# DELETE /sessions/{session_id}/messages 调用 clear_session，保留会话元信息，成功返回 204。
-# DELETE /sessions/{session_id} 调用 delete_session，成功返回 204；两者会话不存在都返回 404。
-# 204 响应不带 JSON 正文；事务提交完成后才能响应成功。
-# 清空和删除与问答串行执行，操作结束后不保留指向旧历史的活动内存会话。
+class AskRequest(_PublicModel):
+    question: str = Field(
+        min_length=1,
+        max_length=MAX_QUESTION_LENGTH,
+        description="要在当前会话中提出的问题",
+        examples=["RAG 的基本流程是什么？"],
+    )
 
-# TODO 11：统一业务状态、HTTP 错误和保存失败语义。
-# success、insufficient_evidence、needs_clarification、out_of_scope、limit_reached
-# 可作为完整的 AnswerResponse 返回 HTTP 200，前端必须读取 status，不能将 200 等同于有可靠答案。
-# service_error 返回 503，并保留可公开的结构化业务状态；模型响应超时可明确映射为 504。
-# 404 表示会话不存在，409 表示会话/轮次冲突，422 表示请求参数错误。
-# 数据库锁等待超时或服务忙返回 503；数据损坏、写入失败及未分类内部错误返回 500。
-# 上游模型凭据错误不是网页用户登录失败，返回服务配置错误，不冒用用户身份认证的 401。
-# 捕获 TurnPersistenceError 时保留其中已生成的公开回答，明确 persisted=false 与保存失败；
-# 不把该回答描述为已写入聊天历史，不自动再次调用模型，不泄露底层异常原文。
-# 错误正文使用固定 code/message，可带必要的公开结果，避免返回密钥、完整配置或内部堆栈。
+    @field_validator("question", mode="before")
+    @classmethod
+    def normalize_question(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
-# TODO 12：定义公开 JSON 转换，避免泄露内部消息。
-# 为 SessionRecord、StoredTurn 和 AnswerResult 提供明确的响应转换，统一空值与日期格式。
-# sources 只使用 AnswerSource 的公开元数据；保留 index_version，便于核对历史引用。
-# 历史接口展示原来的回答和来源，不将旧片段编号重新绑定到当前索引。
-# 不对整个 Agent、模型客户端、数据库连接或异常对象使用通用序列化。
-# 对参数校验异常的公开内容也做约束，不把完整请求内容作为错误日志默认打印。
 
-# TODO 13：处理索引加载和更新约定。
-# 问答沿用检索服务的延迟加载；索引不存在时返回明确的 index_not_built 状态与建库提示。
-# 会话创建、列表、历史和删除不应依赖向量索引存在。
-# 第一版继续通过 CLI build/update 管理知识库；索引发布新版本后重启 API 服务重新加载。
-# 如果以后增加刷新接口，必须和问答放入同一个串行执行边界，避免单轮混用索引版本。
-# 当前 API 不实现重复建库逻辑，也不因一次提问失败自动重建知识库。
+class SessionResponse(_PublicModel):
+    session_id: SessionId
+    title: str | None = None
+    created_at: str
+    updated_at: str
 
-# TODO 14：整理本地服务配置与后续网页接入。
-# 记录默认地址 127.0.0.1:8000、单进程启动方式和已有 SESSION_DB_PATH 等配置来源。
-# 模型密钥继续由服务器读取配置，网页请求不能提交或覆盖服务器 API Key、数据库路径。
-# 第一版面向本机使用；当前 session_id 是会话标识，不是用户认证或访问控制机制。
-# 同源页面可直接调用；后续前端跨端口访问时，再按实际前端地址配置明确的 CORS 来源。
-# CORS 不等于用户认证；当前不将本机接口描述为已具备公网多用户隔离能力。
 
-# TODO 15：补齐接口文档和启动说明。
-# 在路由的 summary/description 中写明用途、分页规则、回答状态及错误响应。
-# 借助 FastAPI 的 /docs 提供请求示例，示例只使用虚构会话 ID，不包含真实聊天内容和密钥。
-# 更新 README：依赖安装、启动服务、新建会话、提问、查看历史和删除的调用顺序。
-# 明确历史响应以完整问答轮为单位，问答目前返回完整结果，不宣称已有流式输出。
-# 说明 busy、超时和断开后的行为，以及退出服务不会删除已提交会话记录。
+class SessionListResponse(_PublicModel):
+    items: list[SessionResponse]
+    limit: PageLimit
+    offset: PageOffset
 
-# TODO 16：完成现有应用接口的兼容检查。
-# API 复用 create_agent_application(session_store=...)、resume_session、ask、end_session 和 close。
-# 会话管理复用 SQLiteSessionStore 的公开方法，不调用 CLI 私有函数或 Agent 私有提交方法。
-# 若需要补充适配接口，只调整明确的应用边界，保持 CLI 新建/恢复/清空/退出行为一致。
-# 为测试预留假运行时、假模型和临时数据库注入方式，不修改全局 .env 或真实聊天记录。
-# 检查所有数据库操作均在指定工作线程，关机时连接关闭次数和所有权清楚。
 
+class AnswerSourceResponse(_PublicModel):
+    chunk_id: str
+    source_path: str
+    heading_path: list[str]
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    content_hash: str
+    index_version: str
+    retrieval_score: float | None = None
+
+
+class AnswerResponse(_PublicModel):
+    session_id: SessionId
+    question: str
+    answer: str
+    status: AnswerStatus
+    sources: list[AnswerSourceResponse] = Field(default_factory=list)
+    index_version: str | None = None
+    model_calls: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    stop_reason: str | None = None
+
+
+class ErrorResponse(_PublicModel):
+    code: str
+    message: str
+    result: AnswerResponse | None = None
+    persisted: bool | None = None
+    details: list[dict[str, Any]] | None = None
+
+
+class TurnResponse(_PublicModel):
+    turn_id: str
+    turn_no: int = Field(ge=1)
+    question: str
+    answer: str
+    status: AnswerStatus
+    sources: list[AnswerSourceResponse] = Field(default_factory=list)
+    index_version: str | None = None
+    model_calls: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    stop_reason: str | None = None
+
+
+class TurnListResponse(_PublicModel):
+    items: list[TurnResponse]
+    limit: PageLimit
+    offset: PageOffset
+
+
+class ValidationIssueResponse(_PublicModel):
+    loc: list[str | int]
+    msg: str
+    type: str
+
+
+class ValidationErrorResponse(_PublicModel):
+    detail: list[ValidationIssueResponse]
+
+
+class HealthResponse(_PublicModel):
+    service: str
+    version: str
+    status: Literal["ok"] = "ok"
+
+
+def _error_content(
+    code: str,
+    message: str,
+    *,
+    result: AnswerResponse | None = None,
+    persisted: bool | None = None,
+    details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return ErrorResponse(
+        code=code,
+        message=message,
+        result=result,
+        persisted=persisted,
+        details=details,
+    ).model_dump(mode="json", exclude_none=True)
+
+
+RuntimeFactory = Callable[[], Any]
+StoreFactory = Callable[[], Any]
+ApplicationFactory = Callable[[Any], Any]
+
+
+def _validated_cors_origins(origins: tuple[str, ...]) -> tuple[str, ...]:
+    """Return unique, explicit browser origins suitable for local web clients."""
+    normalized: list[str] = []
+    for raw_origin in origins:
+        origin = raw_origin.strip().rstrip("/")
+        parsed = urlsplit(origin)
+        if (
+            not origin
+            or origin == "*"
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "cors_origins must contain explicit HTTP(S) origins, for example "
+                "http://127.0.0.1:5173"
+            )
+        if origin not in normalized:
+            normalized.append(origin)
+    return tuple(normalized)
+
+
+class ServiceBusyError(RuntimeError):
+    """Raised when a business operation is already running."""
+
+    code = "service_busy"
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__("The service is busy; try again after the current request finishes")
+
+
+def create_app(
+    runtime_factory: RuntimeFactory | None = None,
+    *,
+    cors_origins: tuple[str, ...] = (),
+) -> FastAPI:
+    """Create the local API; cross-origin browser access is opt-in per origin."""
+
+    allowed_origins = _validated_cors_origins(cors_origins)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        factory = application.state.runtime_factory or ServiceRuntime
+        runtime = factory()
+        application.state.runtime = runtime
+        try:
+            runtime.initialize()
+            yield
+        finally:
+            try:
+                runtime.close()
+            finally:
+                application.state.runtime = None
+
+    application = FastAPI(
+        title="Person A Knowledge Agent API",
+        version="0.1.0",
+        description=(
+            "本机文档知识库问答服务。问答接口在处理完成后一次性返回完整结果，"
+            "当前不提供流式输出。会话和已完成问答持久化在 SQLite 中；停止服务不会"
+            "删除已提交记录。若同一工作线程正处理其他业务，请求可能返回 503；模型"
+            "超时返回 504。客户端断开只会停止等待，不保证取消已经提交到后台的任务，"
+            "稍后可通过历史接口确认结果是否已保存。"
+        ),
+        lifespan=lifespan,
+    )
+    if allowed_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(allowed_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Content-Type"],
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        details = [
+            {
+                "loc": list(issue.get("loc", ())),
+                "msg": str(issue.get("msg", "Invalid value")),
+                "type": str(issue.get("type", "value_error")),
+            }
+            for issue in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=_error_content(
+                "validation_error",
+                "The request parameters are invalid",
+                details=details,
+            ),
+        )
+
+    @application.exception_handler(HTTPException)
+    async def http_error_handler(
+        _request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        known_errors = {
+            status.HTTP_404_NOT_FOUND: ("session_not_found", "Session not found"),
+            status.HTTP_409_CONFLICT: ("conflict", "The request conflicts with current state"),
+            status.HTTP_422_UNPROCESSABLE_ENTITY: (
+                "validation_error",
+                "The request parameters are invalid",
+            ),
+        }
+        code, message = known_errors.get(
+            exc.status_code, ("http_error", "The request could not be completed")
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_error_content(code, message),
+            headers=exc.headers,
+        )
+
+    @application.exception_handler(TurnPersistenceError)
+    async def turn_persistence_error_handler(
+        request: Request, exc: TurnPersistenceError
+    ) -> JSONResponse:
+        locked = isinstance(exc.__cause__, SessionStoreLockedError)
+        return JSONResponse(
+            status_code=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if locked
+                else status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            content=_error_content(
+                "persistence_unavailable" if locked else "persistence_failed",
+                "The answer was generated, but the conversation turn was not saved",
+                persisted=False,
+                result=_answer_response(
+                    str(request.path_params.get("session_id", "unknown")),
+                    exc.result,
+                ),
+            ),
+        )
+
+    async def conflict_error_handler(
+        _request: Request, _exc: Exception
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=_error_content(
+                "conflict", "The session or conversation turn conflicts with current state"
+            ),
+        )
+
+    for exception_type in (
+        ApplicationBusyError,
+        DuplicateSessionError,
+        DuplicateTurnError,
+    ):
+        application.add_exception_handler(exception_type, conflict_error_handler)
+
+    @application.exception_handler(SessionNotFoundError)
+    async def session_not_found_handler(
+        _request: Request, _exc: SessionNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=_error_content("session_not_found", "Session not found"),
+        )
+
+    async def unavailable_error_handler(
+        _request: Request, _exc: Exception
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_error_content(
+                "service_unavailable", "The service is temporarily unavailable"
+            ),
+        )
+
+    for exception_type in (ServiceBusyError, SessionStoreLockedError):
+        application.add_exception_handler(exception_type, unavailable_error_handler)
+
+    @application.exception_handler(ChatModelTimeoutError)
+    async def model_timeout_handler(
+        _request: Request, _exc: ChatModelTimeoutError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            content=_error_content("model_timeout", "The model response timed out"),
+        )
+
+    @application.exception_handler(ChatModelAuthenticationError)
+    async def model_authentication_error_handler(
+        _request: Request, _exc: ChatModelAuthenticationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_error_content(
+                "service_configuration_error",
+                "The model service is not configured correctly",
+            ),
+        )
+
+    @application.exception_handler(ChatModelInvocationError)
+    async def model_invocation_error_handler(
+        _request: Request, _exc: ChatModelInvocationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_error_content("service_error", "The model service is unavailable"),
+        )
+
+    @application.exception_handler(SessionStoreError)
+    async def storage_error_handler(
+        _request: Request, _exc: SessionStoreError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=_error_content("storage_error", "Session storage failed"),
+        )
+
+    @application.exception_handler(Exception)
+    async def internal_error_handler(
+        _request: Request, _exc: Exception
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=_error_content("internal_error", "An internal service error occurred"),
+        )
+
+    @application.get(
+        "/health",
+        response_model=HealthResponse,
+        summary="检查服务状态",
+        description="仅返回服务名称、版本和存活状态，不调用模型或知识库。",
+    )
+    async def health() -> HealthResponse:
+        return HealthResponse(
+            service=application.title,
+            version=application.version,
+        )
+
+    @application.post(
+        "/sessions",
+        response_model=SessionResponse,
+        status_code=status.HTTP_201_CREATED,
+        summary="创建会话",
+        description="创建一个可持久化问答历史的新会话，并返回服务生成的会话 ID。",
+        responses={
+            422: {"model": ErrorResponse, "description": "请求体不合法"},
+            500: {"model": ErrorResponse, "description": "会话存储失败"},
+            503: {"model": ErrorResponse, "description": "服务忙或存储暂时不可用"},
+        },
+    )
+    async def create_session(request: CreateSessionRequest) -> SessionResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        record = await runtime.run_store(
+            lambda store: store.create_session(title=request.title)
+        )
+        return _session_response(record)
+
+    @application.get(
+        "/sessions",
+        response_model=SessionListResponse,
+        summary="分页列出会话",
+        description=(
+            "按存储层的最近更新时间顺序列出会话。limit 为本页上限（1—100），"
+            "offset 为从结果开头跳过的会话数；响应回显两者。"
+        ),
+        responses={
+            422: {"model": ErrorResponse, "description": "分页参数不合法"},
+            500: {"model": ErrorResponse, "description": "会话存储失败"},
+            503: {"model": ErrorResponse, "description": "服务忙或存储暂时不可用"},
+        },
+    )
+    async def list_sessions(
+        limit: PageLimit = 50,
+        offset: PageOffset = 0,
+    ) -> SessionListResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        records = await runtime.run_store(
+            lambda store: store.list_sessions(limit=limit, offset=offset)
+        )
+        return SessionListResponse(
+            items=[_session_response(record) for record in records],
+            limit=limit,
+            offset=offset,
+        )
+
+    @application.get(
+        "/sessions/{session_id}",
+        response_model=SessionResponse,
+        summary="查询会话信息",
+        description="读取一个会话的标题和创建、更新时间，不返回问答历史。",
+        responses={
+            404: {"model": ErrorResponse, "description": "会话不存在"},
+            422: {"model": ErrorResponse, "description": "会话 ID 不合法"},
+            500: {"model": ErrorResponse, "description": "会话存储失败"},
+            503: {"model": ErrorResponse, "description": "服务忙或存储暂时不可用"},
+        },
+    )
+    async def get_session(session_id: SessionId) -> SessionResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        record = await runtime.run_store(
+            lambda store: store.get_session(session_id)
+        )
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found",
+            )
+        return _session_response(record)
+
+    @application.post(
+        "/sessions/{session_id}/messages",
+        response_model=AnswerResponse,
+        summary="在会话中提问",
+        description=(
+            "在已有会话中执行一轮问答，完成后一次性返回完整结果（非流式）。status 是"
+            "业务状态：answered 表示已回答，其他状态可能表示资料不足、需要澄清、超出"
+            "范围或达到调用限制，应与 HTTP 状态分别判断。成功完成的问答轮会写入历史。"
+        ),
+        responses={
+            404: {"model": ErrorResponse, "description": "会话不存在"},
+            409: {"model": ErrorResponse, "description": "会话正在处理另一轮问答"},
+            422: {"model": ErrorResponse, "description": "会话 ID 或问题不合法"},
+            500: {
+                "model": ErrorResponse,
+                "description": "内部错误，或答案已生成但未能持久化",
+            },
+            503: {
+                "model": ErrorResponse,
+                "description": "服务忙、索引未构建、存储或模型服务不可用",
+            },
+            504: {"model": ErrorResponse, "description": "模型响应超时"},
+        },
+    )
+    async def ask_session(
+        session_id: SessionId,
+        request: AskRequest,
+    ) -> AnswerResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        result = await runtime.ask_session(session_id, request.question)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found",
+            )
+        response = _answer_response(session_id, result)
+        if result.status != "service_error":
+            return response
+
+        if result.stop_reason == "index_not_built":
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            code = "index_not_built"
+            message = (
+                "The knowledge index has not been built; run `person-a build` "
+                "and restart the API service"
+            )
+        elif result.stop_reason == "model_timeout":
+            status_code = status.HTTP_504_GATEWAY_TIMEOUT
+            code = "model_timeout"
+            message = "The model response timed out"
+        elif result.stop_reason == "model_authentication_failed":
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            code = "service_configuration_error"
+            message = "The model service is not configured correctly"
+        else:
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            code = "service_error"
+            message = "The model service is unavailable"
+        return JSONResponse(
+            status_code=status_code,
+            content=_error_content(code, message, result=response),
+        )
+
+    @application.get(
+        "/sessions/{session_id}/messages",
+        response_model=TurnListResponse,
+        summary="分页读取问答历史",
+        description=(
+            "按时间正序返回已完成的完整问答轮，每个 item 同时包含问题、完整回答及引用，"
+            "而不是把单条消息拆开分页。limit 为本页上限（1—100），offset 为跳过的"
+            "问答轮数；响应回显两者。"
+        ),
+        responses={
+            404: {"model": ErrorResponse, "description": "会话不存在"},
+            422: {"model": ErrorResponse, "description": "会话 ID 或分页参数不合法"},
+            500: {"model": ErrorResponse, "description": "会话存储失败"},
+            503: {"model": ErrorResponse, "description": "服务忙或存储暂时不可用"},
+        },
+    )
+    async def list_messages(
+        session_id: SessionId,
+        limit: PageLimit = 50,
+        offset: PageOffset = 0,
+    ) -> TurnListResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        turns = await runtime.load_turns(
+            session_id,
+            limit=limit,
+            offset=offset,
+        )
+        if turns is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found",
+            )
+        return TurnListResponse(
+            items=[_turn_response(turn) for turn in turns],
+            limit=limit,
+            offset=offset,
+        )
+
+    @application.delete(
+        "/sessions/{session_id}/messages",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        summary="清空会话历史",
+        description="永久删除该会话的全部已完成问答轮，但保留会话本身。成功时无响应正文。",
+        responses={
+            404: {"model": ErrorResponse, "description": "会话不存在"},
+            409: {"model": ErrorResponse, "description": "会话正在处理问答，无法清空"},
+            422: {"model": ErrorResponse, "description": "会话 ID 不合法"},
+            500: {"model": ErrorResponse, "description": "会话存储失败"},
+            503: {"model": ErrorResponse, "description": "服务忙或存储暂时不可用"},
+        },
+    )
+    async def clear_messages(session_id: SessionId) -> Response:
+        runtime: ServiceRuntime = application.state.runtime
+        if not await runtime.clear_session(session_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found",
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @application.delete(
+        "/sessions/{session_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        summary="删除会话",
+        description="永久删除会话及其全部问答历史。成功时无响应正文。",
+        responses={
+            404: {"model": ErrorResponse, "description": "会话不存在"},
+            409: {"model": ErrorResponse, "description": "会话正在处理问答，无法删除"},
+            422: {"model": ErrorResponse, "description": "会话 ID 不合法"},
+            500: {"model": ErrorResponse, "description": "会话存储失败"},
+            503: {"model": ErrorResponse, "description": "服务忙或存储暂时不可用"},
+        },
+    )
+    async def delete_session(session_id: SessionId) -> Response:
+        runtime: ServiceRuntime = application.state.runtime
+        if not await runtime.delete_session(session_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found",
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    application.state.runtime_factory = runtime_factory
+    application.state.runtime = None
+    return application
+
+class ServiceRuntime:
+    """Run all stateful service work on one long-lived worker thread."""
+
+    def __init__(
+        self,
+        store_factory: StoreFactory | None = None,
+        application_factory: ApplicationFactory | None = None,
+    ) -> None:
+        self._store_factory = store_factory or self._default_store_factory
+        self._application_factory = (
+            application_factory or self._default_application_factory
+        )
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="knowledge-agent-service",
+        )
+        self._state_lock = Lock()
+        self._worker_thread_id: int | None = None
+        self._store: Any = None
+        self._application: Any = None
+        self._initialized = False
+        self._busy = False
+        self._closing = False
+        self._closed = False
+
+    @staticmethod
+    def _default_store_factory() -> Any:
+        from .config import get_session_store_settings
+        from .session_store import SQLiteSessionStore
+
+        settings = get_session_store_settings()
+        return SQLiteSessionStore(
+            settings.db_path,
+            lock_timeout=settings.lock_timeout,
+        )
+
+    @staticmethod
+    def _default_application_factory(store: Any) -> Any:
+        from .agent import create_agent_application
+
+        return create_agent_application(session_store=store)
+
+    def initialize(self) -> None:
+        """Construct and initialize storage in the dedicated worker thread."""
+        with self._state_lock:
+            if self._closed or self._closing:
+                raise RuntimeError("service runtime is closed")
+            if self._initialized:
+                return
+
+        try:
+            self._executor.submit(self._initialize_on_worker).result()
+        except BaseException:
+            with self._state_lock:
+                self._closing = True
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            with self._state_lock:
+                self._closed = True
+                self._closing = False
+            raise
+
+        with self._state_lock:
+            self._initialized = True
+
+    def _initialize_on_worker(self) -> None:
+        self._worker_thread_id = get_ident()
+        store = self._store_factory()
+        try:
+            store.initialize()
+        except BaseException:
+            store.close()
+            raise
+        self._store = store
+
+    def _require_worker_thread(self) -> None:
+        if get_ident() != self._worker_thread_id:
+            raise RuntimeError("runtime resources may only be used by the worker thread")
+
+    @property
+    def store(self) -> Any:
+        """Return worker-owned storage while executing a submitted task."""
+        self._require_worker_thread()
+        if self._store is None:
+            raise RuntimeError("service runtime is not initialized")
+        return self._store
+
+    @property
+    def application(self) -> Any:
+        """Lazily create the agent application on its owning worker thread."""
+        self._require_worker_thread()
+        if self._store is None:
+            raise RuntimeError("service runtime is not initialized")
+        if self._application is None:
+            self._application = self._application_factory(self._store)
+        return self._application
+
+    def submit(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Future[Any]:
+        """Submit one complete business operation to the dedicated worker."""
+        with self._state_lock:
+            if not self._initialized:
+                raise RuntimeError("service runtime is not initialized")
+            if self._closing or self._closed:
+                raise RuntimeError("service runtime is closed")
+            if self._busy:
+                raise ServiceBusyError()
+            self._busy = True
+
+            try:
+                future = self._executor.submit(function, *args, **kwargs)
+            except BaseException:
+                self._busy = False
+                raise
+
+        # A very short operation may already be complete here. Register outside
+        # the state lock because Future then invokes the callback immediately.
+        future.add_done_callback(self._operation_finished)
+        return future
+
+    def _operation_finished(self, _future: Future[Any]) -> None:
+        with self._state_lock:
+            self._busy = False
+
+    @property
+    def busy(self) -> bool:
+        """Return whether a submitted business operation is still running."""
+        with self._state_lock:
+            return self._busy
+
+    @property
+    def closing(self) -> bool:
+        """Return whether runtime shutdown has started."""
+        with self._state_lock:
+            return self._closing
+
+    async def run(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        """Submit and asynchronously wait for one complete business operation."""
+        future = self.submit(function, *args, **kwargs)
+        return await self._wait_for_future(future)
+
+    @staticmethod
+    async def _wait_for_future(future: Future[Any]) -> Any:
+        wrapped = asyncio.wrap_future(future)
+        try:
+            # Cancelling an HTTP waiter must not cancel work already handed to the
+            # dedicated worker. Its completion callback owns the busy transition.
+            return await asyncio.shield(wrapped)
+        except asyncio.CancelledError:
+            # Retrieve a later exception when there is no longer an HTTP waiter.
+            wrapped.add_done_callback(ServiceRuntime._consume_future_exception)
+            raise
+
+    @staticmethod
+    def _consume_future_exception(future: asyncio.Future[Any]) -> None:
+        if not future.cancelled():
+            future.exception()
+
+    def submit_store(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Future[Any]:
+        """Submit an operation whose first argument is the session store."""
+        return self.submit(self._call_with_store, function, args, kwargs)
+
+    async def run_store(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        """Run and asynchronously wait for a session-store operation."""
+        return await self._wait_for_future(
+            self.submit_store(function, *args, **kwargs)
+        )
+
+    def _call_with_store(
+        self,
+        function: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        return function(self.store, *args, **kwargs)
+
+    def submit_application(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Future[Any]:
+        """Submit an operation and lazily supply the agent application."""
+        return self.submit(self._call_with_application, function, args, kwargs)
+
+    async def run_application(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        """Run and asynchronously wait for an agent-application operation."""
+        return await self._wait_for_future(
+            self.submit_application(function, *args, **kwargs)
+        )
+
+    def _call_with_application(
+        self,
+        function: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        return function(self.application, *args, **kwargs)
+
+    async def ask_session(self, session_id: str, question: str) -> Any | None:
+        """Ask one question in an existing persisted session."""
+        return await self.run(self._ask_session_on_worker, session_id, question)
+
+    def _ask_session_on_worker(self, session_id: str, question: str) -> Any | None:
+        self._require_worker_thread()
+        if self.store.get_session(session_id) is None:
+            return None
+
+        application = self.application
+        application.resume_session(session_id)
+        try:
+            return application.ask(question)
+        finally:
+            application.end_session()
+
+    async def load_turns(
+        self, session_id: str, *, limit: int, offset: int
+    ) -> Any | None:
+        """Load one chronological page, or return ``None`` if absent."""
+        return await self.run(
+            self._load_turns_on_worker,
+            session_id,
+            limit,
+            offset,
+        )
+
+    def _load_turns_on_worker(
+        self, session_id: str, limit: int, offset: int
+    ) -> Any | None:
+        self._require_worker_thread()
+        if self.store.get_session(session_id) is None:
+            return None
+        return self.store.load_turns(session_id, limit=limit, offset=offset)
+
+    async def clear_session(self, session_id: str) -> bool:
+        """Clear persisted turns and release matching in-memory history."""
+        return await self.run(self._clear_session_on_worker, session_id)
+
+    def _clear_session_on_worker(self, session_id: str) -> bool:
+        self._require_worker_thread()
+        cleared = self.store.clear_session(session_id)
+        application = self._application
+        if cleared and application is not None and application.session_id == session_id:
+            application.end_session()
+        return cleared
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete a persisted session and release matching in-memory history."""
+        return await self.run(self._delete_session_on_worker, session_id)
+
+    def _delete_session_on_worker(self, session_id: str) -> bool:
+        self._require_worker_thread()
+        deleted = self.store.delete_session(session_id)
+        application = self._application
+        if deleted and application is not None and application.session_id == session_id:
+            application.end_session()
+        return deleted
+
+    def close(self) -> None:
+        """Drain pending work, close owned resources, and stop the worker."""
+        with self._state_lock:
+            if self._closed or self._closing:
+                return
+            self._closing = True
+            initialized = self._initialized
+
+        try:
+            if initialized:
+                self._executor.submit(self._close_on_worker).result()
+        finally:
+            self._executor.shutdown(wait=True, cancel_futures=False)
+            with self._state_lock:
+                self._initialized = False
+                self._closed = True
+                self._closing = False
+
+    def _close_on_worker(self) -> None:
+        self._require_worker_thread()
+        application = self._application
+        store = self._store
+        self._application = None
+        self._store = None
+        if application is not None:
+            # The application owns the injected store and closes it itself.
+            application.close()
+        elif store is not None:
+            store.close()
+
+    def __enter__(self) -> ServiceRuntime:
+        self.initialize()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+
+def _source_response(source: AnswerSource) -> AnswerSourceResponse:
+    """Copy only the source metadata that belongs to the public API."""
+    return AnswerSourceResponse(
+        chunk_id=source.chunk_id,
+        source_path=source.source_path,
+        heading_path=list(source.heading_path),
+        start_line=source.start_line,
+        end_line=source.end_line,
+        content_hash=source.content_hash,
+        index_version=source.index_version,
+        retrieval_score=source.retrieval_score,
+    )
+
+
+def _session_response(record: SessionRecord) -> SessionResponse:
+    """Convert persisted session metadata to its stable public shape."""
+    return SessionResponse(
+        session_id=record.session_id,
+        title=record.title,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
+    """Convert an answer without serializing any Agent or model state."""
+    return AnswerResponse(
+        session_id=session_id,
+        question=result.question,
+        answer=result.answer,
+        status=result.status,
+        sources=[_source_response(source) for source in result.sources],
+        index_version=result.index_version,
+        model_calls=result.model_calls,
+        tool_calls=result.tool_calls,
+        stop_reason=result.stop_reason,
+    )
+
+
+def _turn_response(turn: StoredTurn) -> TurnResponse:
+    """Expose a stored result as-is while omitting its internal messages."""
+    result = turn.result
+    return TurnResponse(
+        turn_id=turn.turn_id,
+        turn_no=turn.turn_no,
+        question=turn.question,
+        answer=result.answer,
+        status=result.status,
+        sources=[_source_response(source) for source in result.sources],
+        index_version=result.index_version,
+        model_calls=result.model_calls,
+        tool_calls=result.tool_calls,
+        stop_reason=result.stop_reason,
+    )
 
 # 第二阶段：开发完成后集中验证；本阶段不执行。
 

@@ -73,6 +73,38 @@ person-a update
 
 交互式 `chat` 中的单轮失败会显示错误并允许继续提问，正常输入 `/exit` 或 EOF 时仍返回 `0`；会话初始化失败返回 `1`。自动化脚本若需按一次问答的状态判断成败，请使用 `ask`。
 
+## HTTP API
+
+先按“快速开始”配置模型并执行 `person-a build`，再安装 API 额外依赖并从项目根目录启动本机单进程服务：
+
+```powershell
+python -m pip install -e ".[api]"
+python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
+```
+
+服务启动后可访问 `http://127.0.0.1:8000/docs` 查看交互式接口文档。以下 PowerShell 示例依次创建会话、提问、读取完整问答历史，最后删除会话；服务生成的 ID 保存在变量中，示例问题不含真实聊天内容或密钥：
+
+```powershell
+$baseUrl = "http://127.0.0.1:8000"
+$session = Invoke-RestMethod -Method Post -Uri "$baseUrl/sessions" `
+  -ContentType "application/json" -Body '{"title":"演示知识库问答"}'
+$sessionId = $session.session_id
+
+$answer = Invoke-RestMethod -Method Post -Uri "$baseUrl/sessions/$sessionId/messages" `
+  -ContentType "application/json" -Body '{"question":"RAG 的基本流程是什么？"}'
+
+$history = Invoke-RestMethod -Method Get `
+  -Uri "$baseUrl/sessions/$sessionId/messages?limit=50&offset=0"
+
+Invoke-RestMethod -Method Delete -Uri "$baseUrl/sessions/$sessionId"
+```
+
+历史接口以“完整问答轮”为分页单位，按时间正序返回；`limit` 为 1—100，`offset` 是跳过的问答轮数。提问接口目前会等待处理完成并一次性返回完整结果，不提供流式输出。客户端应同时检查 HTTP 状态和响应中的业务 `status`；资料不足、需要澄清等业务结果不等同于 HTTP 错误。
+
+服务用单个工作线程串行处理 Agent 和 SQLite 操作。已有任务占用服务或同一会话正在问答时，其他修改请求可能收到 `409` 或 `503`；模型超时返回 `504`。客户端断开或停止等待并不保证后台任务被取消，稍后应查询历史确认该轮是否已经保存，避免自动重试造成重复问答。按 `Ctrl+C` 停止服务会等待在途任务清理并关闭连接，但不会删除已经提交的会话记录；重启后可以使用原会话 ID 继续访问。
+
+若只想清空历史并保留会话，可调用 `DELETE /sessions/{session_id}/messages`；删除会话则调用 `DELETE /sessions/{session_id}`。两者成功时均返回 `204`，且没有响应正文。
+
 ## 项目结构
 
 ```text
