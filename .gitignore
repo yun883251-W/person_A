@@ -27,6 +27,10 @@ data/.index.*/
 # 本地会话数据库及 SQLite 辅助文件（包含聊天记录）
 data/sessions/
 
+# 测试运行残留：验证脚本在项目根目录留下的临时库与目录（含运行时 chat.db）
+verification-tmp-*/
+.pytest-tmp-*/
+
 # 日志
 logs/
 *.log
