@@ -200,6 +200,8 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
 .composer-area { z-index: 1; flex: 0 0 auto; width: min(930px, 100%); margin: 0 auto; padding: 15px 35px 15px; background: var(--paper); }
 .composer-form { padding: 15px 17px 11px; border: 1px solid #d8dfcb; border-radius: 14px; background: var(--surface); box-shadow: 0 5px 22px rgb(64 77 48 / 5%); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer-form:focus-within { border-color: #98ad80; box-shadow: 0 0 0 3px rgb(142 166 113 / 9%), 0 5px 22px rgb(64 77 48 / 4%); }
+.skill-picker { display: flex; align-items: center; gap: 7px; color: #7c8771; font-size: 11px; }
+.skill-picker select { max-width: 190px; padding: 5px 24px 5px 8px; border: 1px solid #d8dfcb; border-radius: 7px; background: #fffef8; color: #52634b; font: inherit; }
 .composer-form textarea { display: block; width: 100%; min-height: 52px; max-height: 190px; margin: 0; padding: 0 1px 6px; resize: none; overflow-y: auto; border: 0; background: transparent; color: #36472e; font-size: 13px; line-height: 1.85; scrollbar-width: thin; scrollbar-color: #d1dcc2 transparent; outline: none; }
 .composer-form textarea:disabled { color: #8b947f; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

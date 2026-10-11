@@ -9,9 +9,21 @@ registry.py 管理工具定义与调用；knowledge.py 封装知识库搜索和�
 """
 
 
-# TODO 01：在 registry.py 和 knowledge.py 实现后，确定工具包的公开接口。
-# 导出注册器、工具定义结构和知识库工具工厂，避免对外暴露内部辅助函数。
+from .knowledge import KnowledgeToolDependencies, create_knowledge_tool_registry
+from .registry import (
+    InMemoryToolRegistry,
+    ToolCallResult,
+    ToolRegistration,
+    ToolRegistry,
+    create_tool_registry,
+)
 
-# TODO 02：整理依赖方向，避免 tools 与 agent 相互导入。
-# 工具通过参数接收检索器、每轮上下文或回调，不从 agent.py 导入运行实例。
-# 导入工具包时不读取索引、不加载技能、不创建模型或会话连接。
+__all__ = (
+    "InMemoryToolRegistry",
+    "KnowledgeToolDependencies",
+    "ToolCallResult",
+    "ToolRegistration",
+    "ToolRegistry",
+    "create_knowledge_tool_registry",
+    "create_tool_registry",
+)

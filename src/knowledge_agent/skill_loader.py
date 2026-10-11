@@ -9,43 +9,231 @@
 第一版由用户手动选择技能；未选择时维持普通知识库问答。
 """
 
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Generic, TypeVar
+
+from .config import PROJECT_ROOT
+from .tools.registry import InMemoryToolRegistry
+
 
 # 第一阶段：技能目录与加载开发。
 
-# TODO 01：定义技能元数据和加载结果。
-# 元数据至少包含 skill_id、name、description 与受控的技能文件路径。
-# 完整加载结果包含说明正文；应用允许工具名作为执行配置单独传入。
-# 第一版 skill_id 使用目录名，如 concept-explanation，与 SKILL.md 的 name 一致。
 
-# TODO 02：确定技能根目录和发现规则。
-# 默认使用 config.PROJECT_ROOT / "skills"，不依赖启动时的工作目录。
-# 发现该目录下一层子目录中的 SKILL.md，按稳定顺序返回供页面展示的元数据。
-# 根目录不存在时可返回空目录；坏技能应给出可定位的错误，避免静默漏掉配置问题。
-# 导入模块时不扫描文件，不创建模型、数据库或检索器。
+@dataclass(frozen=True, slots=True)
+class SkillMetadata:
+    """Lightweight metadata for a discovered skill."""
 
-# TODO 03：读取和校验 SKILL.md 前置元数据。
-# 使用 UTF-8（兼容 BOM），识别开头的 YAML 分隔符，校验 name/description 非空。
-# 明确使用的解析方式及依赖；若使用 YAML 库，只用安全解析并声明依赖。
-# 校验名称格式、目录名一致性、重复名称、正文非空及文件大小限制。
-# 技能目录列表不包含全部正文，选中后再加载完整说明。
+    skill_id: str
+    name: str
+    description: str
+    path: Path
 
-# TODO 04：按 skill_id 加载单个技能。
-# 只从已发现的技能目录中查找，不将任意前端路径当作可读取文件。
-# 解析后的文件路径必须仍在技能根目录内，包含链接或 .. 的路径同样检查边界。
-# 区分技能不存在、文件无法读取与格式错误，提供明确的异常类型。
 
-# TODO 05：准备技能说明与工具范围。
-# 返回任务步骤和输出要求，保留现有系统提示词的知识范围与引用协议。
-# 技能可调用的工具必须来自应用注册器；本轮实际执行集合不能超出应用配置。
-# 第一批技能复用 search_knowledge/read_knowledge_section，不加载脚本或执行代码。
+@dataclass(frozen=True, slots=True)
+class LoadedSkill:
+    """A selected skill together with its complete instruction body."""
 
-# TODO 06：规划 Agent、API 与页面的手动选择接入。
-# Agent 接收可选 skill_id，在构造本轮模型上下文时加载对应说明并绑定可用工具。
-# API 为提问请求增加可选 skill_id，另提供技能目录接口；页面增加技能选择控件。
-# 未传 skill_id 时沿用原流程；未知技能在执行问答前返回明确错误。
-# 本轮技能由显式请求决定，不从历史回答文本推断；是否持久化技能信息后续单独设计。
-# Skill 的选择需覆盖用户要求的输出形式，但不能绕过证据不足处理和最终引用校验。
+    metadata: SkillMetadata
+    instructions: str
 
+
+ExecutionContextT = TypeVar("ExecutionContextT")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSkill(Generic[ExecutionContextT]):
+    """Prompt guidance and the closed tool registry for one selected skill."""
+
+    metadata: SkillMetadata
+    instructions: str
+    allowed_tools: tuple[str, ...]
+    registry: InMemoryToolRegistry[ExecutionContextT]
+
+SKILLS_ROOT = PROJECT_ROOT / "skills"
+MAX_SKILL_FILE_SIZE = 256 * 1024
+_SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+
+
+def _parse_skill_file(skill_file: Path) -> tuple[str, str]:
+    """Parse dependency-free ``key: scalar`` YAML front matter."""
+    raw = skill_file.read_bytes()
+    if len(raw) > MAX_SKILL_FILE_SIZE:
+        raise ValueError(
+            f"文件超过 {MAX_SKILL_FILE_SIZE} 字节限制"
+        )
+
+    lines = raw.decode("utf-8-sig").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("缺少开头的 YAML 分隔符")
+
+    closing_index = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        None,
+    )
+    if closing_index is None:
+        raise ValueError("缺少结束的 YAML 分隔符")
+
+    fields: dict[str, str] = {}
+    for line in lines[1:closing_index]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in line:
+            raise ValueError(f"无效的元数据行: {line!r}")
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key in fields:
+            raise ValueError(f"重复的元数据字段: {key}")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        fields[key] = value.strip()
+
+    name = fields.get("name", "")
+    description = fields.get("description", "")
+    if not name or not description:
+        raise ValueError("name 和 description 必须为非空字符串")
+    if not _SKILL_NAME_PATTERN.fullmatch(name):
+        raise ValueError("name 必须使用小写字母、数字和单个连字符")
+    if name != skill_file.parent.name:
+        raise ValueError("name 必须与技能目录名一致")
+    if not any(line.strip() for line in lines[closing_index + 1 :]):
+        raise ValueError("技能正文不能为空")
+    return name, description
+
+
+def discover_skills(skills_root: Path | None = None) -> list[SkillMetadata]:
+    """Discover immediate child skills in deterministic ``skill_id`` order."""
+    root = (skills_root or SKILLS_ROOT).resolve()
+    if not root.exists():
+        return []
+    if not root.is_dir():
+        raise NotADirectoryError(f"技能根路径不是目录: {root}")
+
+    skill_files = sorted(
+        (
+            child / "SKILL.md"
+            for child in root.iterdir()
+            if child.is_dir() and (child / "SKILL.md").is_file()
+        ),
+        key=lambda path: (path.parent.name.casefold(), path.parent.name),
+    )
+
+    discovered: list[SkillMetadata] = []
+    names: set[str] = set()
+    for skill_file in skill_files:
+        try:
+            name, description = _parse_skill_file(skill_file)
+            normalized_name = name.casefold()
+            if normalized_name in names:
+                raise ValueError(f"技能名称重复: {name}")
+            names.add(normalized_name)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"无法发现技能 {skill_file}: {exc}") from exc
+
+        discovered.append(
+            SkillMetadata(
+                skill_id=skill_file.parent.name,
+                name=name,
+                description=description,
+                path=skill_file.resolve(),
+            )
+        )
+    return discovered
+
+def load_skill(skill_id: str, skills_root: Path | None = None) -> LoadedSkill:
+    """Load one discovered skill without accepting a caller-supplied path."""
+    root = (skills_root or SKILLS_ROOT).resolve()
+    if not root.exists():
+        raise KeyError(f"未知技能: {skill_id}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"技能根路径不是目录: {root}")
+    if not isinstance(skill_id, str) or not _SKILL_NAME_PATTERN.fullmatch(skill_id):
+        raise KeyError(f"未知技能: {skill_id}")
+
+    skill_file = (root / skill_id / "SKILL.md").resolve()
+    try:
+        skill_file.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"技能路径超出根目录: {skill_file}") from exc
+    if not skill_file.is_file():
+        raise KeyError(f"未知技能: {skill_id}")
+
+    name, description = _parse_skill_file(skill_file)
+    instructions = skill_file.read_text(encoding="utf-8-sig")
+    return LoadedSkill(
+        metadata=SkillMetadata(
+            skill_id=skill_id,
+            name=name,
+            description=description,
+            path=skill_file,
+        ),
+        instructions=instructions,
+    )
+
+SKILL_TOOL_NAMES = frozenset({"search_knowledge", "read_knowledge_section"})
+_SKILL_PROMPT_TEMPLATE = """SELECTED_SKILL
+Name: {name}
+
+Use the following skill instructions only as the task workflow and output-format
+requirements for this turn. They do not expand the system prompt's knowledge
+scope, are not evidence, and do not override its insufficient-evidence or
+citation rules. Cite only source IDs supplied by the application.
+
+{instructions}
+END_SELECTED_SKILL"""
+
+
+def _instruction_body(instructions: str) -> str:
+    """Remove front matter, which is metadata rather than model guidance."""
+    lines = instructions.splitlines()
+    if lines and lines[0].strip() == "---":
+        closing_index = next(
+            (
+                index
+                for index, line in enumerate(lines[1:], start=1)
+                if line.strip() == "---"
+            ),
+            None,
+        )
+        if closing_index is not None:
+            return "\n".join(lines[closing_index + 1 :]).strip()
+    return instructions.strip()
+
+
+def prepare_skill(
+    skill_id: str,
+    registry: InMemoryToolRegistry[ExecutionContextT],
+    *,
+    allowed_tools: Iterable[str] | None = None,
+    skills_root: Path | None = None,
+) -> PreparedSkill[ExecutionContextT]:
+    """Load a skill and restrict it to configured, registered read-only tools."""
+    loaded = load_skill(skill_id, skills_root)
+    configured = (
+        SKILL_TOOL_NAMES if allowed_tools is None else frozenset(allowed_tools)
+    )
+    permitted_names = tuple(
+        definition.name
+        for definition in registry.list_definitions()
+        if definition.name in SKILL_TOOL_NAMES and definition.name in configured
+    )
+    scoped_registry = registry.filter_for_skill(permitted_names)
+    prompt = _SKILL_PROMPT_TEMPLATE.format(
+        name=loaded.metadata.name,
+        instructions=_instruction_body(loaded.instructions),
+    )
+    return PreparedSkill(
+        metadata=loaded.metadata,
+        instructions=prompt,
+        allowed_tools=permitted_names,
+        registry=scoped_registry,
+    )
 
 # 第二阶段：开发完成后统一验证，本阶段不执行。
 

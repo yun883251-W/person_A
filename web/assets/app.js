@@ -8,7 +8,7 @@
     "session-search", "session-list", "load-more-sessions", "refresh-sessions",
     "service-status", "current-title", "session-subtitle", "refresh-history",
     "clear-session", "delete-session", "welcome", "conversation", "conversation-scroll",
-    "composer-form", "question", "send-button", "composer-hint", "char-count",
+    "composer-form", "question", "skill-select", "send-button", "composer-hint", "char-count",
     "notice", "notice-text", "notice-dismiss", "confirm-dialog", "confirm-title",
     "confirm-description", "confirm-cancel", "confirm-accept",
   ].map((id) => [id, byId(id)]));
@@ -30,6 +30,7 @@
     model_timeout: "模型响应超时，请稍后查看历史确认结果。",
     service_configuration_error: "模型配置有误，请检查服务端的模型配置和 API 密钥。",
     index_not_built: "知识库索引尚未准备好，请先执行 person-a build 并重启服务。",
+    unknown_skill: "所选回答方式已不可用，请重新选择。",
     service_error: "模型服务暂时不可用，请检查 Ollama 和对话模型连接。",
     storage_error: "会话存储失败，请检查本地数据库是否可用。",
     persistence_failed: "回答已生成，但未能保存。请先复制需要保留的内容。",
@@ -285,6 +286,7 @@
     for (const id of ["new-session", "refresh-sessions", "load-more-sessions"]) ui[id].disabled = busy;
     for (const id of ["refresh-history", "clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
     ui.question.disabled = busy;
+    ui["skill-select"].disabled = busy;
     ui["send-button"].disabled = busy || state.needsRefresh || !ui.question.value.trim();
     ui["send-button"].setAttribute("aria-label", state.operation === "send" ? "正在生成回答" : "发送问题");
     ui["composer-form"].setAttribute("aria-busy", String(state.operation === "send"));
@@ -375,8 +377,9 @@
       state.pendingQuestion = question; ui.question.value = ""; fitInput(); renderConversation();
       submitted = true;
       // 不设置前端生成超时、不自动重发；后端负责模型超时，断连后人工刷新确认结果。
+      const skillId = ui["skill-select"].value || null;
       const result = await request(`/sessions/${encodeURIComponent(state.current.session_id)}/messages`, {
-        method: "POST", body: { question }, timeout: 0,
+        method: "POST", body: { question, skill_id: skillId }, timeout: 0,
       });
       state.turns.push(result); state.pendingQuestion = ""; renderConversation();
       try { await loadSessions(); }
@@ -502,7 +505,14 @@
 
   async function initialize() {
     renderConversation(); setOperation("sessions"); void checkHealth();
-    try { await loadSessions(); }
+    try {
+      const [skills] = await Promise.all([request("/skills"), loadSessions()]);
+      for (const skill of skills.items) {
+        const option = element("option", null, skill.description);
+        option.value = skill.skill_id;
+        ui["skill-select"].append(option);
+      }
+    }
     catch (error) { notice(error.message); }
     finally { setOperation(null); }
     let id = null;

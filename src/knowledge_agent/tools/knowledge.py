@@ -8,38 +8,381 @@
 当前文件只有 TODO，原有工具仍在 agent.py 中正常运行。
 """
 
+from __future__ import annotations
+
+from collections.abc import MutableMapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol
+
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, ConfigDict, Field
+
+from ..retrieval import IndexNotBuiltError
+from ..schemas import DocumentChunk, RetrievalResult
+from .registry import InMemoryToolRegistry, ToolRegistration
+
 
 # 第一阶段：迁移现有工具。
 
-# TODO 01：梳理现有两个工具的依赖与输入输出。
-# 对照 agent.py 的 SearchKnowledgeInput、ReadKnowledgeSectionInput、
-# create_knowledge_tools、create_search_executor 和 create_section_executor。
-# 列清使用到的每轮状态字段，通过参数、共享结构或回调传入，避免循环导入。
+RetrievalStatus = Literal["not_started", "empty", "results_found", "failed"]
+KnowledgeToolResult = dict[str, Any]
 
-# TODO 02：迁移工具参数结构与模型可见描述。
-# search_knowledge 接收非空 query；read_knowledge_section 接收 chunk_id。
-# 保留现有参数校验及额外字段拒绝行为，工具名称保持一致。
-# 小节读取只接受本轮已检索并登记的 chunk_id，不扩展为任意文件路径读取。
 
-# TODO 03：迁移知识库搜索执行逻辑。
-# 复用 KnowledgeRetriever，保留文档片段、来源元数据、索引版本与上下文限制。
-# 搜索结果继续登记到当前问答轮，支持后续小节补查和来源标记生成。
-# 将计数交给 registry.py 的统一入口，配合迁移首次检索调用路径。
+class SectionReadResult(Protocol):
+    """Source-preserving section data required by the section reader."""
 
-# TODO 04：迁移小节读取执行逻辑。
-# 保留本轮片段授权、章节和相邻内容读取，以及既有长度限制。
-# 返回资料沿用检索索引中的真实路径、小节与原文行号，不自行拼接来源。
-# 索引版本不一致、片段失效或读取失败时，按现有语义返回可区分的结果。
+    source_path: str
+    heading_path: tuple[str, ...]
+    start_line: int
+    end_line: int
+    text: str
+    chunks: tuple[DocumentChunk, ...]
+    complete_section: bool
 
-# TODO 05：提供知识库工具注册工厂。
-# 将两个工具的 schema、描述和绑定当前轮上下文的执行函数交给注册器。
-# 不在模块导入时初始化检索器、读取索引或调用 Ollama/DeepSeek。
 
-# TODO 06：保持引用处理的职责边界。
-# 工具提供证据及元数据，Agent 继续负责本轮 source_map、[S1] 标记与最终引用校验。
-# 技能内容只指导回答步骤，不能作为知识库证据或注册为引用来源。
-# 本阶段不增加联网搜索；联网回退及网络来源结构另行开发。
+class KnowledgeRetrieverPort(Protocol):
+    """Retrieval operations consumed by the two knowledge tools."""
 
+    @property
+    def index_version(self) -> str: ...
+
+    def retrieve(self, question: str) -> Sequence[RetrievalResult]: ...
+
+    def read_related_section(
+        self,
+        chunk_id: str,
+        *,
+        max_chunks: int,
+        max_chars: int,
+    ) -> SectionReadResult: ...
+
+
+class KnowledgeTurnState(Protocol):
+    """The minimal mutable per-turn state shared by the knowledge tools."""
+
+    evidence: MutableMapping[str, RetrievalResult]
+    retrieval_status: RetrievalStatus
+    retrieval_error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeToolDependencies:
+    """Explicit dependencies passed to executors without importing the Agent."""
+
+    retriever: KnowledgeRetrieverPort
+    state: KnowledgeTurnState
+
+
+class SearchKnowledgeExecutor(Protocol):
+    """Input/output contract for ``search_knowledge``."""
+
+    def __call__(self, query: str) -> KnowledgeToolResult: ...
+
+
+class ReadKnowledgeSectionExecutor(Protocol):
+    """Input/output contract for ``read_knowledge_section``."""
+
+    def __call__(self, chunk_id: str) -> KnowledgeToolResult: ...
+
+
+class SearchKnowledgeInput(BaseModel):
+    """Arguments accepted by the knowledge search tool."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    query: str = Field(
+        min_length=1,
+        description="A non-empty question or search phrase to find relevant knowledge chunks.",
+    )
+
+
+class ReadKnowledgeSectionInput(BaseModel):
+    """Arguments accepted by the section-reading tool."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    chunk_id: str = Field(
+        min_length=1,
+        description=(
+            "The ID of a chunk returned and registered by search_knowledge during "
+            "the current turn."
+        ),
+    )
+
+
+SEARCH_KNOWLEDGE_DESCRIPTION = (
+    "Search the read-only knowledge base for chunks relevant to a question. "
+    "Use this before requesting more context for a result."
+)
+
+READ_KNOWLEDGE_SECTION_DESCRIPTION = (
+    "Read the surrounding section for a chunk already returned by search_knowledge "
+    "in this turn. Do not use arbitrary chunk IDs, file paths, or commands."
+)
+
+def create_search_executor(
+    retriever: KnowledgeRetrieverPort,
+    state: KnowledgeTurnState,
+) -> SearchKnowledgeExecutor:
+    """Wrap hybrid retrieval as a structured, turn-scoped tool executor."""
+
+    def search_knowledge(query: str) -> KnowledgeToolResult:
+        try:
+            results = retriever.retrieve(query)
+        except IndexNotBuiltError:
+            state.retrieval_status = "failed"
+            state.retrieval_error_code = "index_not_built"
+            return {
+                "status": "error",
+                "query": query,
+                "results": [],
+                "error": {
+                    "code": "index_not_built",
+                    "message": "The knowledge index is not available.",
+                },
+            }
+        except Exception as exc:
+            state.retrieval_status = "failed"
+            state.retrieval_error_code = "retrieval_failed"
+            return {
+                "status": "error",
+                "query": query,
+                "results": [],
+                "error": {
+                    "code": "retrieval_failed",
+                    "type": type(exc).__name__,
+                    "message": "Knowledge retrieval failed.",
+                },
+            }
+
+        if not results:
+            state.retrieval_status = "empty"
+            return {
+                "status": "empty",
+                "query": query,
+                "index_version": retriever.index_version,
+                "results": [],
+            }
+
+        state.retrieval_status = "results_found"
+        serialized_results: list[dict[str, Any]] = []
+        for rank, result in enumerate(results, start=1):
+            state.evidence[result.chunk_id] = result
+            chunk = result.chunk
+            serialized_results.append(
+                {
+                    "chunk_id": result.chunk_id,
+                    "text": chunk.text,
+                    "source_path": chunk.source_path,
+                    "heading_path": list(chunk.heading_path),
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "content_hash": chunk.content_hash,
+                    "index_version": result.index_version,
+                    "rank": rank,
+                    "channels": list(result.channels),
+                    "fused_score": result.fused_score,
+                    "vector_rank": result.vector_rank,
+                    "keyword_rank": result.keyword_rank,
+                    "vector_score": result.vector_score,
+                    "keyword_score": result.keyword_score,
+                }
+            )
+
+        return {
+            "status": "success",
+            "query": query,
+            "index_version": results[0].index_version,
+            "results": serialized_results,
+        }
+
+    return search_knowledge
+
+
+def create_section_executor(
+    retriever: KnowledgeRetrieverPort,
+    state: KnowledgeTurnState,
+    *,
+    max_chunks: int = 8,
+    max_chars: int = 8_000,
+) -> ReadKnowledgeSectionExecutor:
+    """Wrap bounded section reads with turn-scoped ID and version checks."""
+
+    def read_knowledge_section(chunk_id: str) -> KnowledgeToolResult:
+        anchor = state.evidence.get(chunk_id)
+        if anchor is None:
+            return {
+                "status": "error",
+                "chunk_id": chunk_id,
+                "error": {
+                    "code": "unknown_turn_chunk",
+                    "message": "The chunk was not returned during the current turn.",
+                },
+            }
+
+        expected_version = anchor.index_version
+        evidence_versions = {result.index_version for result in state.evidence.values()}
+        if evidence_versions != {expected_version}:
+            return {
+                "status": "error",
+                "chunk_id": chunk_id,
+                "index_version": expected_version,
+                "error": {
+                    "code": "mixed_evidence_versions",
+                    "message": "Current-turn evidence contains more than one index version.",
+                },
+            }
+
+        try:
+            if retriever.index_version != expected_version:
+                return {
+                    "status": "error",
+                    "chunk_id": chunk_id,
+                    "index_version": expected_version,
+                    "error": {
+                        "code": "index_version_changed",
+                        "message": "The index changed after this chunk was retrieved.",
+                    },
+                }
+            section = retriever.read_related_section(
+                chunk_id,
+                max_chunks=max_chunks,
+                max_chars=max_chars,
+            )
+            if retriever.index_version != expected_version:
+                return {
+                    "status": "error",
+                    "chunk_id": chunk_id,
+                    "index_version": expected_version,
+                    "error": {
+                        "code": "index_version_changed",
+                        "message": "The index changed while the section was being read.",
+                    },
+                }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "chunk_id": chunk_id,
+                "index_version": expected_version,
+                "error": {
+                    "code": "section_read_failed",
+                    "type": type(exc).__name__,
+                    "message": "The related section could not be read.",
+                },
+            }
+
+        serialized_chunks: list[dict[str, Any]] = []
+        for chunk in section.chunks:
+            if chunk.chunk_id is None:
+                continue
+            if chunk.chunk_id not in state.evidence:
+                state.evidence[chunk.chunk_id] = RetrievalResult(
+                    chunk_id=chunk.chunk_id,
+                    chunk=chunk,
+                    channels=anchor.channels,
+                    fused_score=anchor.fused_score,
+                    index_version=expected_version,
+                    vector_rank=anchor.vector_rank,
+                    keyword_rank=anchor.keyword_rank,
+                    vector_score=anchor.vector_score,
+                    keyword_score=anchor.keyword_score,
+                )
+            serialized_chunks.append(
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "text": chunk.text,
+                    "source_path": chunk.source_path,
+                    "heading_path": list(chunk.heading_path),
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "content_hash": chunk.content_hash,
+                    "index_version": expected_version,
+                }
+            )
+
+        complete = section.complete_section
+        return {
+            "status": "success" if complete else "limited",
+            "chunk_id": chunk_id,
+            "index_version": expected_version,
+            "source_path": section.source_path,
+            "heading_path": list(section.heading_path),
+            "start_line": section.start_line,
+            "end_line": section.end_line,
+            "text": section.text,
+            "chunks": serialized_chunks,
+            "complete_section": complete,
+            "scope": (
+                "complete_section"
+                if complete
+                else "partial_section_limited_by_chunk_or_text_budget"
+            ),
+            "limits": {"max_chunks": max_chunks, "max_chars": max_chars},
+        }
+
+    return read_knowledge_section
+
+def create_knowledge_tool_registry(
+    *,
+    max_section_chunks: int = 8,
+    max_section_chars: int = 8_000,
+) -> InMemoryToolRegistry[KnowledgeToolDependencies]:
+    """Create the two knowledge-tool registrations without doing any I/O."""
+
+    def search_definition(query: str) -> KnowledgeToolResult:
+        raise RuntimeError("knowledge tools must be executed through the registry")
+
+    def section_definition(chunk_id: str) -> KnowledgeToolResult:
+        raise RuntimeError("knowledge tools must be executed through the registry")
+
+    search_tool = StructuredTool.from_function(
+        func=search_definition,
+        name="search_knowledge",
+        description=SEARCH_KNOWLEDGE_DESCRIPTION,
+        args_schema=SearchKnowledgeInput,
+    )
+    section_tool = StructuredTool.from_function(
+        func=section_definition,
+        name="read_knowledge_section",
+        description=READ_KNOWLEDGE_SECTION_DESCRIPTION,
+        args_schema=ReadKnowledgeSectionInput,
+    )
+
+    def execute_search(
+        context: KnowledgeToolDependencies,
+        /,
+        **arguments: Any,
+    ) -> KnowledgeToolResult:
+        executor = create_search_executor(context.retriever, context.state)
+        return executor(**arguments)
+
+    def execute_section(
+        context: KnowledgeToolDependencies,
+        /,
+        **arguments: Any,
+    ) -> KnowledgeToolResult:
+        executor = create_section_executor(
+            context.retriever,
+            context.state,
+            max_chunks=max_section_chunks,
+            max_chars=max_section_chars,
+        )
+        return executor(**arguments)
+
+    return InMemoryToolRegistry(
+        (
+            ToolRegistration(
+                name="search_knowledge",
+                definition=search_tool,
+                executor=execute_search,
+            ),
+            ToolRegistration(
+                name="read_knowledge_section",
+                definition=section_tool,
+                executor=execute_section,
+            ),
+        )
+    )
 
 # 第二阶段：开发完成后统一验证，本阶段不执行。
 

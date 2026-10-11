@@ -33,7 +33,6 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, ConfigDict, Field
 
 from .config import AgentConfig
 from .models import (
@@ -48,13 +47,21 @@ from .models import (
     invoke_chat_model,
 )
 from .prompts import SYSTEM_PROMPT
-from .retrieval import IndexNotBuiltError, KnowledgeRetriever
+from .retrieval import KnowledgeRetriever
 from .schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
 from .session_store import (
     SessionNotFoundError,
     SessionStore,
     SessionStoreError,
     StoredTurn,
+)
+from .skill_loader import load_skill, prepare_skill
+from .tools.knowledge import (
+    READ_KNOWLEDGE_SECTION_DESCRIPTION,
+    SEARCH_KNOWLEDGE_DESCRIPTION,
+    ReadKnowledgeSectionInput,
+    SearchKnowledgeInput,
+    create_search_executor,
 )
 from .tools.registry import InMemoryToolRegistry, create_tool_registry
 
@@ -207,6 +214,7 @@ class KnowledgeAgent:
         prepared: PreparedQuestion,
         *,
         history: Sequence[BaseMessage] = (),
+        skill_id: str | None = None,
     ) -> PreparedModelTurn:
         """Build the messages and tool-bound runnable for a prepared question."""
         return prepare_model_turn(
@@ -215,6 +223,7 @@ class KnowledgeAgent:
             retriever=self.retriever,
             system_prompt=self.system_prompt,
             history=history,
+            skill_id=skill_id,
         )
 
     def invoke_model_turn(
@@ -240,8 +249,17 @@ class KnowledgeAgent:
             max_context_chars=self.config.max_context_chars,
         )
 
-    def ask(self, question: str, session_id: str | None = None) -> AnswerResult:
+    def ask(
+        self,
+        question: str,
+        session_id: str | None = None,
+        *,
+        skill_id: str | None = None,
+    ) -> AnswerResult:
         """Run one complete question-answer turn and return its public result."""
+        if skill_id is not None:
+            # Fail before retrieval/model work; the selected skill is turn-local.
+            load_skill(skill_id)
         turns: tuple[ConversationTurn, ...] = ()
         history: tuple[BaseMessage, ...] = ()
         retrieval_question: str | None = None
@@ -264,7 +282,7 @@ class KnowledgeAgent:
                 self._commit_turn(session_id, prepared.state, result, messages)
             return result
 
-        turn = self.prepare_model_turn(prepared, history=history)
+        turn = self.prepare_model_turn(prepared, history=history, skill_id=skill_id)
         model_result = self.run_model_loop(turn, prepared.state)
         result = self.finalize_answer(model_result, prepared.state)
         if session_id is not None:
@@ -355,31 +373,6 @@ class TurnState:
 ToolExecutor = Callable[..., Any]
 
 
-class SearchKnowledgeInput(BaseModel):
-    """Arguments accepted by the knowledge search tool."""
-
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    query: str = Field(
-        min_length=1,
-        description="A non-empty question or search phrase to find relevant knowledge chunks.",
-    )
-
-
-class ReadKnowledgeSectionInput(BaseModel):
-    """Arguments accepted by the section-reading tool."""
-
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    chunk_id: str = Field(
-        min_length=1,
-        description=(
-            "The ID of a chunk returned and registered by search_knowledge during "
-            "the current turn."
-        ),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class KnowledgeTools:
     """Model-visible read-only tools and their closed execution registry."""
@@ -404,20 +397,13 @@ def create_knowledge_tools(
     search_tool = StructuredTool.from_function(
         func=search_executor,
         name="search_knowledge",
-        description=(
-            "Search the read-only knowledge base for chunks relevant to a "
-            "question. Use this before requesting more context for a result."
-        ),
+        description=SEARCH_KNOWLEDGE_DESCRIPTION,
         args_schema=SearchKnowledgeInput,
     )
     section_tool = StructuredTool.from_function(
         func=section_executor,
         name="read_knowledge_section",
-        description=(
-            "Read the surrounding section for a chunk already returned by "
-            "search_knowledge in this turn. Do not use arbitrary chunk IDs, "
-            "file paths, or commands."
-        ),
+        description=READ_KNOWLEDGE_SECTION_DESCRIPTION,
         args_schema=ReadKnowledgeSectionInput,
     )
     definitions = (search_tool, section_tool)
@@ -437,85 +423,6 @@ def create_knowledge_tools(
         executors=executors,
         registry=registry,
     )
-
-
-def create_search_executor(
-    retriever: KnowledgeRetriever,
-    state: TurnState,
-) -> ToolExecutor:
-    """Wrap hybrid retrieval as a structured, turn-scoped tool executor."""
-
-    def search_knowledge(query: str) -> dict[str, Any]:
-        try:
-            results = retriever.retrieve(query)
-        except IndexNotBuiltError:
-            state.retrieval_status = "failed"
-            state.retrieval_error_code = "index_not_built"
-            return {
-                "status": "error",
-                "query": query,
-                "results": [],
-                "error": {
-                    "code": "index_not_built",
-                    "message": "The knowledge index is not available.",
-                },
-            }
-        except Exception as exc:
-            state.retrieval_status = "failed"
-            state.retrieval_error_code = "retrieval_failed"
-            return {
-                "status": "error",
-                "query": query,
-                "results": [],
-                "error": {
-                    "code": "retrieval_failed",
-                    "type": type(exc).__name__,
-                    "message": "Knowledge retrieval failed.",
-                },
-            }
-
-        if not results:
-            state.retrieval_status = "empty"
-            return {
-                "status": "empty",
-                "query": query,
-                "index_version": retriever.index_version,
-                "results": [],
-            }
-
-        state.retrieval_status = "results_found"
-        serialized_results: list[dict[str, Any]] = []
-        for rank, result in enumerate(results, start=1):
-            state.evidence[result.chunk_id] = result
-            chunk = result.chunk
-            serialized_results.append(
-                {
-                    "chunk_id": result.chunk_id,
-                    "text": chunk.text,
-                    "source_path": chunk.source_path,
-                    "heading_path": list(chunk.heading_path),
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "content_hash": chunk.content_hash,
-                    "index_version": result.index_version,
-                    "rank": rank,
-                    "channels": list(result.channels),
-                    "fused_score": result.fused_score,
-                    "vector_rank": result.vector_rank,
-                    "keyword_rank": result.keyword_rank,
-                    "vector_score": result.vector_score,
-                    "keyword_score": result.keyword_score,
-                }
-            )
-
-        return {
-            "status": "success",
-            "query": query,
-            "index_version": results[0].index_version,
-            "results": serialized_results,
-        }
-
-    return search_knowledge
 
 
 def create_section_executor(
@@ -1000,6 +907,7 @@ def prepare_model_turn(
     system_prompt: str = SYSTEM_PROMPT,
     history: Sequence[BaseMessage] = (),
     max_retries: int | None = None,
+    skill_id: str | None = None,
 ) -> PreparedModelTurn:
     """Construct this turn's messages and bind its read-only knowledge tools."""
     if prepared.terminal_result is not None:
@@ -1020,9 +928,25 @@ def prepare_model_turn(
         search_executor=create_search_executor(retriever, state),
         section_executor=create_section_executor(retriever, state),
     )
+    selected_skill = prepare_skill(skill_id, tools.registry) if skill_id is not None else None
+    if selected_skill is not None:
+        tools = KnowledgeTools(
+            definitions=selected_skill.registry.list_definitions(),
+            executors=MappingProxyType(
+                {
+                    name: executor
+                    for name, executor in tools.executors.items()
+                    if name in selected_skill.allowed_tools
+                }
+            ),
+            registry=selected_skill.registry,
+        )
     bound_model = bind_chat_tools(model, tools.definitions)
+    turn_prompt = f"{system_prompt.rstrip()}\n\n{_SOURCE_CITATION_INSTRUCTION}"
+    if selected_skill is not None:
+        turn_prompt = f"{turn_prompt}\n\n{selected_skill.instructions}"
     messages: tuple[BaseMessage, ...] = (
-        SystemMessage(content=f"{system_prompt.rstrip()}\n\n{_SOURCE_CITATION_INSTRUCTION}"),
+        SystemMessage(content=turn_prompt),
         *history,
         HumanMessage(
             content=(
@@ -1696,11 +1620,15 @@ class KnowledgeAgentApplication:
         finally:
             self._finish_operation()
 
-    def ask(self, question: str) -> AnswerResult:
+    def ask(self, question: str, *, skill_id: str | None = None) -> AnswerResult:
         """Run one complete turn in the active session."""
         self._begin_operation("ask")
         try:
-            return self.agent.ask(question, session_id=self._require_session())
+            return self.agent.ask(
+                question,
+                session_id=self._require_session(),
+                skill_id=skill_id,
+            )
         finally:
             self._finish_operation()
 

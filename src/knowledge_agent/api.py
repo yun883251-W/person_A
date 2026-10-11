@@ -67,6 +67,7 @@ from .session_store import (
     SessionStoreLockedError,
     StoredTurn,
 )
+from .skill_loader import discover_skills
 
 # 第一阶段：应用生命周期与接口开发。
 
@@ -132,6 +133,12 @@ class AskRequest(_PublicModel):
         description="要在当前会话中提出的问题",
         examples=["RAG 的基本流程是什么？"],
     )
+    skill_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        description="本轮显式选择的技能 ID；不传时使用普通问答流程",
+        examples=["concept-explanation"],
+    )
 
     @field_validator("question", mode="before")
     @classmethod
@@ -150,6 +157,16 @@ class SessionListResponse(_PublicModel):
     items: list[SessionResponse]
     limit: PageLimit
     offset: PageOffset
+
+
+class SkillResponse(_PublicModel):
+    skill_id: str
+    name: str
+    description: str
+
+
+class SkillListResponse(_PublicModel):
+    items: list[SkillResponse]
 
 
 class AnswerSourceResponse(_PublicModel):
@@ -334,6 +351,23 @@ def create_app(
             raise StarletteHTTPException(status_code=status.HTTP_404_NOT_FOUND)
         return FileResponse(page, media_type="text/html")
 
+    @application.get(
+        "/skills",
+        response_model=SkillListResponse,
+        summary="列出可手动选择的技能",
+    )
+    async def list_skills() -> SkillListResponse:
+        return SkillListResponse(
+            items=[
+                SkillResponse(
+                    skill_id=skill.skill_id,
+                    name=skill.name,
+                    description=skill.description,
+                )
+                for skill in discover_skills()
+            ]
+        )
+
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(
         _request: Request, exc: RequestValidationError
@@ -359,6 +393,16 @@ def create_app(
     async def http_error_handler(
         _request: Request, exc: HTTPException
     ) -> JSONResponse:
+        if (
+            exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+            and isinstance(exc.detail, str)
+            and exc.detail.startswith("Unknown skill:")
+        ):
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=_error_content("unknown_skill", exc.detail),
+                headers=exc.headers,
+            )
         known_errors = {
             status.HTTP_404_NOT_FOUND: ("session_not_found", "Session not found"),
             status.HTTP_409_CONFLICT: ("conflict", "The request conflicts with current state"),
@@ -597,7 +641,18 @@ def create_app(
         request: AskRequest,
     ) -> AnswerResponse:
         runtime: ServiceRuntime = application.state.runtime
-        result = await runtime.ask_session(session_id, request.question)
+        try:
+            if request.skill_id is None:
+                result = await runtime.ask_session(session_id, request.question)
+            else:
+                result = await runtime.ask_session(
+                    session_id, request.question, skill_id=request.skill_id
+                )
+        except KeyError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown skill: {request.skill_id}",
+            ) from None
         if result is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -923,11 +978,21 @@ class ServiceRuntime:
     ) -> Any:
         return function(self.application, *args, **kwargs)
 
-    async def ask_session(self, session_id: str, question: str) -> Any | None:
+    async def ask_session(
+        self,
+        session_id: str,
+        question: str,
+        *,
+        skill_id: str | None = None,
+    ) -> Any | None:
         """Ask one question in an existing persisted session."""
-        return await self.run(self._ask_session_on_worker, session_id, question)
+        return await self.run(
+            self._ask_session_on_worker, session_id, question, skill_id
+        )
 
-    def _ask_session_on_worker(self, session_id: str, question: str) -> Any | None:
+    def _ask_session_on_worker(
+        self, session_id: str, question: str, skill_id: str | None = None
+    ) -> Any | None:
         self._require_worker_thread()
         if self.store.get_session(session_id) is None:
             return None
@@ -935,7 +1000,7 @@ class ServiceRuntime:
         application = self.application
         application.resume_session(session_id)
         try:
-            return application.ask(question)
+            return application.ask(question, skill_id=skill_id)
         finally:
             application.end_session()
 
