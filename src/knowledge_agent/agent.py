@@ -56,6 +56,7 @@ from .session_store import (
     SessionStoreError,
     StoredTurn,
 )
+from .tools.registry import InMemoryToolRegistry, create_tool_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +386,7 @@ class KnowledgeTools:
 
     definitions: tuple[BaseTool, ...]
     executors: Mapping[str, ToolExecutor]
+    registry: InMemoryToolRegistry[TurnState] | None = None
 
 
 def create_knowledge_tools(
@@ -425,7 +427,16 @@ def create_knowledge_tools(
             "read_knowledge_section": section_executor,
         }
     )
-    return KnowledgeTools(definitions=definitions, executors=executors)
+    contextual_executors = {
+        name: (lambda _context, _executor=executor, **arguments: _executor(**arguments))
+        for name, executor in executors.items()
+    }
+    registry = create_tool_registry(definitions, contextual_executors)
+    return KnowledgeTools(
+        definitions=registry.list_definitions(),
+        executors=executors,
+        registry=registry,
+    )
 
 
 def create_search_executor(
@@ -435,7 +446,6 @@ def create_search_executor(
     """Wrap hybrid retrieval as a structured, turn-scoped tool executor."""
 
     def search_knowledge(query: str) -> dict[str, Any]:
-        state.tool_calls += 1
         try:
             results = retriever.retrieve(query)
         except IndexNotBuiltError:
@@ -518,7 +528,6 @@ def create_section_executor(
     """Wrap bounded section reads with turn-scoped ID and version checks."""
 
     def read_knowledge_section(chunk_id: str) -> dict[str, Any]:
-        state.tool_calls += 1
         anchor = state.evidence.get(chunk_id)
         if anchor is None:
             return {
@@ -923,6 +932,7 @@ def prepare_question(
         )
 
     search = create_search_executor(retriever, state)
+    state.tool_calls += 1
     search(cleaned_retrieval_question)
     if state.retrieval_status == "failed":
         index_missing = state.retrieval_error_code == "index_not_built"
@@ -1107,173 +1117,36 @@ def execute_tool_calls(
     max_followup_searches: int | None = None,
 ) -> tuple[ToolCallResult, ...]:
     """Validate and sequentially execute the tool calls in one model message."""
-    if isinstance(max_tool_calls, bool) or not isinstance(max_tool_calls, int):
-        raise TypeError("max_tool_calls must be an integer")
-    if max_tool_calls < 1:
-        raise ValueError("max_tool_calls must be greater than 0")
-    if max_followup_searches is not None and (
-        isinstance(max_followup_searches, bool)
-        or not isinstance(max_followup_searches, int)
-    ):
-        raise TypeError("max_followup_searches must be an integer")
-    if max_followup_searches is not None and max_followup_searches < 0:
-        raise ValueError("max_followup_searches must not be negative")
-
-    definitions = {tool.name: tool for tool in tools.definitions}
-    results: list[ToolCallResult] = []
-
-    for call in message.tool_calls:
-        if not isinstance(call, Mapping):
-            results.append(
-                ToolCallResult(
-                    tool_call_id=None,
-                    name=None,
-                    status="error",
-                    output=_tool_call_error(
-                        "invalid_tool_call", "The tool call must be an object."
-                    ),
+    registry = tools.registry
+    if registry is None:
+        # Compatibility for callers that still instantiate KnowledgeTools
+        # directly through the old two-field API.
+        contextual_executors = {
+            name: (
+                lambda _context, _executor=executor, **arguments: _executor(
+                    **arguments
                 )
             )
-            continue
+            for name, executor in tools.executors.items()
+        }
+        registry = create_tool_registry(tools.definitions, contextual_executors)
 
-        raw_id = call.get("id")
-        call_id = raw_id.strip() if isinstance(raw_id, str) else None
-        raw_name = call.get("name")
-        name = raw_name.strip() if isinstance(raw_name, str) else None
-
-        if not call_id:
-            results.append(
-                ToolCallResult(
-                    tool_call_id=None,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "invalid_tool_call_id", "The tool call ID must be a non-empty string."
-                    ),
-                )
-            )
-            continue
-        if call_id in state.completed_tool_call_ids:
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "duplicate_tool_call_id",
-                        "This tool call ID has already been handled in the current turn.",
-                    ),
-                )
-            )
-            continue
-
-        # A call with a usable ID is terminally handled even when validation or
-        # execution fails, so a repeated model response cannot trigger it again.
-        state.completed_tool_call_ids.add(call_id)
-
-        definition = definitions.get(name) if name else None
-        executor = tools.executors.get(name) if name else None
-        if definition is None or executor is None:
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "unknown_tool", "The requested tool is not available."
-                    ),
-                )
-            )
-            continue
-
-        raw_args = call.get("args")
-        if not isinstance(raw_args, Mapping):
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "invalid_tool_arguments", "Tool arguments must be an object."
-                    ),
-                )
-            )
-            continue
-
-        try:
-            validated_args = definition.get_input_schema().model_validate(
-                dict(raw_args)
-            ).model_dump()
-        except Exception:
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "invalid_tool_arguments",
-                        "Tool arguments do not match the required schema.",
-                    ),
-                )
-            )
-            continue
-
-        if state.tool_calls >= max_tool_calls:
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "tool_budget_exhausted",
-                        "The tool-call budget for this turn has been exhausted.",
-                    ),
-                )
-            )
-            continue
-
-        if (
-            name == "search_knowledge"
-            and max_followup_searches is not None
-            and state.followup_searches >= max_followup_searches
-        ):
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status="error",
-                    output=_tool_call_error(
-                        "followup_search_budget_exhausted",
-                        "The follow-up search budget for this turn has been exhausted.",
-                    ),
-                )
-            )
-            continue
-
-        try:
-            if name == "search_knowledge":
-                state.followup_searches += 1
-            output = executor(**validated_args)
-        except Exception:
-            output = _tool_call_error(
-                "tool_execution_failed", "The requested tool could not be completed."
-            )
-
-        status: ToolCallStatus = (
-            "error"
-            if isinstance(output, Mapping) and output.get("status") == "error"
-            else "success"
+    results = registry.execute_tool_calls(
+        message.tool_calls,
+        context=state,
+        completed_tool_call_ids=state.completed_tool_call_ids,
+        max_tool_calls=max_tool_calls,
+        max_followup_searches=max_followup_searches,
+    )
+    return tuple(
+        ToolCallResult(
+            tool_call_id=result.tool_call_id,
+            name=result.name,
+            status=result.status,
+            output=result.output,
         )
-        results.append(
-            ToolCallResult(
-                tool_call_id=call_id,
-                name=name,
-                status=status,
-                output=output,
-            )
-        )
-
-    return tuple(results)
+        for result in results
+    )
 
 def _register_new_sources(
     state: TurnState,

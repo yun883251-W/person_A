@@ -65,6 +65,40 @@ def _tool_call_error(code: str, message: str) -> dict[str, Any]:
     return {"status": "error", "error": {"code": code, "message": message}}
 
 
+def _tool_call_result(
+    tool_call_id: str | None,
+    name: str | None,
+    output: Any,
+) -> ToolCallResult:
+    """Build a result while preserving non-error tool statuses such as ``empty``."""
+    status: ToolCallStatus = (
+        "error"
+        if isinstance(output, Mapping) and output.get("status") == "error"
+        else "success"
+    )
+    return ToolCallResult(
+        tool_call_id=tool_call_id,
+        name=name,
+        status=status,
+        output=output,
+    )
+
+
+def _execute_registration(
+    registration: ToolRegistration[ExecutionContextT],
+    context: ExecutionContextT,
+    arguments: Mapping[str, Any],
+) -> Any:
+    """Execute a tool without exposing exception details to the model."""
+    try:
+        return registration.executor(context, **arguments)
+    except Exception:  # noqa: BLE001 - tool failures are isolated per call
+        return _tool_call_error(
+            "tool_execution_failed",
+            "The requested tool could not be completed.",
+        )
+
+
 @runtime_checkable
 class ToolRegistry(Protocol[ExecutionContextT]):
     """Interface for registering, exposing, and executing approved tools."""
@@ -99,6 +133,8 @@ class ToolRegistry(Protocol[ExecutionContextT]):
         *,
         context: ExecutionContextT,
         completed_tool_call_ids: MutableSet[str],
+        max_tool_calls: int,
+        max_followup_searches: int | None = None,
     ) -> tuple[ToolCallResult, ...]:
         """Validate and execute model-requested calls in request order."""
 
@@ -164,7 +200,7 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
             return _tool_call_error(
                 "unknown_tool", "The requested tool is not available."
             )
-        return registration.executor(context, **arguments)
+        return _execute_registration(registration, context, arguments)
 
     def execute_tool_calls(
         self,
@@ -172,7 +208,21 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
         *,
         context: ExecutionContextT,
         completed_tool_call_ids: MutableSet[str],
+        max_tool_calls: int,
+        max_followup_searches: int | None = None,
     ) -> tuple[ToolCallResult, ...]:
+        if isinstance(max_tool_calls, bool) or not isinstance(max_tool_calls, int):
+            raise TypeError("max_tool_calls must be an integer")
+        if max_tool_calls < 1:
+            raise ValueError("max_tool_calls must be greater than 0")
+        if max_followup_searches is not None and (
+            isinstance(max_followup_searches, bool)
+            or not isinstance(max_followup_searches, int)
+        ):
+            raise TypeError("max_followup_searches must be an integer")
+        if max_followup_searches is not None and max_followup_searches < 0:
+            raise ValueError("max_followup_searches must not be negative")
+
         results: list[ToolCallResult] = []
 
         for call in calls:
@@ -274,46 +324,85 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
                 )
                 continue
 
-            try:
-                output = registration.executor(context, **arguments)
-            except Exception:  # noqa: BLE001 - tool failures are isolated per call
-                output = _tool_call_error(
-                    "tool_execution_failed",
-                    "The requested tool could not be completed.",
-                )
+            tool_calls = getattr(context, "tool_calls", None)
+            followup_searches = getattr(context, "followup_searches", None)
+            if isinstance(tool_calls, bool) or not isinstance(tool_calls, int):
+                raise TypeError("context.tool_calls must be an integer")
+            if (
+                isinstance(followup_searches, bool)
+                or not isinstance(followup_searches, int)
+            ):
+                raise TypeError("context.followup_searches must be an integer")
 
-            status: ToolCallStatus = (
-                "error"
-                if isinstance(output, Mapping) and output.get("status") == "error"
-                else "success"
-            )
-            results.append(
-                ToolCallResult(
-                    tool_call_id=call_id,
-                    name=name,
-                    status=status,
-                    output=output,
+            if tool_calls >= max_tool_calls:
+                results.append(
+                    ToolCallResult(
+                        tool_call_id=call_id,
+                        name=name,
+                        status="error",
+                        output=_tool_call_error(
+                            "tool_budget_exhausted",
+                            "The tool-call budget for this turn has been exhausted.",
+                        ),
+                    )
                 )
-            )
+                continue
+
+            if (
+                name == "search_knowledge"
+                and max_followup_searches is not None
+                and followup_searches >= max_followup_searches
+            ):
+                results.append(
+                    ToolCallResult(
+                        tool_call_id=call_id,
+                        name=name,
+                        status="error",
+                        output=_tool_call_error(
+                            "followup_search_budget_exhausted",
+                            "The follow-up search budget for this turn has been exhausted.",
+                        ),
+                    )
+                )
+                continue
+
+            setattr(context, "tool_calls", tool_calls + 1)
+            if name == "search_knowledge":
+                setattr(context, "followup_searches", followup_searches + 1)
+
+            output = _execute_registration(registration, context, arguments)
+            results.append(_tool_call_result(call_id, name, output))
 
         return tuple(results)
 
-# TODO 05：统一管理工具调用次数与补充检索次数。
-# 将两个知识库 executor 内自行累加的逻辑迁移到统一执行入口，避免新增工具漏计。
-# 明确口径：参数合法且获准开始执行时计一次，执行失败也计入预算。
-# 无效参数、未知工具和被预算拒绝的调用不实际执行；重复 ID 不重复计数。
-# search_knowledge 继续遵守 max_followup_searches，全部工具遵守 max_tool_calls。
-# 同步梳理 prepare_question 的首次检索路径，保留原有计数语义，避免遗漏或双计。
+def create_tool_registry(
+    definitions: Iterable[BaseTool],
+    executors: Mapping[str, ToolExecutor[ExecutionContextT]],
+) -> InMemoryToolRegistry[ExecutionContextT]:
+    """Build the single registry used for both model binding and execution.
 
-# TODO 06：规范工具返回值和执行错误。
-# 复用现有 ToolCallResult 的调用 ID、名称、状态、输出语义，必要时提取共享结构。
-# 向模型提供可处理的错误信息，日志不输出 API 密钥或完整用户问答正文。
-# 搜索失败、没有命中和达到调用上限分别处理，不混用为“资料不足”。
+    This small adapter lets existing tool factories keep returning separate
+    definitions and executors while the Agent migrates to the registry.  The
+    two collections must describe exactly the same tools, preventing a tool
+    from being exposed to the model without an executor (or vice versa).
+    """
+    tool_definitions = tuple(definitions)
+    definition_names = [definition.name for definition in tool_definitions]
+    if len(definition_names) != len(set(definition_names)):
+        raise ValueError("tool definitions must have unique names")
 
-# TODO 07：接入现有 Agent 工具循环。
-# 让工具绑定和 execute_tool_calls 使用同一份注册器配置，保留现有模型循环。
-# KnowledgeTools 等旧入口如需过渡，使用兼容适配，避免一次迁移破坏 CLI/API。
-# 本文件仅规划接入；实现本模块时不要提前删除旧工具函数。
+    executor_names = set(executors)
+    if set(definition_names) != executor_names:
+        raise ValueError("tool definitions and executors must have matching names")
+
+    return InMemoryToolRegistry(
+        ToolRegistration(
+            name=definition.name,
+            definition=definition,
+            executor=executors[definition.name],
+        )
+        for definition in tool_definitions
+    )
 
 
 # 第二阶段：开发完成后统一验证，本阶段不执行。
