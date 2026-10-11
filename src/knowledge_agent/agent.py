@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from threading import Lock
@@ -49,6 +50,12 @@ from .models import (
 from .prompts import SYSTEM_PROMPT
 from .retrieval import IndexNotBuiltError, KnowledgeRetriever
 from .schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
+from .session_store import (
+    SessionNotFoundError,
+    SessionStore,
+    SessionStoreError,
+    StoredTurn,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +66,14 @@ class ConversationTurn:
     retrieval_question: str
     messages: tuple[BaseMessage, ...]
     result: AnswerResult
+
+
+class TurnPersistenceError(SessionStoreError):
+    """Report that a completed answer could not be saved."""
+
+    def __init__(self, result: AnswerResult) -> None:
+        super().__init__("The answer was generated, but the conversation turn was not saved")
+        self.result = result
 
 
 class ConversationHistory:
@@ -133,20 +148,23 @@ def _complete_history_messages(messages: Sequence[object]) -> tuple[BaseMessage,
         if isinstance(message, BaseMessage) and not isinstance(message, SystemMessage)
     )
     requested: set[str] = set()
-    completed: set[str] = set()
+    pending: set[str] = set()
     for message in history:
+        if pending and not isinstance(message, ToolMessage):
+            return None
         if isinstance(message, AIMessage):
             for call in message.tool_calls:
                 call_id = str(call.get("id", "")).strip()
                 if not call_id or call_id in requested:
                     return None
                 requested.add(call_id)
+                pending.add(call_id)
         elif isinstance(message, ToolMessage):
             call_id = str(message.tool_call_id).strip()
-            if call_id not in requested or call_id in completed:
+            if call_id not in pending:
                 return None
-            completed.add(call_id)
-    if requested != completed:
+            pending.remove(call_id)
+    if pending:
         return None
     return history
 
@@ -160,12 +178,14 @@ class KnowledgeAgent:
         *,
         model: object | None = None,
         retriever: KnowledgeRetriever | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
         self.config = config if config is not None else AgentConfig()
         self.model = model if model is not None else initialize_chat_model()
         self.system_prompt = SYSTEM_PROMPT
         self.retriever = retriever if retriever is not None else KnowledgeRetriever()
         self.history = ConversationHistory(self.config.max_history_turns)
+        self.session_store = session_store
 
     def prepare_question(
         self,
@@ -264,15 +284,28 @@ class KnowledgeAgent:
         complete_messages = _complete_history_messages(messages)
         if not complete_messages:
             return
-        self.history.append(
-            session_id,
-            ConversationTurn(
-                question=state.original_question,
-                retrieval_question=state.retrieval_question or state.original_question,
-                messages=complete_messages,
-                result=result,
-            ),
+        turn = ConversationTurn(
+            question=state.original_question,
+            retrieval_question=state.retrieval_question or state.original_question,
+            messages=complete_messages,
+            result=result,
         )
+        if self.session_store is not None:
+            try:
+                self.session_store.append_turn(
+                    session_id,
+                    StoredTurn(
+                        turn_id=uuid.uuid4().hex,
+                        turn_no=0,
+                        question=turn.question,
+                        retrieval_question=turn.retrieval_question,
+                        messages=turn.messages,
+                        result=turn.result,
+                    ),
+                )
+            except SessionStoreError as exc:
+                raise TurnPersistenceError(result) from exc
+        self.history.append(session_id, turn)
 
     def get_session_history(self, session_id: str) -> tuple[ConversationTurn, ...]:
         """Return an immutable snapshot of the session's retained complete turns."""
@@ -1688,11 +1721,18 @@ class KnowledgeAgentApplication:
         *,
         model: object | None = None,
         retriever: KnowledgeRetriever | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
-        self.agent = KnowledgeAgent(config, model=model, retriever=retriever)
+        self.agent = KnowledgeAgent(
+            config,
+            model=model,
+            retriever=retriever,
+            session_store=session_store,
+        )
         self._session_id: str | None = None
         self._operation: str | None = None
         self._operation_lock = Lock()
+        self._closed = False
 
     @property
     def config(self) -> AgentConfig:
@@ -1711,6 +1751,9 @@ class KnowledgeAgentApplication:
                 f"cannot start {operation} while {active} is in progress"
             )
         self._operation = operation
+        if self._closed:
+            self._finish_operation()
+            raise AgentApplicationError("the application is closed")
 
     def _finish_operation(self) -> None:
         self._operation = None
@@ -1721,14 +1764,60 @@ class KnowledgeAgentApplication:
             raise SessionNotStartedError("start_session() must be called first")
         return self._session_id
 
-    def start_session(self, session_id: str = "cli") -> str:
-        """Start a fresh session and return its normalized identifier."""
+    def start_session(self, session_id: str | None = None) -> str:
+        """Create and activate a new, empty session."""
         self._begin_operation("start_session")
         try:
             if self._session_id is not None:
                 raise AgentApplicationError("a session is already active")
-            key = ConversationHistory._session_key(session_id)
+            store = self.agent.session_store
+            if store is not None:
+                store.initialize()
+                if session_id is None:
+                    key = store.create_session().session_id
+                else:
+                    key = store.create_session(
+                        ConversationHistory._session_key(session_id)
+                    ).session_id
+            else:
+                key = (
+                    ConversationHistory._session_key(session_id)
+                    if session_id is not None
+                    else uuid.uuid4().hex
+                )
             self.agent.clear_session(key)
+            self._session_id = key
+            return key
+        finally:
+            self._finish_operation()
+
+    def resume_session(self, session_id: str) -> str:
+        """Restore the newest complete turns of an existing session."""
+        self._begin_operation("resume_session")
+        try:
+            if self._session_id is not None:
+                raise AgentApplicationError("a session is already active")
+            key = ConversationHistory._session_key(session_id)
+            store = self.agent.session_store
+            if store is None:
+                raise AgentApplicationError("session persistence is not configured")
+            store.initialize()
+            if store.get_session(key) is None:
+                raise SessionNotFoundError("Session does not exist")
+            stored_turns = store.load_context_turns(
+                key, max_history_turns=self.config.max_history_turns
+            )
+            self.agent.clear_session(key)
+            for turn in stored_turns:
+                self.agent.history.append(
+                    key,
+                    ConversationTurn(
+                        question=turn.question,
+                        retrieval_question=turn.retrieval_question,
+                        messages=turn.messages,
+                        result=turn.result,
+                    ),
+                )
             self._session_id = key
             return key
         finally:
@@ -1743,15 +1832,21 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def clear_session(self) -> None:
-        """Clear retained turns while keeping the current session active."""
+        """Delete persisted and retained turns while keeping the session active."""
         self._begin_operation("clear_session")
         try:
-            self.agent.clear_session(self._require_session())
+            session_id = self._require_session()
+            store = self.agent.session_store
+            if store is not None:
+                store.initialize()
+                if not store.clear_session(session_id):
+                    raise SessionNotFoundError("Session does not exist")
+            self.agent.clear_session(session_id)
         finally:
             self._finish_operation()
 
     def end_session(self) -> None:
-        """Discard the active session and require an explicit subsequent start."""
+        """Release in-memory state while retaining all committed records."""
         self._begin_operation("end_session")
         try:
             session_id = self._require_session()
@@ -1759,6 +1854,48 @@ class KnowledgeAgentApplication:
             self._session_id = None
         finally:
             self._finish_operation()
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a persisted session and release it if it is currently active."""
+        self._begin_operation("delete_session")
+        try:
+            key = ConversationHistory._session_key(session_id)
+            store = self.agent.session_store
+            if store is None:
+                raise AgentApplicationError("session persistence is not configured")
+            store.initialize()
+            deleted = store.delete_session(key)
+            if deleted and self._session_id == key:
+                self.agent.clear_session(key)
+                self._session_id = None
+            return deleted
+        finally:
+            self._finish_operation()
+
+    def close(self) -> None:
+        """Release the active session and owned storage connection once."""
+        if self._closed:
+            return
+        self._begin_operation("close")
+        try:
+            try:
+                if self._session_id is not None:
+                    self.agent.clear_session(self._session_id)
+                    self._session_id = None
+            finally:
+                try:
+                    if self.agent.session_store is not None:
+                        self.agent.session_store.close()
+                finally:
+                    self._closed = True
+        finally:
+            self._finish_operation()
+
+    def __enter__(self) -> KnowledgeAgentApplication:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
 
     def get_session_history(self) -> tuple[ConversationTurn, ...]:
         """Return an immutable snapshot of the active session history."""
@@ -1782,9 +1919,15 @@ def create_agent_application(
     *,
     model: object | None = None,
     retriever: KnowledgeRetriever | None = None,
+    session_store: SessionStore | None = None,
 ) -> KnowledgeAgentApplication:
     """Create the application boundary used by a future command-line adapter."""
-    return KnowledgeAgentApplication(config, model=model, retriever=retriever)
+    return KnowledgeAgentApplication(
+        config,
+        model=model,
+        retriever=retriever,
+        session_store=session_store,
+    )
 
 
 # 第三阶段：开发全部完成后统一验证。以下 TODO 暂不执行。

@@ -32,10 +32,10 @@ _STATUS_LABELS = {
 
 _CHAT_HELP = """直接输入问题即可提问，支持连续追问。
 /help     显示帮助
-/clear    清空本次会话历史
+/clear    永久清空当前会话的全部历史，但保留会话
 /refresh  重载已发布的索引；文档变更后请先在另一终端运行 person-a update
-/exit     结束会话并退出
-会话仅保存在当前进程中。Ctrl+C 或输入结束（EOF）也可退出。"""
+/exit     保存已完成的问答并退出
+Ctrl+C 或输入结束（EOF）也会保留已经完成的问答。"""
 
 
 def _nonempty(value: str) -> str:
@@ -45,12 +45,36 @@ def _nonempty(value: str) -> str:
     return cleaned
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必须是正整数。") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须是正整数。")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必须是非负整数。") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("必须是非负整数。")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Declare commands without importing model or retrieval dependencies."""
     parser = argparse.ArgumentParser(
         prog="person-a",
         description="基于本地 Markdown 知识库的 Python / LangChain 学习助手。",
-        epilog="配置从环境变量和项目根目录的 .env 读取。",
+        epilog=(
+            "配置从环境变量和项目根目录的 .env 读取。会话默认持久化到 "
+            "data/sessions/chat.db，可用 SESSION_DB_PATH 和 "
+            "SESSION_DB_LOCK_TIMEOUT 配置。"
+        ),
     )
     commands = parser.add_subparsers(dest="command", required=True, title="命令")
     for name, description in (
@@ -63,11 +87,40 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("question", type=_nonempty, help="问题；包含空格时请用引号包围")
         command.add_argument("--json", action="store_true", help="将结构化结果以 JSON 输出")
 
-    chat = commands.add_parser("chat", help="开始交互式多轮问答")
-    chat.add_argument(
-        "--session-id", type=_nonempty, default="cli",
-        help="本进程内的会话标识（默认 cli），不会恢复上次运行的历史",
+    chat = commands.add_parser(
+        "chat",
+        help="新建或恢复持久化的交互式多轮会话",
+        description=(
+            "不指定 --session-id 时新建会话；指定后恢复该会话，"
+            "可用 person-a sessions 查看可恢复的 ID。"
+        ),
     )
+    chat.add_argument(
+        "--session-id",
+        type=_nonempty,
+        help="恢复已有会话 ID；省略时创建新的随机 ID",
+    )
+
+    sessions = commands.add_parser(
+        "sessions", help="列出本地持久化会话（不加载模型或知识库）"
+    )
+    sessions.add_argument("--limit", type=_positive_int, default=50, help="最多显示的会话数")
+    sessions.add_argument("--offset", type=_nonnegative_int, default=0, help="跳过的会话数")
+    sessions.add_argument("--json", action="store_true", help="将结构化结果以 JSON 输出")
+
+    history = commands.add_parser(
+        "history", help="查看一个会话的完整历史（不加载模型或知识库）"
+    )
+    history.add_argument("session_id", type=_nonempty, help="会话 ID")
+    history.add_argument("--limit", type=_positive_int, help="最多显示的问答轮数")
+    history.add_argument("--offset", type=_nonnegative_int, default=0, help="跳过的问答轮数")
+    history.add_argument("--json", action="store_true", help="将结构化结果以 JSON 输出")
+
+    delete = commands.add_parser(
+        "delete-session", help="永久删除一个会话及其历史（不加载模型或知识库）"
+    )
+    delete.add_argument("session_id", type=_nonempty, help="会话 ID")
+    delete.add_argument("--json", action="store_true", help="将结构化结果以 JSON 输出")
     return parser
 
 
@@ -90,6 +143,14 @@ def _error_details(exc: Exception) -> tuple[str, str]:
         "ChatModelInvocationError": ("chat_failed", "对话模型调用失败，请检查服务与配置。"),
         "ApplicationBusyError": ("application_busy", "当前操作尚未结束，请等待后再操作。"),
         "SessionNotStartedError": ("session_not_started", "会话尚未开始，请重新启动问答命令。"),
+        "SessionNotFoundError": ("session_not_found", "会话不存在，请先运行 person-a sessions 查看会话 ID。"),
+        "DuplicateSessionError": ("session_exists", "会话 ID 已存在，请恢复该会话或使用新的 ID。"),
+        "SessionStoreLockedError": ("session_store_busy", "会话数据库正忙，请稍后重试。"),
+        "SessionStoreSchemaError": ("session_store_incompatible", "会话数据库版本不兼容。"),
+        "SessionStoreCorruptionError": ("session_store_corrupt", "会话数据库已损坏。"),
+        "SessionStorePathError": ("session_store_path_failed", "无法访问会话数据库，请检查路径和权限。"),
+        "SessionStoreReadError": ("session_store_read_failed", "读取会话数据库失败。"),
+        "SessionStoreWriteError": ("session_store_write_failed", "写入会话数据库失败，本次更改未保存。"),
     }
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -178,17 +239,36 @@ def _display_answer(result: AnswerResult, *, json_output: bool = False) -> int:
     return 1 if result.status in {"service_error", "limit_reached"} else 0
 
 
+def _create_session_store() -> Any:
+    """Create storage without constructing model or retrieval services."""
+    from .config import get_session_store_settings
+    from .session_store import SQLiteSessionStore
+
+    settings = get_session_store_settings()
+    return SQLiteSessionStore(settings.db_path, lock_timeout=settings.lock_timeout)
+
+
 @contextmanager
-def _session(session_id: str) -> Iterator[KnowledgeAgentApplication]:
+def _session(
+    session_id: str | None,
+    *,
+    persistent: bool = False,
+    resume: bool = False,
+) -> Iterator[KnowledgeAgentApplication]:
     from .agent import create_agent_application
 
-    application = create_agent_application()
-    application.start_session(session_id)
+    store = _create_session_store() if persistent else None
+    application = create_agent_application(session_store=store)
     try:
+        if resume:
+            if session_id is None:
+                raise ValueError("session_id is required when resuming")
+            application.resume_session(session_id)
+        else:
+            application.start_session(session_id)
         yield application
     finally:
-        if application.session_id is not None:
-            application.end_session()
+        application.close()
 
 
 def _run_ask(question: str, *, json_output: bool) -> int:
@@ -196,8 +276,13 @@ def _run_ask(question: str, *, json_output: bool) -> int:
         return _display_answer(application.ask(question), json_output=json_output)
 
 
-def _run_chat(session_id: str) -> int:
-    with _session(session_id) as application:
+def _run_chat(session_id: str | None) -> int:
+    with _session(
+        session_id,
+        persistent=True,
+        resume=session_id is not None,
+    ) as application:
+        print(f"会话 ID：{application.session_id}")
         print(_CHAT_HELP)
         while True:
             try:
@@ -216,7 +301,7 @@ def _run_chat(session_id: str) -> int:
             try:
                 if question == "/clear":
                     application.clear_session()
-                    print("已清空本次会话历史。")
+                    print("已永久清空当前会话历史。")
                 elif question == "/refresh":
                     snapshot = application.refresh_index()
                     print(f"已重载索引，版本：{snapshot.index_version}")
@@ -231,6 +316,71 @@ def _run_chat(session_id: str) -> int:
                     print("仍保留刷新前的索引，可继续提问。", file=sys.stderr)
 
 
+@contextmanager
+def _storage() -> Iterator[Any]:
+    store = _create_session_store()
+    try:
+        store.initialize()
+        yield store
+    finally:
+        store.close()
+
+
+def _run_sessions(*, limit: int, offset: int, json_output: bool) -> int:
+    with _storage() as store:
+        records = store.list_sessions(limit=limit, offset=offset)
+    payload = [asdict(record) for record in records]
+    if json_output:
+        _write_json({"status": "success", "sessions": payload})
+    elif not records:
+        print("暂无会话。")
+    else:
+        print("会话 ID\t更新时间\t标题")
+        for record in records:
+            print(f"{record.session_id}\t{record.updated_at}\t{record.title or '-'}")
+    return 0
+
+
+def _run_history(
+    session_id: str, *, limit: int | None, offset: int, json_output: bool
+) -> int:
+    with _storage() as store:
+        turns = store.load_turns(session_id, limit=limit, offset=offset)
+    payload = [
+        {
+            "turn_id": turn.turn_id,
+            "turn_no": turn.turn_no,
+            "question": turn.question,
+            "retrieval_question": turn.retrieval_question,
+            "result": asdict(turn.result),
+        }
+        for turn in turns
+    ]
+    if json_output:
+        _write_json({"status": "success", "session_id": session_id, "turns": payload})
+    elif not turns:
+        print("该会话暂无历史。")
+    else:
+        for turn in turns:
+            print(f"[{turn.turn_no}] 你：{turn.question}")
+            print(f"助手：{turn.result.answer}")
+    return 0
+
+
+def _run_delete_session(session_id: str, *, json_output: bool) -> int:
+    with _storage() as store:
+        deleted = store.delete_session(session_id)
+    if not deleted:
+        from .session_store import SessionNotFoundError
+
+        raise SessionNotFoundError("Session does not exist")
+    if json_output:
+        _write_json({"status": "success", "session_id": session_id, "deleted": True})
+    else:
+        print(f"已删除会话：{session_id}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch one command; importing this module never starts an application."""
     args = build_parser().parse_args(argv)
@@ -240,7 +390,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_ingest(args.command, json_output=json_output)
         if args.command == "ask":
             return _run_ask(args.question, json_output=json_output)
-        return _run_chat(args.session_id)
+        if args.command == "chat":
+            return _run_chat(args.session_id)
+        if args.command == "sessions":
+            return _run_sessions(limit=args.limit, offset=args.offset, json_output=json_output)
+        if args.command == "history":
+            return _run_history(
+                args.session_id,
+                limit=args.limit,
+                offset=args.offset,
+                json_output=json_output,
+            )
+        return _run_delete_session(args.session_id, json_output=json_output)
     except KeyboardInterrupt:
         if json_output:
             _write_json({"status": "interrupted", "message": "操作已中断。"}, error=True)

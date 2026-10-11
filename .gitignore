@@ -24,6 +24,9 @@ data/index/*
 # 建库/更新被强杀时遗留的临时目录（.index.build-* / .index.update-* / .index.backup-*）
 data/.index.*/
 
+# 本地会话数据库及 SQLite 辅助文件（包含聊天记录）
+data/sessions/
+
 # 日志
 logs/
 *.log

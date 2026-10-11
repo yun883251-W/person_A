@@ -23,6 +23,7 @@ python -m pip install -e .
 | `EMBEDDING_BASE_URL` | Ollama 服务地址，默认 `http://localhost:11434` |
 | `CHAT_PROVIDER` / `CHAT_MODEL` | 使用 `deepseek`，模型名填写账号实际可用的 API 模型 |
 | `CHAT_API_KEY` / `CHAT_BASE_URL` | 本地填写 DeepSeek 密钥，服务地址默认 `https://api.deepseek.com` |
+| `SESSION_DB_PATH` / `SESSION_DB_LOCK_TIMEOUT` | 本地会话数据库路径（默认 `./data/sessions/chat.db`）与 SQLite 锁等待秒数 |
 
 启动 Ollama 服务，并确认向量模型可用。超时、重试次数、生成参数和检索条数可参考 `.env.example` 中的其他字段调整。
 
@@ -49,18 +50,24 @@ person-a update
 | `person-a build` | 完整构建并发布索引 |
 | `person-a update` | 同步文档变化；已有入库逻辑判断必要时重建 |
 | `person-a ask "问题"` | 执行一次问答 |
-| `person-a chat --session-id cli` | 开启内存多轮会话，默认会话标识为 `cli` |
+| `person-a chat` | 新建一个随机 ID 的本地持久化会话 |
+| `person-a chat --session-id ID` | 按 ID 恢复已有会话 |
+| `person-a sessions` | 列出可恢复的本地会话 |
+| `person-a history ID` | 查看会话的完整持久化历史 |
+| `person-a delete-session ID` | 永久删除会话及其历史 |
 
 使用 `person-a --help` 或相应子命令的 `--help` 查看参数。`build`、`update`、`ask` 支持 `--json`：结构化业务结果（包括返回的失败状态）写入标准输出，进度和抛出的执行错误写入标准错误。脚本应同时检查结果状态和退出码。
 
 在 `chat` 中可输入：
 
 - `/help`：显示会话命令。
-- `/clear`：清空当前会话历史。
+- `/clear`：永久清空当前会话的全部历史，但保留会话本身。
 - `/refresh`：重新加载已经发布的索引，不执行建库或文档同步；文档变化后应先运行 `update`。
-- `/exit`：结束会话并退出；输入结束（EOF）也会退出。
+- `/exit`：保存已经完成的问答并退出；输入结束（EOF）也会保留已完成的问答。
 
-会话历史只保存在当前进程内，不写入磁盘。再次启动时使用相同的 `--session-id` 也不会恢复此前会话。按 `Ctrl+C` 中断会结束会话，以退出码 `130` 退出。
+会话记录保存在本地 SQLite 数据库中，默认位置为 `data/sessions/chat.db`。不带 `--session-id` 运行 `chat` 会新建会话；需要先用 `person-a sessions` 找到 ID，再用 `person-a chat --session-id ID` 恢复。`/exit`、EOF 或 `Ctrl+C` 只结束当前运行，不删除已提交的历史；`/clear` 会永久删除当前会话的全部历史；`delete-session` 则连同会话本身一起删除。按 `Ctrl+C` 中断时退出码为 `130`。
+
+数据库保留完整的已提交历史，`history` 命令可分页查看；恢复会话时只有最近 `AgentConfig.max_history_turns` 轮会装入模型上下文，以控制请求大小，较早记录仍保留在数据库中。该存储仅面向当前设备上的本地使用，尚不提供多用户账户隔离或跨设备同步。运行时数据库及 SQLite 辅助文件已被 Git 忽略，请勿提交聊天记录。默认日志不输出消息正文，只应记录必要的会话操作和错误类别。
 
 退出码约定：`0` 表示命令正常结束，包含资料不足、需要澄清或问题超出范围的正常业务结果；`1` 表示执行或服务错误，或达到调用上限；`2` 表示参数错误；`130` 表示用户中断。
 
@@ -80,8 +87,10 @@ Person_A/
 │   ├── keywords.py               # 共享关键词分词规则
 │   ├── retrieval.py              # 向量与关键词检索、上下文补查
 │   ├── agent.py                  # 工具调用、会话管理与回答引用
+│   ├── session_store.py          # 本地 SQLite 会话持久化
 │   └── prompts.py                # 问答约束与来源标记规则
 ├── data/index/                   # 建库后发布的索引与清单
+├── data/sessions/                # 本地会话数据库（不提交）
 ├── evaluation/questions.jsonl    # 5 条人工验收问题草案
 ├── tests/                        # 自动化验证目录
 ├── .env                          # 本地配置，不提交真实凭据

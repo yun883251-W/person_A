@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +69,15 @@ class ChatSettings:
     max_retries: int = 2
     temperature: float | None = None
     max_output_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionStoreSettings:
+    """Validated SQLite session-store configuration."""
+
+    db_path: Path
+    lock_timeout: float = 5.0
+    project_root: Path = PROJECT_ROOT
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,3 +178,35 @@ def get_retrieval_settings() -> RetrievalSettings:
         rrf_k=int(value("RETRIEVAL_RRF_K", "60")),
         request_timeout=float(value("EMBEDDING_REQUEST_TIMEOUT", "60")),
     )
+
+
+def get_session_store_settings() -> SessionStoreSettings:
+    """Resolve and validate SQLite settings without touching the database."""
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+
+    def value(name: str, default: str) -> str:
+        return os.environ.get(name, dotenv.get(name, default))
+
+    raw_path = value("SESSION_DB_PATH", "data/sessions/chat.db").strip()
+    if not raw_path:
+        raise ValueError("SESSION_DB_PATH 不能为空")
+
+    db_path = Path(raw_path).expanduser()
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+    db_path = db_path.resolve(strict=False)
+    if db_path.is_dir():
+        raise ValueError(f"SESSION_DB_PATH 不能指向目录: {db_path}")
+
+    raw_timeout = value(
+        "SESSION_DB_LOCK_TIMEOUT",
+        value("SESSION_DB_TIMEOUT", "5"),
+    ).strip()
+    try:
+        lock_timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise ValueError("SESSION_DB_LOCK_TIMEOUT 必须是有效数字") from exc
+    if not math.isfinite(lock_timeout) or lock_timeout <= 0:
+        raise ValueError("SESSION_DB_LOCK_TIMEOUT 必须大于 0")
+
+    return SessionStoreSettings(db_path=db_path, lock_timeout=lock_timeout)
