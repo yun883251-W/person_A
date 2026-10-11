@@ -10,13 +10,20 @@
     "clear-session", "delete-session", "welcome", "conversation", "conversation-scroll",
     "composer-form", "question", "skill-select", "send-button", "composer-hint", "char-count",
     "notice", "notice-text", "notice-dismiss", "confirm-dialog", "confirm-title",
-    "confirm-description", "confirm-cancel", "confirm-accept",
+    "confirm-description", "confirm-cancel", "confirm-accept", "knowledge-open",
+    "knowledge-dialog", "knowledge-close", "knowledge-message", "knowledge-refresh",
+    "knowledge-status-cards", "knowledge-build", "knowledge-update",
+    "knowledge-upload-form", "knowledge-file", "knowledge-document-count",
+    "knowledge-document-list", "knowledge-preview-title", "knowledge-preview-meta",
+    "knowledge-preview-content",
   ].map((id) => [id, byId(id)]));
   const PAGE_SIZE = 100;
   const STORAGE_KEY = "person-a.current-session";
   const state = {
     sessions: [], sessionOffset: 0, hasMore: false, current: null, turns: [],
     operation: null, pendingQuestion: "", needsRefresh: false,
+    knowledgeBusy: false, knowledgeDocuments: [], knowledgeStatus: null,
+    knowledgePreviewPath: null,
   };
   const statusLabels = {
     success: "基于知识库回答", insufficient_evidence: "资料不足",
@@ -40,6 +47,14 @@
     network_error: "无法连接服务，请确认 FastAPI 仍在运行。",
     request_timeout: "等待服务响应超时。",
     invalid_response: "服务返回了无法识别的数据，请检查 API 服务。",
+    document_changed: "当前原文已与回答引用时不同，下面显示的是最新内容。",
+    document_exists: "同名文档已存在，请改名后上传。",
+    invalid_filename: "文件名无效，只能上传单个 Markdown 文件。",
+    invalid_encoding: "文档必须使用 UTF-8 编码。",
+    upload_too_large: "文档超过上传大小限制。",
+    knowledge_busy: "知识库正在处理其他操作，请稍后刷新状态。",
+    index_ingest_failed: "索引更新失败，请检查文档和模型服务。",
+    index_refresh_failed: "索引已发布，但运行中的服务未能加载新版本。",
   };
 
   class ApiError extends Error {
@@ -51,14 +66,16 @@
     }
   }
 
-  async function request(path, { method = "GET", body, timeout = 20000 } = {}) {
+  async function request(path, { method = "GET", body, rawBody, contentType, timeout = 20000 } = {}) {
     const controller = new AbortController();
     const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
     try {
       const response = await fetch(path, {
         method, signal: controller.signal, cache: "no-store",
-        headers: body === undefined ? {} : { "Content-Type": "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        headers: rawBody === undefined
+          ? (body === undefined ? {} : { "Content-Type": "application/json" })
+          : { "Content-Type": contentType || "application/octet-stream" },
+        body: rawBody === undefined ? (body === undefined ? undefined : JSON.stringify(body)) : rawBody,
       });
       if (response.status === 204) return null;
       let data;
@@ -92,6 +109,142 @@
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+
+  function knowledgeMessage(message, kind = "info") {
+    ui["knowledge-message"].hidden = !message;
+    ui["knowledge-message"].dataset.kind = kind;
+    ui["knowledge-message"].textContent = message;
+  }
+
+  const knowledgeStateLabels = {
+    pending: "待加入索引", synced: "已同步", modified: "原文已修改",
+    removed: "原文已移除", unreadable: "无法读取", unknown: "状态未知",
+  };
+  const indexStateLabels = {
+    not_built: "尚未建立", published: "已发布", incomplete: "发布不完整",
+    corrupt: "索引损坏", unknown: "状态未知",
+  };
+
+  function renderKnowledgeStatus() {
+    const status = state.knowledgeStatus;
+    const pending = status?.pending_changes?.total;
+    const cards = [
+      ["发布状态", status ? (indexStateLabels[status.disk_status] || status.disk_status) : "—"],
+      ["待同步变化", pending == null ? "—" : `${pending} 项`],
+      ["文档 / 片段", status ? `${status.indexed_document_count ?? "—"} / ${status.chunk_count ?? "—"}` : "—"],
+      ["当前版本", status?.published_version || "—"],
+    ];
+    ui["knowledge-status-cards"].replaceChildren(...cards.map(([label, value]) => {
+      const card = element("div", "knowledge-status-card");
+      card.append(element("span", null, label), element("strong", null, value));
+      return card;
+    }));
+  }
+
+  function renderKnowledgeDocuments() {
+    ui["knowledge-document-count"].textContent = `${state.knowledgeDocuments.length} 个文档`;
+    const fragment = document.createDocumentFragment();
+    for (const documentRecord of state.knowledgeDocuments) {
+      const item = element("li");
+      const button = element("button"); button.type = "button";
+      button.disabled = state.knowledgeBusy || !documentRecord.exists || documentRecord.sync_status === "unreadable";
+      button.setAttribute("aria-current", String(documentRecord.path === state.knowledgePreviewPath));
+      button.append(element("span", "knowledge-document-path", documentRecord.path));
+      const detail = element("span", "knowledge-document-state", knowledgeStateLabels[documentRecord.sync_status] || documentRecord.sync_status);
+      detail.dataset.state = documentRecord.sync_status;
+      button.append(detail);
+      button.addEventListener("click", () => openKnowledgeDocument(documentRecord.path, documentRecord.content_hash));
+      item.append(button); fragment.append(item);
+    }
+    if (!state.knowledgeDocuments.length) fragment.append(element("li", "empty-sessions", "还没有 Markdown 文档。"));
+    ui["knowledge-document-list"].replaceChildren(fragment);
+  }
+
+  function updateKnowledgeControls() {
+    const busy = state.knowledgeBusy;
+    for (const id of ["knowledge-refresh", "knowledge-build", "knowledge-update", "knowledge-file"]) ui[id].disabled = busy;
+    ui["knowledge-upload-form"].querySelector("button").disabled = busy;
+    ui["knowledge-dialog"].setAttribute("aria-busy", String(busy));
+    renderKnowledgeDocuments();
+  }
+
+  async function loadKnowledgeData() {
+    const documents = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const page = await request(`/knowledge/documents?limit=${PAGE_SIZE}&offset=${offset}`);
+      documents.push(...page.items);
+      if (page.items.length < PAGE_SIZE) break;
+    }
+    const status = await request("/knowledge/status");
+    state.knowledgeDocuments = documents; state.knowledgeStatus = status;
+    renderKnowledgeDocuments(); renderKnowledgeStatus();
+  }
+
+  async function openKnowledgeManager() {
+    closeSidebar();
+    if (!ui["knowledge-dialog"].open) ui["knowledge-dialog"].showModal();
+    if (state.knowledgeBusy) return;
+    state.knowledgeBusy = true; updateKnowledgeControls(); knowledgeMessage("正在读取文档与索引状态…");
+    try { await loadKnowledgeData(); knowledgeMessage(""); }
+    catch (error) { knowledgeMessage(error.message, "error"); }
+    finally { state.knowledgeBusy = false; updateKnowledgeControls(); }
+  }
+
+  async function openKnowledgeDocument(path, contentHash = null, startLine = 1) {
+    if (state.knowledgeBusy) return;
+    state.knowledgeBusy = true; state.knowledgePreviewPath = path; updateKnowledgeControls();
+    ui["knowledge-preview-title"].textContent = path;
+    ui["knowledge-preview-meta"].textContent = "正在读取原文…";
+    ui["knowledge-preview-content"].textContent = "";
+    const params = new URLSearchParams({ path, start_line: String(startLine), limit: "1000" });
+    if (contentHash) params.set("content_hash", contentHash);
+    try {
+      const preview = await request(`/knowledge/documents/content?${params}`);
+      ui["knowledge-preview-meta"].textContent = `第 ${preview.start_line}–${preview.end_line} 行，共 ${preview.total_lines} 行${preview.truncated ? " · 预览已截断" : ""}`;
+      ui["knowledge-preview-content"].textContent = preview.content;
+    } catch (error) {
+      if (error.code === "document_changed" && contentHash) {
+        knowledgeMessage(error.message, "error");
+        state.knowledgeBusy = false; updateKnowledgeControls();
+        return openKnowledgeDocument(path, null, startLine);
+      }
+      knowledgeMessage(error.message, "error");
+      ui["knowledge-preview-meta"].textContent = "无法读取原文。";
+    } finally {
+      state.knowledgeBusy = false; updateKnowledgeControls();
+    }
+  }
+
+  async function uploadKnowledgeDocument(event) {
+    event.preventDefault();
+    const file = ui["knowledge-file"].files[0];
+    if (!file || state.knowledgeBusy) return;
+    state.knowledgeBusy = true; updateKnowledgeControls(); knowledgeMessage("正在上传文档…");
+    try {
+      await request(`/knowledge/documents?filename=${encodeURIComponent(file.name)}`, {
+        method: "POST", rawBody: file, contentType: "text/markdown; charset=utf-8", timeout: 0,
+      });
+      ui["knowledge-upload-form"].reset();
+      await loadKnowledgeData();
+      knowledgeMessage("上传成功，待更新索引。", "success");
+    } catch (error) { knowledgeMessage(error.message, "error"); }
+    finally { state.knowledgeBusy = false; updateKnowledgeControls(); }
+  }
+
+  async function runKnowledgeIndex(operation) {
+    if (state.knowledgeBusy) return;
+    state.knowledgeBusy = true; updateKnowledgeControls();
+    knowledgeMessage(operation === "build" ? "正在完整重建索引，请勿重复提交…" : "正在更新索引，请勿重复提交…");
+    try {
+      const result = await request(`/knowledge/index/${operation}`, { method: "POST", timeout: 0 });
+      await loadKnowledgeData();
+      knowledgeMessage(`索引更新完成，已发布版本 ${result.published_version || "未知"}。`, "success");
+    } catch (error) {
+      // 请求失联或失败后只查询真实状态，不自动重复会写入索引的操作。
+      try { await loadKnowledgeData(); } catch { /* 保留原始操作错误。 */ }
+      knowledgeMessage(`${error.message} 已重新查询当前状态，请确认发布版本后再决定是否重试。`, "error");
+    } finally { state.knowledgeBusy = false; updateKnowledgeControls(); }
   }
 
   // 模型输出始终作为文本构建 DOM，不将 Markdown/HTML 交给 innerHTML 执行。
@@ -199,10 +352,15 @@
     details.append(element("summary", null, `参考来源 · ${sources.length} 处`));
     // sources 是实际引用的片段；API 没有保留 S 编号，不能重新编造对应关系。
     for (const source of sources) {
-      const card = element("article", "source-card");
+      const card = element("button", "source-card"); card.type = "button";
+      card.title = "打开引用原文";
       card.append(element("div", "source-path", source.source_path));
       if (source.heading_path?.length) card.append(element("div", "source-heading", source.heading_path.join(" › ")));
       card.append(element("div", "source-detail", `原文第 ${source.start_line}–${source.end_line} 行`));
+      card.addEventListener("click", async () => {
+        await openKnowledgeManager();
+        await openKnowledgeDocument(source.source_path, source.content_hash, source.start_line);
+      });
       details.append(card);
     }
     return details;
@@ -479,6 +637,12 @@
   ui["notice-dismiss"].addEventListener("click", () => notice(""));
   ui["confirm-cancel"].addEventListener("click", () => ui["confirm-dialog"].close("cancel"));
   ui["confirm-accept"].addEventListener("click", () => ui["confirm-dialog"].close("confirm"));
+  ui["knowledge-open"].addEventListener("click", openKnowledgeManager);
+  ui["knowledge-close"].addEventListener("click", () => ui["knowledge-dialog"].close());
+  ui["knowledge-refresh"].addEventListener("click", openKnowledgeManager);
+  ui["knowledge-upload-form"].addEventListener("submit", uploadKnowledgeDocument);
+  ui["knowledge-build"].addEventListener("click", () => runKnowledgeIndex("build"));
+  ui["knowledge-update"].addEventListener("click", () => runKnowledgeIndex("update"));
   ui["menu-toggle"].addEventListener("click", () => {
     document.body.classList.add("sidebar-open"); ui["menu-toggle"].setAttribute("aria-expanded", "true");
     ui["sidebar-close"].focus();
@@ -497,7 +661,7 @@
     });
   }
   window.addEventListener("beforeunload", (event) => {
-    if (state.operation === "send") { event.preventDefault(); event.returnValue = ""; }
+    if (state.operation === "send" || state.knowledgeBusy) { event.preventDefault(); event.returnValue = ""; }
   });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) void checkHealth(); });
   window.addEventListener("online", checkHealth);

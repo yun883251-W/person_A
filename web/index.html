@@ -60,6 +60,11 @@
         </nav>
 
         <div class="sidebar-footer">
+          <button id="knowledge-open" class="knowledge-open" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#icon-book"/></svg>
+            <span>管理知识库</span>
+            <span aria-hidden="true">→</span>
+          </button>
           <div class="library-label"><svg class="icon" aria-hidden="true"><use href="#icon-book"/></svg><span>你的文档，回答的依据</span></div>
           <p>循着来源，把知识读懂。</p>
           <div id="service-status" class="service-status" data-state="checking" role="status" aria-live="polite">正在检查服务</div>
@@ -155,6 +160,43 @@
         </div>
       </section>
     </div>
+
+    <dialog id="knowledge-dialog" class="knowledge-dialog" aria-labelledby="knowledge-title">
+      <header class="knowledge-header">
+        <div>
+          <p>文档与索引</p>
+          <h2 id="knowledge-title">知识库管理</h2>
+        </div>
+        <button id="knowledge-close" class="icon-button" type="button" aria-label="关闭知识库管理"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
+      </header>
+      <div id="knowledge-message" class="knowledge-message" role="status" aria-live="polite" hidden></div>
+      <section class="knowledge-status" aria-labelledby="knowledge-status-title">
+        <div class="knowledge-section-heading">
+          <h3 id="knowledge-status-title">索引状态</h3>
+          <button id="knowledge-refresh" class="button button--secondary" type="button">刷新状态</button>
+        </div>
+        <div id="knowledge-status-cards" class="knowledge-status-cards"></div>
+        <div class="knowledge-actions">
+          <button id="knowledge-build" class="button button--secondary" type="button">完整重建</button>
+          <button id="knowledge-update" class="button" type="button">更新索引</button>
+        </div>
+      </section>
+      <section class="knowledge-content" aria-label="文档管理">
+        <div class="knowledge-documents">
+          <div class="knowledge-section-heading"><h3>文档</h3><span id="knowledge-document-count"></span></div>
+          <form id="knowledge-upload-form" class="knowledge-upload-form">
+            <label for="knowledge-file">添加 Markdown 文档</label>
+            <div><input id="knowledge-file" type="file" accept=".md,text/markdown" required><button class="button" type="submit">上传</button></div>
+          </form>
+          <ul id="knowledge-document-list" class="knowledge-document-list"></ul>
+        </div>
+        <div class="knowledge-preview">
+          <div class="knowledge-section-heading"><h3 id="knowledge-preview-title">原文预览</h3></div>
+          <p id="knowledge-preview-meta" class="knowledge-preview-meta">选择左侧文档查看原文。</p>
+          <pre id="knowledge-preview-content" tabindex="0"></pre>
+        </div>
+      </section>
+    </dialog>
 
     <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
       <div class="dialog-icon" aria-hidden="true"><svg class="icon"><use href="#icon-info"/></svg></div>

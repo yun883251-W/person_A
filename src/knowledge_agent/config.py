@@ -49,6 +49,15 @@ class IngestSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeBaseSettings:
+    """Path-only settings shared by read-only knowledge-base operations."""
+
+    docs_dir: str
+    index_dir: str
+    project_root: Path = PROJECT_ROOT
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalSettings:
     index_dir: str
     top_k: int
@@ -160,6 +169,20 @@ def get_ingest_settings() -> IngestSettings:
         embedding_request_timeout=float(value("EMBEDDING_REQUEST_TIMEOUT", "60")),
         embedding_max_retries=int(value("EMBEDDING_MAX_RETRIES", "2")),
         embedding_retry_delay=float(value("EMBEDDING_RETRY_DELAY", "0.5")),
+    )
+
+
+def get_knowledge_base_settings() -> KnowledgeBaseSettings:
+    """Return document/index paths without parsing unrelated ingest settings."""
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+
+    def value(name: str, default: str) -> str:
+        return os.environ.get(name, dotenv.get(name, default))
+
+    return KnowledgeBaseSettings(
+        docs_dir=value("KNOWLEDGE_DOCS_DIR", "docs"),
+        index_dir=value("KNOWLEDGE_INDEX_DIR", "data/index"),
+        project_root=PROJECT_ROOT,
     )
 
 

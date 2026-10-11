@@ -42,7 +42,7 @@ from threading import Lock, get_ident
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -56,6 +56,22 @@ from .models import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
     ChatModelTimeoutError,
+)
+from .knowledge_base import (
+    DocumentAlreadyExistsError,
+    DocumentReferenceMismatchError,
+    DocumentSummary,
+    DocumentTooLargeError,
+    IncompleteIndexError,
+    IndexOperationResult,
+    IndexStatus,
+    InvalidDocumentPathError,
+    InvalidIndexManifestError,
+    InvalidUploadEncodingError,
+    InvalidUploadFilenameError,
+    KnowledgeBaseService,
+    UploadTooLargeError,
+    load_knowledge_base_config,
 )
 from .schemas import AnswerResult, AnswerSource, AnswerStatus
 from .session_store import (
@@ -74,6 +90,8 @@ from .skill_loader import discover_skills
 MAX_TITLE_LENGTH = 200
 MAX_QUESTION_LENGTH = 10_000
 MAX_PAGE_SIZE = 100
+MAX_PREVIEW_LINES = 1_000
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8000
 LOCAL_API_WORKERS = 1
@@ -233,6 +251,70 @@ class HealthResponse(_PublicModel):
     service: str
     version: str
     status: Literal["ok"] = "ok"
+
+
+class DocumentResponse(_PublicModel):
+    path: str
+    exists: bool
+    size_bytes: int | None
+    modified_at: str | None
+    sync_status: str
+    content_hash: str | None = None
+    error: str | None = None
+
+
+class DocumentListResponse(_PublicModel):
+    items: list[DocumentResponse]
+    limit: PageLimit
+    offset: PageOffset
+
+
+class DocumentPreviewResponse(_PublicModel):
+    path: str
+    content: str
+    start_line: int = Field(ge=0)
+    end_line: int = Field(ge=0)
+    total_lines: int = Field(ge=0)
+    content_hash: str
+    truncated: bool
+
+
+class DocumentChangesResponse(_PublicModel):
+    added: int | None = Field(default=None, ge=0)
+    modified: int | None = Field(default=None, ge=0)
+    removed: int | None = Field(default=None, ge=0)
+    unreadable: int | None = Field(default=None, ge=0)
+    total: int | None = Field(default=None, ge=0)
+
+
+class IndexStatusResponse(_PublicModel):
+    disk_status: str
+    published_version: str | None
+    built_at: str | None
+    disk_document_count: int | None = Field(default=None, ge=0)
+    indexed_document_count: int | None = Field(default=None, ge=0)
+    chunk_count: int | None = Field(default=None, ge=0)
+    pending_changes: DocumentChangesResponse
+    active_version: str | None = None
+    error: str | None = None
+
+
+class IndexOperationResponse(_PublicModel):
+    operation: Literal["build", "update"]
+    succeeded: bool
+    published: bool | None
+    refreshed: bool | None
+    published_version: str | None = None
+    active_version: str | None = None
+    discovered_files: int | None = Field(default=None, ge=0)
+    read_files: int | None = Field(default=None, ge=0)
+    chunk_count: int | None = Field(default=None, ge=0)
+    changed_file_count: int | None = Field(default=None, ge=0)
+    full_rebuild: bool | None = None
+    reused_chunks: int | None = Field(default=None, ge=0)
+    embedded_chunks: int | None = Field(default=None, ge=0)
+    removed_chunks: int | None = Field(default=None, ge=0)
+    error_category: str | None = None
 
 
 def _error_content(
@@ -481,6 +563,36 @@ def create_app(
     for exception_type in (ServiceBusyError, SessionStoreLockedError):
         application.add_exception_handler(exception_type, unavailable_error_handler)
 
+    def knowledge_error(
+        status_code: int, code: str, message: str
+    ) -> Callable[[Request, Exception], Any]:
+        async def handler(_request: Request, _exc: Exception) -> JSONResponse:
+            return JSONResponse(
+                status_code=status_code,
+                content=_error_content(code, message),
+            )
+
+        return handler
+
+    knowledge_error_mappings = (
+        (FileNotFoundError, 404, "document_not_found", "Document not found"),
+        (InvalidDocumentPathError, 422, "invalid_document_path", "The document path is invalid"),
+        (DocumentReferenceMismatchError, 409, "document_changed", "The document no longer matches the referenced content"),
+        (DocumentAlreadyExistsError, 409, "document_exists", "A document with that name already exists"),
+        (InvalidUploadFilenameError, 422, "invalid_filename", "The upload filename is invalid"),
+        (InvalidUploadEncodingError, 422, "invalid_encoding", "The document must use UTF-8 encoding"),
+        (UploadTooLargeError, 413, "upload_too_large", "The uploaded document is too large"),
+        (DocumentTooLargeError, 413, "document_too_large", "The document is too large to preview"),
+        (IncompleteIndexError, 500, "index_incomplete", "The published index is incomplete"),
+        (InvalidIndexManifestError, 500, "index_corrupt", "The published index metadata is invalid"),
+        (PermissionError, 500, "knowledge_storage_error", "Knowledge-base storage is unavailable"),
+        (NotADirectoryError, 500, "knowledge_storage_error", "Knowledge-base storage is unavailable"),
+    )
+    for exception_type, status_code, code, message in knowledge_error_mappings:
+        application.add_exception_handler(
+            exception_type, knowledge_error(status_code, code, message)
+        )
+
     @application.exception_handler(ChatModelTimeoutError)
     async def model_timeout_handler(
         _request: Request, _exc: ChatModelTimeoutError
@@ -540,6 +652,116 @@ def create_app(
             service=application.title,
             version=application.version,
         )
+
+    @application.get(
+        "/knowledge/documents",
+        response_model=DocumentListResponse,
+        summary="分页列出知识库文档",
+    )
+    async def list_knowledge_documents(
+        limit: PageLimit = 50,
+        offset: PageOffset = 0,
+    ) -> DocumentListResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        documents = await runtime.run_knowledge(
+            lambda service: service.list_documents(offset=offset, limit=limit)
+        )
+        return DocumentListResponse(
+            items=[_document_response(item) for item in documents],
+            limit=limit,
+            offset=offset,
+        )
+
+    @application.get(
+        "/knowledge/documents/content",
+        response_model=DocumentPreviewResponse,
+        summary="预览受控知识库原文",
+    )
+    async def read_knowledge_document(
+        path: Annotated[str, Query(min_length=1)],
+        start_line: Annotated[int, Query(ge=1)] = 1,
+        limit: Annotated[int, Query(ge=1, le=MAX_PREVIEW_LINES)] = 200,
+        content_hash: Annotated[str | None, Query(min_length=1)] = None,
+    ) -> DocumentPreviewResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        preview = await runtime.run_knowledge(
+            lambda service: service.read_document(
+                path,
+                start_line=start_line,
+                limit=limit,
+                content_hash=content_hash,
+            )
+        )
+        return DocumentPreviewResponse.model_validate(preview, from_attributes=True)
+
+    @application.get(
+        "/knowledge/status",
+        response_model=IndexStatusResponse,
+        summary="读取知识库索引状态",
+    )
+    async def knowledge_status() -> IndexStatusResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        return _index_status_response(await runtime.get_knowledge_status())
+
+    @application.post(
+        "/knowledge/documents",
+        response_model=DocumentResponse,
+        status_code=status.HTTP_201_CREATED,
+        summary="上传新的 Markdown 文档",
+    )
+    async def upload_knowledge_document(
+        filename: Annotated[str, Query(min_length=1, max_length=255)],
+        content: Annotated[bytes, Body(media_type="text/markdown")],
+    ) -> DocumentResponse:
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise UploadTooLargeError("upload exceeds the HTTP body limit")
+        runtime: ServiceRuntime = application.state.runtime
+        document = await runtime.run_knowledge(
+            lambda service: service.upload_document(filename, content)
+        )
+        return _document_response(document)
+
+    async def run_index_operation(operation: Literal["build", "update"]) -> Any:
+        runtime: ServiceRuntime = application.state.runtime
+        result = await runtime.run_knowledge(
+            lambda service: (
+                service.build_index() if operation == "build" else service.update_index()
+            )
+        )
+        response = _index_operation_response(result)
+        if result.succeeded:
+            return response
+        refresh_failed = result.error_category == "refresh"
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                **_error_content(
+                    "index_refresh_failed" if refresh_failed else "index_ingest_failed",
+                    (
+                        "The index was published, but the running service could not reload it"
+                        if refresh_failed
+                        else "The index operation failed"
+                    ),
+                ),
+                "operation": response.model_dump(mode="json", exclude_none=True),
+            },
+        )
+
+    @application.post(
+        "/knowledge/index/build",
+        response_model=IndexOperationResponse,
+        summary="完整重建知识库索引",
+    )
+    async def build_knowledge_index() -> Any:
+        return await run_index_operation("build")
+
+    @application.post(
+        "/knowledge/index/update",
+        response_model=IndexOperationResponse,
+        summary="增量更新知识库索引",
+    )
+    async def update_knowledge_index() -> Any:
+        return await run_index_operation("update")
 
     @application.post(
         "/sessions",
@@ -794,6 +1016,7 @@ class ServiceRuntime:
         self._worker_thread_id: int | None = None
         self._store: Any = None
         self._application: Any = None
+        self._knowledge_service: KnowledgeBaseService | None = None
         self._initialized = False
         self._busy = False
         self._closing = False
@@ -869,6 +1092,21 @@ class ServiceRuntime:
         if self._application is None:
             self._application = self._application_factory(self._store)
         return self._application
+
+    @property
+    def knowledge_service(self) -> KnowledgeBaseService:
+        """Lazily construct the filesystem service on its owning worker."""
+        self._require_worker_thread()
+        if self._knowledge_service is None:
+            self._knowledge_service = KnowledgeBaseService(
+                load_knowledge_base_config(),
+                refresh_callback=self._refresh_index_on_worker,
+            )
+        return self._knowledge_service
+
+    def _refresh_index_on_worker(self) -> Any:
+        self._require_worker_thread()
+        return self.application.refresh_index()
 
     def submit(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
@@ -978,6 +1216,36 @@ class ServiceRuntime:
     ) -> Any:
         return function(self.application, *args, **kwargs)
 
+    async def run_knowledge(
+        self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        """Run one knowledge-base operation on the shared service worker."""
+        return await self.run(self._call_with_knowledge, function, args, kwargs)
+
+    def _call_with_knowledge(
+        self,
+        function: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        return function(self.knowledge_service, *args, **kwargs)
+
+    async def get_knowledge_status(self) -> IndexStatus:
+        return await self.run(self._get_knowledge_status_on_worker)
+
+    def _get_knowledge_status_on_worker(self) -> IndexStatus:
+        from dataclasses import replace
+
+        result = self.knowledge_service.get_index_status()
+        application = self._application
+        if application is None:
+            return result
+        try:
+            active_version = application.agent.retriever.index_version
+        except Exception:
+            return result
+        return replace(result, active_version=active_version)
+
     async def ask_session(
         self,
         session_id: str,
@@ -1070,6 +1338,7 @@ class ServiceRuntime:
         application = self._application
         store = self._store
         self._application = None
+        self._knowledge_service = None
         self._store = None
         if application is not None:
             # The application owns the injected store and closes it itself.
@@ -1138,6 +1407,63 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
         model_calls=result.model_calls,
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
+    )
+
+
+def _document_response(document: DocumentSummary) -> DocumentResponse:
+    response = DocumentResponse.model_validate(document, from_attributes=True)
+    if response.error is None:
+        return response
+    return response.model_copy(update={"error": "The document could not be read"})
+
+
+def _index_status_response(result: IndexStatus) -> IndexStatusResponse:
+    changes = result.pending_changes
+    return IndexStatusResponse(
+        disk_status=result.disk_status,
+        published_version=result.published_version,
+        built_at=result.built_at,
+        disk_document_count=result.disk_document_count,
+        indexed_document_count=result.indexed_document_count,
+        chunk_count=result.chunk_count,
+        pending_changes=DocumentChangesResponse(
+            added=changes.added,
+            modified=changes.modified,
+            removed=changes.removed,
+            unreadable=changes.unreadable,
+            total=changes.total,
+        ),
+        active_version=result.active_version,
+        error=(
+            None
+            if result.error is None
+            else {
+                "not_built": "The knowledge index has not been built",
+                "incomplete": "The published index is incomplete",
+                "corrupt": "The published index metadata is invalid",
+            }.get(result.disk_status, "The index status could not be determined")
+        ),
+    )
+
+
+def _index_operation_response(result: IndexOperationResult) -> IndexOperationResponse:
+    ingest = result.ingest_result
+    return IndexOperationResponse(
+        operation=result.operation,
+        succeeded=result.succeeded,
+        published=result.published,
+        refreshed=result.refreshed,
+        published_version=result.published_version,
+        active_version=result.active_version,
+        discovered_files=getattr(ingest, "discovered_files", None),
+        read_files=getattr(ingest, "read_files", None),
+        chunk_count=getattr(ingest, "chunk_count", None),
+        changed_file_count=getattr(ingest, "changed_file_count", None),
+        full_rebuild=getattr(ingest, "full_rebuild", None),
+        reused_chunks=getattr(ingest, "reused_chunks", None),
+        embedded_chunks=getattr(ingest, "embedded_chunks", None),
+        removed_chunks=getattr(ingest, "removed_chunks", None),
+        error_category=result.error_category,
     )
 
 # 第二阶段：开发完成后集中验证；本阶段不执行。

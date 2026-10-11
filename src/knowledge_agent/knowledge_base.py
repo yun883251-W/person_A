@@ -19,134 +19,970 @@
 
 # 第一阶段：只读管理能力。
 
-# TODO 01：定义服务接口与返回结构。
-# 建议定义 KnowledgeBaseService，按构造参数接收配置及必要的回调，便于以后独立验证。
-# 规划 list_documents、read_document、get_index_status、upload_document、
-# build_index、update_index 等入口；不要在模块导入或服务构造时执行文件写入。
-# DocumentSummary 至少包含相对路径、文件是否存在、大小、修改时间、入库状态。
-# DocumentPreview 包含相对路径、原文片段、实际起止行号、总行数、内容哈希、是否截断。
-# IndexStatus 区分磁盘状态、已发布版本、文件/片段统计和待同步文档变化。
-# IndexOperationResult 区分操作类型、入库结果、发布结果、刷新结果及错误类别。
-# 记录的时间、数量和版本必须来自实际文件或执行结果；无法确定时使用未知值。
+from __future__ import annotations
 
-# TODO 02：确定配置来源与读写边界。
-# 复用 config 中 KNOWLEDGE_DOCS_DIR / KNOWLEDGE_INDEX_DIR 的配置约定。
-# 相对目录按 PROJECT_ROOT 解析，不按终端工作目录解析，也不硬编码 docs/data 路径。
-# 对外仅接收相对文档标识；根目录由服务端配置决定，不允许请求任意切换根目录。
-# 只读功能只校验实际需要读取的目录和文件，不创建目录、不连接 Ollama/DeepSeek。
-# 注意 load_ingest_config() 还检查写权限和模型参数：只读页面不应因此被无关配置阻断。
-# 将路径解析与只读校验单独封装或复用合适的共享函数；建库时再加载完整 IngestConfig。
-# 文档目录缺失、无法读取和真正空目录分别表达，不能统一返回空列表。
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+from pathlib import PureWindowsPath
+import tempfile
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Literal
 
-# TODO 03：实现受控文档路径解析。
-# 将相对路径解析到配置的文档根目录下，并检查 resolve 后仍在该根目录中。
-# 拒绝绝对路径、盘符/UNC 路径、目录穿越，以及符号链接或目录联接导致的越界。
-# 读取目标必须是受支持的普通 Markdown 文件；拒绝目录及配置、数据库等其他文件。
-# 返回给页面的是知识库相对路径，不暴露服务器的绝对路径。
-# 文档不存在和路径不合法使用不同异常；不从模型输出中直接取得可读取的任意路径。
+from .config import get_knowledge_base_settings
 
-# TODO 04：读取已发布索引清单。
-# 只读 index_dir/manifest.json，校验 JSON 对象、schema_version、status、files、
-# chunk_count 和 artifacts 的必要字段；清单缺失与清单损坏分别表达。
-# 索引版本沿用 retrieval.load_index_snapshot() 的规则：使用 manifest.built_at。
-# 不另造版本号，不用文档修改时间、embedding 模型名称或当前时间代替索引版本。
-# 对需要读取的 artifacts 路径执行索引目录边界检查，核对必要产物是否存在。
-# 首版不为状态页面加载全部向量或探测模型，元数据可读也不代表模型可用。
-# 不原样向页面返回 manifest，其中的 docs_dir 等绝对路径不属于公开字段。
+if TYPE_CHECKING:
+    from .ingest import IngestRunResult
 
-# TODO 05：实现文档列表与待同步变化判断。
-# 以当前 Markdown 文件与已发布清单记录的并集展示，按相对路径稳定排序并支持分页。
-# 当前存在但清单没有的文件标为待入库；哈希不同标为已修改；相同标为已同步。
-# 清单有但磁盘已不存在的记录标为待移除，不能让页面继续尝试打开不存在的原文。
-# 无索引时将当前文档标为待入库；清单损坏/文件不可读时标为未知或读取失败。
-# 内容哈希复用 read_markdown_file() 与 get_document_identity() 的口径：
-# utf-8-sig 解码后对保留原换行的 document.text 进行 UTF-8 编码，再计算 SHA-256。
-# 不直接哈希带 BOM 的原始字节，也不规范化换行，避免把未变化文档判为已修改。
-# 不仅凭文件大小或修改时间判定已同步；遇到单个坏文件保留其错误状态与其他可读项。
-# 变化统计对应本次扫描结果；文件在扫描期间变化时说明快照不完整，不冒充已同步。
 
-# TODO 06：实现原文预览。
-# 通过受控相对路径读取文档，复用已有解码规则，保留原始行号和换行信息。
-# 支持 start_line/limit 形式的按行读取，明确从第 1 行开始，限制文件及响应大小。
-# 返回原文文本与实际起止行号，不由服务端执行 Markdown 中的代码、HTML 或指令。
-# 区分空文件、非法行号、超出范围、解码失败与内容截断，避免静默展示错误片段。
-# 预览对象是当前磁盘原文；可接收引用的 content_hash 用于核对是否已发生变化。
-# 当前哈希与引用不同，或文件已删除时明确提示无法按旧引用核对，不能冒充历史原文。
-# 原文预览不触发文档入库、向量检索、模型调用或索引刷新。
+DocumentSyncStatus = Literal[
+    "pending",
+    "synced",
+    "modified",
+    "removed",
+    "unreadable",
+    "unknown",
+]
+IndexDiskStatus = Literal["not_built", "published", "incomplete", "corrupt", "unknown"]
+IndexOperation = Literal["build", "update"]
+OperationErrorCategory = Literal[
+    "configuration",
+    "validation",
+    "ingest",
+    "publish",
+    "refresh",
+    "busy",
+    "unknown",
+]
 
-# TODO 07：汇总索引状态。
-# 至少区分未建库、已发布、损坏/不完整；待同步变化数量单独返回。
-# 返回 manifest.built_at、已入库文件数、片段数及新增/修改/待移除文件数。
-# 区分当前磁盘文件数与已入库文件数；不要把片段数当作文件数。
-# 如展示当前 Agent 使用的版本，由运行时提供现有快照信息，未知时不推断。
-# 不为读取版本创建尚未初始化的 Agent，不把 HTTP 存活状态当作知识库就绪状态。
-# 与文档变化状态共用清单解析和哈希逻辑，避免同一次响应内使用互相矛盾的数据。
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeBaseConfig:
+    """Filesystem locations and hard limits used by the management service."""
+
+    docs_dir: Path
+    index_dir: Path
+    max_upload_bytes: int = 10 * 1024 * 1024
+    max_preview_lines: int = 1_000
+
+    def __post_init__(self) -> None:
+        if self.max_upload_bytes <= 0:
+            raise ValueError("max_upload_bytes must be greater than zero")
+        if self.max_preview_lines <= 0:
+            raise ValueError("max_preview_lines must be greater than zero")
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSummary:
+    """Current disk and synchronization state of one managed document."""
+
+    path: str
+    exists: bool
+    size_bytes: int | None
+    modified_at: str | None
+    sync_status: DocumentSyncStatus
+    content_hash: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentPreview:
+    """A source-preserving, line-addressed slice of a Markdown document."""
+
+    path: str
+    content: str
+    start_line: int
+    end_line: int
+    total_lines: int
+    content_hash: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentChanges:
+    """Document changes waiting to be reflected in the published index."""
+
+    added: int | None = None
+    modified: int | None = None
+    removed: int | None = None
+    unreadable: int | None = None
+
+    @property
+    def total(self) -> int | None:
+        values = (self.added, self.modified, self.removed, self.unreadable)
+        if any(value is None for value in values):
+            return None
+        return sum(value for value in values if value is not None)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexStatus:
+    """Published-index metadata and current document synchronization state."""
+
+    disk_status: IndexDiskStatus
+    published_version: str | None
+    built_at: str | None
+    disk_document_count: int | None
+    indexed_document_count: int | None
+    chunk_count: int | None
+    pending_changes: DocumentChanges
+    active_version: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IndexOperationResult:
+    """The independently observable stages of an index operation."""
+
+    operation: IndexOperation
+    ingest_result: IngestRunResult | None
+    published: bool | None
+    refreshed: bool | None
+    published_version: str | None = None
+    active_version: str | None = None
+    error_category: OperationErrorCategory | None = None
+    error: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return (
+            self.error_category is None
+            and self.ingest_result is not None
+            and self.ingest_result.succeeded
+            and self.published is True
+            and self.refreshed is not False
+        )
+
+
+RefreshCallback = Callable[[], object]
+IndexCallback = Callable[..., "IngestRunResult"]
+ProgressCallback = Callable[[int, int], None]
+
+
+class KnowledgeBaseService:
+    """Interface for knowledge-base management operations.
+
+    Construction only records dependencies; it deliberately performs no file
+    access, directory creation, ingestion, or runtime refresh.
+    """
+
+    def __init__(
+        self,
+        config: KnowledgeBaseConfig,
+        *,
+        refresh_callback: RefreshCallback | None = None,
+        build_callback: IndexCallback | None = None,
+        update_callback: IndexCallback | None = None,
+    ) -> None:
+        self.config = config
+        self.refresh_callback = refresh_callback
+        self.build_callback = build_callback
+        self.update_callback = update_callback
+
+    def list_documents(self, *, offset: int = 0, limit: int = 100) -> tuple[DocumentSummary, ...]:
+        return _list_documents(self.config, offset=offset, limit=limit)
+
+    def read_document(
+        self,
+        path: str,
+        *,
+        start_line: int = 1,
+        limit: int = 200,
+        content_hash: str | None = None,
+    ) -> DocumentPreview:
+        return _read_document(
+            self.config,
+            path,
+            start_line=start_line,
+            limit=limit,
+            content_hash=content_hash,
+        )
+
+    def get_index_status(self) -> IndexStatus:
+        return _get_index_status(self.config)
+
+    def upload_document(self, filename: str, content: bytes | BinaryIO) -> DocumentSummary:
+        return _upload_document(self.config, filename, content)
+
+    def build_index(
+        self, *, progress: ProgressCallback | None = None
+    ) -> IndexOperationResult:
+        return _run_index_operation(
+            self.config,
+            "build",
+            callback=self.build_callback,
+            refresh_callback=self.refresh_callback,
+            progress=progress,
+        )
+
+    def update_index(
+        self, *, progress: ProgressCallback | None = None
+    ) -> IndexOperationResult:
+        return _run_index_operation(
+            self.config,
+            "update",
+            callback=self.update_callback,
+            refresh_callback=self.refresh_callback,
+            progress=progress,
+        )
+
+
+def _resolve_configured_path(project_root: Path, configured_path: str) -> Path:
+    """Resolve one server-controlled path independently of the process CWD."""
+    path = Path(configured_path).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    return path.resolve(strict=False)
+
+
+def load_knowledge_base_config() -> KnowledgeBaseConfig:
+    """Load only knowledge-base paths, without validating writes or models."""
+    settings = get_knowledge_base_settings()
+    project_root = settings.project_root.resolve(strict=False)
+    return KnowledgeBaseConfig(
+        docs_dir=_resolve_configured_path(project_root, settings.docs_dir),
+        index_dir=_resolve_configured_path(project_root, settings.index_dir),
+    )
+
+
+def _require_readable_directory(path: Path, *, description: str) -> Path:
+    """Validate a directory for a read operation without creating or changing it."""
+    if not path.exists():
+        raise FileNotFoundError(f"{description}不存在: {path}")
+    if not path.is_dir():
+        raise NotADirectoryError(f"{description}不是目录: {path}")
+    if not os.access(path, os.R_OK):
+        raise PermissionError(f"{description}不可读: {path}")
+    return path
+
+class InvalidDocumentPathError(ValueError):
+    """Raised when a requested path is outside the managed document namespace."""
+
+
+def resolve_document_path(docs_dir: Path, document_path: str) -> Path:
+    """Resolve a relative Markdown path without allowing access outside *docs_dir*."""
+    if not isinstance(document_path, str) or not document_path or "\x00" in document_path:
+        raise InvalidDocumentPathError("文档路径无效")
+
+    # PureWindowsPath detects drive-relative and UNC paths even when the service
+    # is tested or deployed on a non-Windows host. Treat both slash styles as
+    # separators so a path cannot change meaning between platforms.
+    windows_path = PureWindowsPath(document_path)
+    normalized = document_path.replace("\\", "/")
+    parts = normalized.split("/")
+    if (
+        Path(normalized).is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+        or normalized.startswith("/")
+        or any(part == ".." for part in parts)
+    ):
+        raise InvalidDocumentPathError("文档路径必须是知识库内的相对路径")
+
+    relative_path = Path(*parts)
+    if relative_path.suffix.lower() != ".md":
+        raise InvalidDocumentPathError("仅支持 Markdown 文件")
+
+    root = _require_readable_directory(Path(docs_dir).resolve(strict=True), description="文档目录")
+    try:
+        resolved = (root / relative_path).resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"文档不存在: {relative_path.as_posix()}") from exc
+    except (OSError, RuntimeError) as exc:
+        raise InvalidDocumentPathError("文档路径无法解析") from exc
+
+    try:
+        managed_relative_path = resolved.relative_to(root)
+    except ValueError as exc:
+        raise InvalidDocumentPathError("文档路径超出知识库范围") from exc
+
+    if not resolved.is_file():
+        raise InvalidDocumentPathError("文档路径不是普通文件")
+    if managed_relative_path.suffix.lower() != ".md":
+        raise InvalidDocumentPathError("仅支持 Markdown 文件")
+    if not os.access(resolved, os.R_OK):
+        raise PermissionError(f"文档不可读: {managed_relative_path.as_posix()}")
+    return resolved
+
+@dataclass(frozen=True, slots=True)
+class PublishedManifestFile:
+    """One validated document record from the published manifest."""
+
+    path: str
+    content_hash: str
+    chunk_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedIndexManifest:
+    """Validated public metadata and local paths for one published index."""
+
+    version: str
+    built_at: str
+    files: tuple[PublishedManifestFile, ...]
+    chunk_count: int
+    chunks_path: Path
+    vector_index_path: Path
+    keyword_index_path: Path
+    metadata_path: Path
+
+
+class IndexManifestNotFoundError(FileNotFoundError):
+    """Raised when no published index manifest exists."""
+
+
+class InvalidIndexManifestError(ValueError):
+    """Raised when a published index manifest is malformed or incomplete."""
+
+
+class IncompleteIndexError(InvalidIndexManifestError):
+    """Raised when a valid manifest references an absent index artifact."""
+
+
+def _manifest_file(value: object, position: int) -> PublishedManifestFile:
+    if not isinstance(value, dict):
+        raise InvalidIndexManifestError(f"索引 manifest 的 files[{position}] 必须是对象")
+
+    path = value.get("path")
+    content_hash = value.get("content_hash")
+    chunk_ids = value.get("chunk_ids")
+    if not isinstance(path, str) or not path.strip():
+        raise InvalidIndexManifestError(f"索引 manifest 的 files[{position}].path 无效")
+    if not isinstance(content_hash, str) or not content_hash.strip():
+        raise InvalidIndexManifestError(
+            f"索引 manifest 的 files[{position}].content_hash 无效"
+        )
+    if not isinstance(chunk_ids, list) or any(
+        not isinstance(chunk_id, str) or not chunk_id for chunk_id in chunk_ids
+    ):
+        raise InvalidIndexManifestError(
+            f"索引 manifest 的 files[{position}].chunk_ids 无效"
+        )
+    return PublishedManifestFile(path, content_hash, tuple(chunk_ids))
+
+
+def _manifest_artifact(index_dir: Path, artifacts: dict[str, Any], key: str) -> Path:
+    value = artifacts.get(key)
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise InvalidIndexManifestError(f"索引 manifest 缺少有效产物路径: {key}")
+    try:
+        path = (index_dir / value).resolve(strict=True)
+        path.relative_to(index_dir)
+    except FileNotFoundError as exc:
+        raise IncompleteIndexError(f"索引产物缺失: {key}: {value!r}") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise InvalidIndexManifestError(f"索引产物路径无效或越界: {key}: {value!r}") from exc
+    if not path.is_file():
+        raise IncompleteIndexError(f"索引产物缺失或不是文件: {key}: {path}")
+    if not os.access(path, os.R_OK):
+        raise InvalidIndexManifestError(f"索引产物不可读: {key}: {path}")
+    return path
+
+
+def read_published_index_manifest(index_dir: Path) -> PublishedIndexManifest:
+    """Read and validate published-index metadata without loading index contents."""
+    root = Path(index_dir).resolve(strict=False)
+    manifest_path = root / "manifest.json"
+    try:
+        with manifest_path.open("r", encoding="utf-8") as source:
+            manifest = json.load(source)
+    except FileNotFoundError as exc:
+        raise IndexManifestNotFoundError(f"索引清单不存在: {manifest_path}") from exc
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InvalidIndexManifestError(f"无法读取索引清单: {manifest_path}: {exc}") from exc
+
+    if not isinstance(manifest, dict):
+        raise InvalidIndexManifestError("索引 manifest 顶层必须是 JSON 对象")
+    if manifest.get("schema_version") != 1:
+        raise InvalidIndexManifestError(
+            f"不支持的索引 manifest schema_version: {manifest.get('schema_version')!r}"
+        )
+    if manifest.get("status") != "ready":
+        raise InvalidIndexManifestError(
+            f"索引 manifest 状态无效: {manifest.get('status')!r}，期望 'ready'"
+        )
+
+    built_at = manifest.get("built_at")
+    files = manifest.get("files")
+    chunk_count = manifest.get("chunk_count")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(built_at, str) or not built_at.strip():
+        raise InvalidIndexManifestError("索引 manifest 缺少有效的 built_at 版本")
+    if not isinstance(files, list):
+        raise InvalidIndexManifestError("索引 manifest 缺少有效的 files 数组")
+    if (
+        not isinstance(chunk_count, int)
+        or isinstance(chunk_count, bool)
+        or chunk_count < 0
+    ):
+        raise InvalidIndexManifestError("索引 manifest 的 chunk_count 无效")
+    if not isinstance(artifacts, dict):
+        raise InvalidIndexManifestError("索引 manifest 缺少有效的 artifacts 对象")
+
+    published_files = tuple(
+        _manifest_file(value, position) for position, value in enumerate(files)
+    )
+    resolved_artifacts = {
+        key: _manifest_artifact(root, artifacts, key)
+        for key in ("chunks", "vectors", "keywords", "metadata")
+    }
+    return PublishedIndexManifest(
+        version=built_at,
+        built_at=built_at,
+        files=published_files,
+        chunk_count=chunk_count,
+        chunks_path=resolved_artifacts["chunks"],
+        vector_index_path=resolved_artifacts["vectors"],
+        keyword_index_path=resolved_artifacts["keywords"],
+        metadata_path=resolved_artifacts["metadata"],
+    )
+
+def _list_documents(
+    config: KnowledgeBaseConfig,
+    *,
+    offset: int,
+    limit: int,
+    manifest_state: tuple[
+        PublishedIndexManifest | None, InvalidIndexManifestError | None
+    ]
+    | None = None,
+) -> tuple[DocumentSummary, ...]:
+    """Return a deterministic snapshot of disk and published documents."""
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    from .ingest import get_document_identity, read_markdown_file
+
+    docs_root = _require_readable_directory(
+        Path(config.docs_dir).resolve(strict=True), description="文档目录"
+    )
+    disk_files: dict[str, Path] = {}
+    directories = [docs_root]
+    while directories:
+        directory = directories.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".md"):
+                    path = Path(entry.path)
+                    disk_files[path.relative_to(docs_root).as_posix()] = path
+
+    if manifest_state is None:
+        try:
+            manifest_state = (read_published_index_manifest(config.index_dir), None)
+        except IndexManifestNotFoundError:
+            manifest_state = (None, None)
+        except InvalidIndexManifestError as exc:
+            manifest_state = (None, exc)
+    manifest, manifest_exception = manifest_state
+    published_files = (
+        {item.path: item for item in manifest.files} if manifest is not None else {}
+    )
+    manifest_error = str(manifest_exception) if manifest_exception is not None else None
+
+    page_paths = sorted(disk_files.keys() | published_files.keys())[
+        offset : offset + limit
+    ]
+    summaries: list[DocumentSummary] = []
+    for relative_path in page_paths:
+        path = disk_files.get(relative_path)
+        published = published_files.get(relative_path)
+        if path is None:
+            summaries.append(
+                DocumentSummary(
+                    path=relative_path,
+                    exists=False,
+                    size_bytes=None,
+                    modified_at=None,
+                    sync_status="removed",
+                    content_hash=published.content_hash if published else None,
+                )
+            )
+            continue
+
+        before = None
+        try:
+            before = path.stat()
+            document = read_markdown_file(path)
+            identity = get_document_identity(document, docs_root)
+            after = path.stat()
+        except Exception as exc:
+            exists = path.is_file()
+            if published is not None and not exists:
+                summaries.append(
+                    DocumentSummary(
+                        path=relative_path,
+                        exists=False,
+                        size_bytes=None,
+                        modified_at=None,
+                        sync_status="removed",
+                        content_hash=published.content_hash,
+                    )
+                )
+                continue
+            summaries.append(
+                DocumentSummary(
+                    path=relative_path,
+                    exists=exists,
+                    size_bytes=before.st_size if before is not None else None,
+                    modified_at=(
+                        datetime.fromtimestamp(
+                            before.st_mtime, tz=timezone.utc
+                        ).isoformat()
+                        if before is not None
+                        else None
+                    ),
+                    sync_status="unreadable",
+                    error=str(exc),
+                )
+            )
+            continue
+
+        changed_during_scan = (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or getattr(before, "st_ino", None) != getattr(after, "st_ino", None)
+        )
+        if changed_during_scan or identity.relative_path != relative_path:
+            sync_status: DocumentSyncStatus = "unknown"
+            error = "文档在扫描期间发生变化"
+        elif manifest_error is not None:
+            sync_status = "unknown"
+            error = manifest_error
+        elif published is None:
+            sync_status = "pending"
+            error = None
+        elif identity.content_hash != published.content_hash:
+            sync_status = "modified"
+            error = None
+        else:
+            sync_status = "synced"
+            error = None
+
+        summaries.append(
+            DocumentSummary(
+                path=relative_path,
+                exists=True,
+                size_bytes=after.st_size,
+                modified_at=datetime.fromtimestamp(
+                    after.st_mtime, tz=timezone.utc
+                ).isoformat(),
+                sync_status=sync_status,
+                content_hash=identity.content_hash,
+                error=error,
+            )
+        )
+
+    return tuple(summaries)
+
+class DocumentReferenceMismatchError(RuntimeError):
+    """Raised when current source text no longer matches a cited document."""
+
+
+class DocumentTooLargeError(ValueError):
+    """Raised when a source document exceeds the configured read limit."""
+
+
+def _read_document(
+    config: KnowledgeBaseConfig,
+    document_path: str,
+    *,
+    start_line: int,
+    limit: int,
+    content_hash: str | None,
+) -> DocumentPreview:
+    """Read a bounded, source-preserving slice from one managed document."""
+    if not isinstance(start_line, int) or isinstance(start_line, bool) or start_line < 1:
+        raise ValueError("start_line must be a positive integer")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    if limit > config.max_preview_lines:
+        raise ValueError(f"limit must not exceed {config.max_preview_lines}")
+    if content_hash is not None and (
+        not isinstance(content_hash, str) or not content_hash.strip()
+    ):
+        raise ValueError("content_hash must be a non-empty string")
+
+    from .ingest import get_document_identity, read_markdown_file
+
+    try:
+        path = resolve_document_path(config.docs_dir, document_path)
+    except FileNotFoundError as exc:
+        if content_hash is not None:
+            raise DocumentReferenceMismatchError(
+                "引用的文档已不存在，无法按原引用核对"
+            ) from exc
+        raise
+
+    size_bytes = path.stat().st_size
+    if size_bytes > config.max_upload_bytes:
+        raise DocumentTooLargeError(
+            f"文档大小超过预览限制: {size_bytes} > {config.max_upload_bytes} bytes"
+        )
+
+    docs_root = Path(config.docs_dir).resolve(strict=True)
+    document = read_markdown_file(path)
+    identity = get_document_identity(document, docs_root)
+    if content_hash is not None and identity.content_hash != content_hash:
+        raise DocumentReferenceMismatchError(
+            "当前文档内容已发生变化，无法按原引用核对"
+        )
+
+    total_lines = len(document.lines)
+    if total_lines == 0:
+        if start_line != 1:
+            raise ValueError("空文档只能从第 1 行开始预览")
+        return DocumentPreview(
+            path=identity.relative_path,
+            content="",
+            start_line=0,
+            end_line=0,
+            total_lines=0,
+            content_hash=identity.content_hash,
+            truncated=False,
+        )
+    if start_line > total_lines:
+        raise ValueError(
+            f"start_line 超出文档范围: {start_line}（文档共 {total_lines} 行）"
+        )
+
+    selected_lines = document.lines[start_line - 1 : start_line - 1 + limit]
+    actual_start = selected_lines[0].number
+    actual_end = selected_lines[-1].number
+    return DocumentPreview(
+        path=identity.relative_path,
+        content="".join(line.text for line in selected_lines),
+        start_line=actual_start,
+        end_line=actual_end,
+        total_lines=total_lines,
+        content_hash=identity.content_hash,
+        truncated=actual_end < total_lines,
+    )
+
+def _missing_manifest_disk_status(index_dir: Path) -> tuple[IndexDiskStatus, str | None]:
+    """Distinguish a clean, unbuilt directory from an interrupted publication."""
+    try:
+        with os.scandir(index_dir) as entries:
+            has_artifacts = next(entries, None) is not None
+    except FileNotFoundError:
+        return "not_built", None
+    except OSError as exc:
+        return "unknown", f"无法检查索引目录: {index_dir}: {exc}"
+    if has_artifacts:
+        return "incomplete", f"索引目录中存在文件，但缺少 manifest.json: {index_dir}"
+    return "not_built", None
+
+
+def _get_index_status(config: KnowledgeBaseConfig) -> IndexStatus:
+    """Return one consistent snapshot of published metadata and source changes."""
+    manifest: PublishedIndexManifest | None
+    manifest_exception: InvalidIndexManifestError | None
+    try:
+        manifest = read_published_index_manifest(config.index_dir)
+        manifest_exception = None
+        disk_status: IndexDiskStatus = "published"
+        error = None
+    except IndexManifestNotFoundError:
+        manifest = None
+        manifest_exception = None
+        disk_status, error = _missing_manifest_disk_status(config.index_dir)
+    except IncompleteIndexError as exc:
+        manifest = None
+        manifest_exception = exc
+        disk_status = "incomplete"
+        error = str(exc)
+    except InvalidIndexManifestError as exc:
+        manifest = None
+        manifest_exception = exc
+        disk_status = "corrupt"
+        error = str(exc)
+
+    documents = _list_documents(
+        config,
+        offset=0,
+        limit=2**63 - 1,
+        manifest_state=(manifest, manifest_exception),
+    )
+    disk_document_count = sum(document.exists for document in documents)
+
+    if manifest_exception is not None or any(
+        document.sync_status == "unknown" for document in documents
+    ):
+        pending_changes = DocumentChanges()
+    else:
+        counts = {status: 0 for status in ("pending", "modified", "removed", "unreadable")}
+        for document in documents:
+            if document.sync_status in counts:
+                counts[document.sync_status] += 1
+        pending_changes = DocumentChanges(
+            added=counts["pending"],
+            modified=counts["modified"],
+            removed=counts["removed"],
+            unreadable=counts["unreadable"],
+        )
+
+    return IndexStatus(
+        disk_status=disk_status,
+        published_version=manifest.version if manifest is not None else None,
+        built_at=manifest.built_at if manifest is not None else None,
+        disk_document_count=disk_document_count,
+        indexed_document_count=len(manifest.files) if manifest is not None else None,
+        chunk_count=manifest.chunk_count if manifest is not None else None,
+        pending_changes=pending_changes,
+        active_version=None,
+        error=error,
+    )
 
 
 # 第二阶段：上传与索引更新。
 
-# TODO 08：实现 Markdown 上传输入校验。
-# 第一版接收一个文件名和内容流/字节，文件保存到配置的文档根目录中。
-# 文件名只允许单个受支持的 .md 文件名，拒绝路径分隔符、盘符、保留名称等无效输入。
-# 限制上传字节数并验证 UTF-8/UTF-8 BOM 编码，不仅依赖 MIME 类型判断内容格式。
-# 同名文件默认返回冲突，不自动覆盖用户已有文档；覆盖和在线编辑留待后续设计。
-# 上传只新增资料，不自动调用 Embedding、建库或刷新 Agent。
+@dataclass(frozen=True, slots=True)
+class ValidatedMarkdownUpload:
+    """A bounded upload that is safe to publish under the document root."""
 
-# TODO 09：实现上传保存与结果返回。
-# 完成输入校验后在受控目录写入，采用不会让扫描读到半成品的临时文件发布方式。
-# 临时文件使用不会被 Markdown 扫描误认为正式资料的名称，失败时只清理本次临时文件。
-# 最终发布必须保持“不覆盖已有文件”的语义，不能只靠写入前 exists() 检查。
-# 保留原始文本与换行，成功后按与入库一致的口径返回哈希、相对路径及待入库状态。
-# 上传失败不能报成功，上传成功也不能报“索引已更新”。
-# API 的实际上传大小限制与本模块限制一致，避免在进入服务前无界读取整个请求。
+    filename: str
+    target_path: Path
+    content: bytes
+    text: str
 
-# TODO 10：封装完整建库与增量更新。
-# 分别调用 ingest.build_index() 与 ingest.update_index()，不复制切分/向量化算法。
-# 由现有入库模块决定增量复用、必要时完整重建以及索引的原子发布。
-# 返回 IngestRunResult 中真实的文件数、片段数、变更数、复用数和失败文件摘要。
-# 不能只以函数未抛异常判断成功：build_index() 也可能返回带 failures 的失败结果。
-# 失败时保留原有已发布索引，不手工修改 manifest 或向量文件来制造成功状态。
-# 如转发 progress 回调，说明其 done/total 是向量化批次进度，不能伪造全流程百分比。
 
-# TODO 11：在发布完成后刷新已初始化的 Agent。
-# 将刷新能力以回调或应用接口传入，本模块不导入/创建全局 Agent 实例。
-# 入库成功返回后，由同一工作线程调用已有 KnowledgeAgentApplication.refresh_index()。
-# 增量更新无变化时也要考虑现有 Agent 是否持有旧快照；不只依赖 ingest 的
-# refresh_callback，因为无变化的快捷返回可能不调用该回调。
-# 统一选择一个刷新入口，避免同时传回调并手动刷新导致重复调用。
-# Agent 尚未初始化时记录为无需刷新，由首次问答加载已发布索引。
-# 分别记录磁盘发布结果和运行时刷新结果：发布成功但刷新失败时保留新索引，
-# 明确当前问答可能仍使用旧版本，不能把两者合并成“全部更新成功”。
+class InvalidUploadFilenameError(ValueError):
+    """Raised when an upload name is not one safe Markdown leaf name."""
 
-# TODO 12：与现有串行运行时对齐。
-# 本模块提供同步业务函数，由 api.ServiceRuntime.run() 提交到现有固定工作线程。
-# 问答、上传和索引发布共用运行时互斥，不能额外创建线程绕开 busy 状态。
-# 更新与刷新作为同一工作线程操作完成；不要在该线程内再次提交自己并等待，避免死锁。
-# 不在 FastAPI 事件循环中直接执行文件扫描、内容哈希或向量化等阻塞操作。
-# 第一版请求等待整个操作完成，更新期间其他业务返回明确的繁忙提示，不建任务队列。
-# HTTP 客户端断开不代表后台更新取消；沿用现有运行时的在途操作和关闭语义。
-# 运行中状态如需展示，读取线程安全的运行时状态快照，不能排到正在更新的线程后等待。
 
+class UploadTooLargeError(ValueError):
+    """Raised when upload content exceeds the configured byte limit."""
+
+
+class InvalidUploadEncodingError(ValueError):
+    """Raised when upload content is not valid UTF-8 (optionally with BOM)."""
+
+
+class DocumentAlreadyExistsError(FileExistsError):
+    """Raised when an upload would overwrite an existing directory entry."""
+
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{suffix}" for suffix in (*range(1, 10), "¹", "²", "³")),
+    *(f"LPT{suffix}" for suffix in (*range(1, 10), "¹", "²", "³")),
+}
+_WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
+
+
+def _validate_upload_filename(filename: str) -> str:
+    if not isinstance(filename, str) or not filename or filename in {".", ".."}:
+        raise InvalidUploadFilenameError("上传文件名无效")
+    if (
+        "\x00" in filename
+        or any(character in _WINDOWS_INVALID_FILENAME_CHARS for character in filename)
+        or any(ord(character) < 32 for character in filename)
+        or filename[-1] in {" ", "."}
+    ):
+        raise InvalidUploadFilenameError("上传文件名包含非法字符")
+
+    windows_path = PureWindowsPath(filename)
+    if windows_path.drive or windows_path.name != filename:
+        raise InvalidUploadFilenameError("上传文件名必须是单个文件名")
+    if Path(filename).suffix.lower() != ".md":
+        raise InvalidUploadFilenameError("仅支持 Markdown 文件")
+    if filename.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        raise InvalidUploadFilenameError("上传文件名为系统保留名称")
+    return filename
+
+
+def _read_bounded_upload(content: bytes | BinaryIO, max_bytes: int) -> bytes:
+    if isinstance(content, bytes):
+        data = content
+    elif hasattr(content, "read"):
+        chunks: list[bytes] = []
+        size = 0
+        while size <= max_bytes:
+            chunk = content.read(min(64 * 1024, max_bytes + 1 - size))
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise TypeError("上传内容流必须返回 bytes")
+            chunks.append(chunk)
+            size += len(chunk)
+        data = b"".join(chunks)
+    else:
+        raise TypeError("上传内容必须是 bytes 或二进制流")
+
+    if len(data) > max_bytes:
+        raise UploadTooLargeError(
+            f"上传文件超过大小限制: {len(data)} > {max_bytes} bytes"
+        )
+    return data
+
+
+def validate_markdown_upload(
+    config: KnowledgeBaseConfig,
+    filename: str,
+    content: bytes | BinaryIO,
+) -> ValidatedMarkdownUpload:
+    """Validate one non-overwriting Markdown upload without changing the filesystem."""
+    safe_filename = _validate_upload_filename(filename)
+    docs_root = _require_readable_directory(
+        Path(config.docs_dir).resolve(strict=True), description="文档目录"
+    )
+    target_path = docs_root / safe_filename
+    if os.path.lexists(target_path):
+        raise DocumentAlreadyExistsError(f"文档已存在: {safe_filename}")
+
+    data = _read_bounded_upload(content, config.max_upload_bytes)
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise InvalidUploadEncodingError("上传文件必须使用 UTF-8 或 UTF-8 BOM 编码") from exc
+
+    return ValidatedMarkdownUpload(
+        filename=safe_filename,
+        target_path=target_path,
+        content=data,
+        text=text,
+    )
+
+
+def _upload_document(
+    config: KnowledgeBaseConfig,
+    filename: str,
+    content: bytes | BinaryIO,
+) -> DocumentSummary:
+    """Validate and atomically publish one new Markdown document."""
+    upload = validate_markdown_upload(config, filename, content)
+    temp_path: Path | None = None
+    published = False
+    try:
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=".knowledge-upload-", suffix=".tmp", dir=upload.target_path.parent
+        )
+        temp_path = Path(temp_name)
+        with os.fdopen(descriptor, "wb") as destination:
+            destination.write(upload.content)
+            destination.flush()
+            os.fsync(destination.fileno())
+
+        file_stat = temp_path.stat()
+        result = DocumentSummary(
+            path=upload.filename,
+            exists=True,
+            size_bytes=file_stat.st_size,
+            modified_at=datetime.fromtimestamp(
+                file_stat.st_mtime, tz=timezone.utc
+            ).isoformat(),
+            sync_status="pending",
+            content_hash=hashlib.sha256(upload.text.encode("utf-8")).hexdigest(),
+        )
+        try:
+            os.link(temp_path, upload.target_path)
+        except FileExistsError as exc:
+            raise DocumentAlreadyExistsError(f"文档已存在: {upload.filename}") from exc
+        published = True
+        return result
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                if not published:
+                    raise
+
+def _ingest_failure_summary(result: "IngestRunResult") -> str:
+    return "; ".join(
+        f"{failure.source_path}: {failure.error}" for failure in result.failures
+    )
+
+
+def _run_index_operation(
+    config: KnowledgeBaseConfig,
+    operation: IndexOperation,
+    *,
+    callback: IndexCallback | None,
+    refresh_callback: RefreshCallback | None,
+    progress: ProgressCallback | None,
+) -> IndexOperationResult:
+    """Run one ingestion entry point and report its actual publication result.
+
+    ``progress`` is forwarded unchanged and therefore represents embedding-batch
+    progress (done/total), not an invented percentage for the complete operation.
+    """
+    if callback is None:
+        from . import ingest
+
+        callback = ingest.build_index if operation == "build" else ingest.update_index
+
+    try:
+        ingest_result = callback(progress=progress) if progress is not None else callback()
+    except Exception as exc:
+        return IndexOperationResult(
+            operation=operation,
+            ingest_result=None,
+            published=False,
+            refreshed=None,
+            error_category="ingest",
+            error=str(exc),
+        )
+
+    if ingest_result.failures:
+        return IndexOperationResult(
+            operation=operation,
+            ingest_result=ingest_result,
+            published=False,
+            refreshed=None,
+            error_category="ingest",
+            error=_ingest_failure_summary(ingest_result),
+        )
+
+    published_version: str | None = None
+    try:
+        published_version = read_published_index_manifest(config.index_dir).version
+    except (IndexManifestNotFoundError, InvalidIndexManifestError):
+        # The ingestion result is authoritative for publication.  A separately
+        # unreadable status snapshot must not cause this layer to alter artifacts.
+        pass
+
+    if refresh_callback is None:
+        return IndexOperationResult(
+            operation=operation,
+            ingest_result=ingest_result,
+            published=True,
+            refreshed=None,
+            published_version=published_version,
+        )
+
+    try:
+        snapshot = refresh_callback()
+    except Exception as exc:
+        return IndexOperationResult(
+            operation=operation,
+            ingest_result=ingest_result,
+            published=True,
+            refreshed=False,
+            published_version=published_version,
+            active_version=getattr(exc, "retained_index_version", None),
+            error_category="refresh",
+            error=str(exc),
+        )
+
+    return IndexOperationResult(
+        operation=operation,
+        ingest_result=ingest_result,
+        published=True,
+        refreshed=True,
+        published_version=published_version,
+        active_version=getattr(snapshot, "index_version", None),
+    )
 
 # 第三阶段：开发后接入 API 和页面，本次不修改其他文件。
-
-# TODO 13：规划 HTTP 接口、响应和错误映射。
-# 建议 GET /knowledge/documents 列表，GET /knowledge/documents/content?path=... 预览，
-# GET /knowledge/status 状态，POST /knowledge/documents 上传，
-# POST /knowledge/index/build 完整建库，POST /knowledge/index/update 增量更新。
-# 分页、文件大小、行号及操作类型由 API 和服务层共同校验。
-# 区分不存在、非法路径/编码、同名冲突、服务忙、入库失败与刷新失败；不暴露密钥或原始堆栈。
-# 不通过 StaticFiles 挂载 docs、data 或整个仓库，原文走受控读取接口。
-# 本模块定义业务异常与结构化结果，HTTP 状态码由 api.py 统一转换。
-
-# TODO 14：规划知识库管理页面接入。
-# 先展示文档列表、当前原文和索引状态，再添加上传与手动更新按钮。
-# 展示“上传成功，待更新索引”，并在更新完成后刷新文档状态与索引信息。
-# 更新期间禁用重复提交和冲突操作，保留处理提示；请求失败不自动重复提交建库。
-# 若请求失联，恢复后先查询运行状态和已发布版本，再决定是否重试。
-# 从回答引用打开原文时传入实际来源路径及内容哈希，提示当前原文与旧引用的差异。
-# 前端将原文当作文本或安全渲染内容展示，不直接注入未处理的 HTML。
-
 
 # 第四阶段：开发完成后统一验证，本阶段不执行。
 
