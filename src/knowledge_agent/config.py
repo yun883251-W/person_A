@@ -11,6 +11,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -81,6 +82,13 @@ class ChatSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class IntentSettings:
+    """Select deterministic intent rules or optional model assistance."""
+
+    mode: Literal["rules", "hybrid"] = "rules"
+
+
+@dataclass(frozen=True, slots=True)
 class SessionStoreSettings:
     """Validated SQLite session-store configuration."""
 
@@ -148,6 +156,16 @@ def get_chat_settings() -> ChatSettings:
         temperature=optional_float("CHAT_TEMPERATURE"),
         max_output_tokens=optional_int("CHAT_MAX_OUTPUT_TOKENS"),
     )
+
+
+def get_intent_settings() -> IntentSettings:
+    """Return intent settings without initializing or contacting a model."""
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+    mode = os.environ.get("INTENT_MODE", dotenv.get("INTENT_MODE", "rules"))
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {"rules", "hybrid"}:
+        raise ValueError("INTENT_MODE 必须是 rules 或 hybrid")
+    return IntentSettings(mode=normalized_mode)  # type: ignore[arg-type]
 
 
 def get_ingest_settings() -> IngestSettings:

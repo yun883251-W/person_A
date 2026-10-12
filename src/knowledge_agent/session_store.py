@@ -41,7 +41,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from .schemas import AnswerResult, AnswerSource
+from .schemas import AnswerResult, AnswerSource, RouteSummary
 from .agent.trace import trace_from_dict, trace_to_dict
 
 
@@ -972,6 +972,13 @@ def _result_to_json(result: AnswerResult) -> str:
     }
     if result.trace is not None:
         payload["trace"] = trace_to_dict(result.trace)
+    if result.routing is not None:
+        payload["routing"] = {
+            "route": result.routing.route,
+            "intent": result.routing.intent,
+            "decision_source": result.routing.decision_source,
+            "reason_code": result.routing.reason_code,
+        }
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -994,7 +1001,7 @@ def _result_from_json(value: str) -> AnswerResult:
         "tool_calls",
         "stop_reason",
     }
-    _require_fields(root, fields, {"trace"}, "result_json")
+    _require_fields(root, fields, {"trace", "routing"}, "result_json")
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
         raise ValueError(f"Unsupported result serialization version: {root['version']!r}")
     question = _require_string(root["question"], "result_json.question")
@@ -1068,6 +1075,35 @@ def _result_from_json(value: str) -> AnswerResult:
             trace = trace_from_dict(root["trace"])
         except (TypeError, ValueError):
             pass
+    routing = None
+    if "routing" in root and root["routing"] is not None:
+        item = root["routing"]
+        if not isinstance(item, dict):
+            raise ValueError("result_json.routing must be an object")
+        routing_fields = {"route", "intent", "decision_source", "reason_code"}
+        _require_fields(item, routing_fields, set(), "result_json.routing")
+        route = _require_string(item["route"], "result_json.routing.route")
+        intent = _require_string(item["intent"], "result_json.routing.intent")
+        decision_source = _require_string(
+            item["decision_source"], "result_json.routing.decision_source"
+        )
+        if route not in {"knowledge", "mcp", "direct"}:
+            raise ValueError("Invalid result_json.routing.route")
+        if intent not in {
+            "knowledge", "mcp_tool", "greeting", "scope",
+            "needs_clarification", "out_of_scope",
+        }:
+            raise ValueError("Invalid result_json.routing.intent")
+        if decision_source not in {"rules", "model", "fallback"}:
+            raise ValueError("Invalid result_json.routing.decision_source")
+        routing = RouteSummary(
+            route=route,
+            intent=intent,
+            decision_source=decision_source,
+            reason_code=_require_string(
+                item["reason_code"], "result_json.routing.reason_code"
+            ),
+        )
     return AnswerResult(
         question=question,
         answer=answer,
@@ -1078,6 +1114,7 @@ def _result_from_json(value: str) -> AnswerResult:
         tool_calls=root["tool_calls"],
         stop_reason=stop_reason,
         trace=trace,
+        routing=routing,
     )
 
 

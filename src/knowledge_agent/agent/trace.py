@@ -41,6 +41,7 @@ _TURN_INTERRUPTED = "turn_interrupted"
 
 TraceStage = Literal[
     "classify",
+    "intent",
     "initial_retrieval",
     "skill_prepare",
     "model",
@@ -50,6 +51,10 @@ TraceStage = Literal[
 TraceInitiator = Literal["program", "model"]
 TraceStatus = Literal["success", "empty", "error", "skipped"]
 TraceOutcome = Literal["completed", "failed", "interrupted"]
+TraceDecisionSource = Literal["rules", "model", "fallback"]
+TraceIntentKind = Literal[
+    "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +72,9 @@ class TraceEvent:
     result_count: int | None = None
     index_version: str | None = None
     error_code: str | None = None
+    decision_source: TraceDecisionSource | None = None
+    intent_kind: TraceIntentKind | None = None
+    reason_code: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class TurnTrace:
@@ -193,6 +201,9 @@ class TraceRecorder:
         result_count: int | None = None,
         index_version: str | None = None,
         error_code: str | None = None,
+        decision_source: TraceDecisionSource | None = None,
+        intent_kind: TraceIntentKind | None = None,
+        reason_code: str | None = None,
     ) -> TraceEvent | None:
         """Finish one event; events omitted by the cap return ``None``."""
 
@@ -218,6 +229,9 @@ class TraceRecorder:
             result_count=result_count,
             index_version=self._bounded(index_version),
             error_code=self._bounded(error_code),
+            decision_source=decision_source,
+            intent_kind=intent_kind,
+            reason_code=self._bounded(reason_code),
         )
         self._events.append(event)
         return event
@@ -310,16 +324,23 @@ _EVENT_FIELDS = {
     "index_version",
     "error_code",
 }
-_TRACE_STAGES = frozenset(("classify", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
+_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "reason_code"}
+_TRACE_STAGES = frozenset(("classify", "intent", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
 _TRACE_INITIATORS = frozenset(("program", "model"))
 _TRACE_STATUSES = frozenset(("success", "empty", "error", "skipped"))
 _TRACE_OUTCOMES = frozenset(("completed", "failed", "interrupted"))
+_TRACE_DECISION_SOURCES = frozenset(("rules", "model", "fallback"))
+_TRACE_INTENT_KINDS = frozenset((
+    "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
+))
 
 
-def _require_exact_fields(value: dict[str, Any], fields: set[str], label: str) -> None:
-    if value.keys() != fields:
-        missing = fields - value.keys()
-        extra = value.keys() - fields
+def _require_exact_fields(
+    value: dict[str, Any], fields: set[str], label: str, *, optional: set[str] | None = None,
+) -> None:
+    missing = fields - value.keys()
+    extra = value.keys() - fields - (optional or set())
+    if missing or extra:
         details = []
         if missing:
             details.append(f"missing {sorted(missing)!r}")
@@ -366,6 +387,15 @@ def _event_to_dict(event: TraceEvent, label: str) -> dict[str, Any]:
         "result_count": _non_negative_int(event.result_count, f"{label}.result_count", nullable=True),
         "index_version": _public_string(event.index_version, f"{label}.index_version"),
         "error_code": _public_string(event.error_code, f"{label}.error_code"),
+        "decision_source": (
+            _enum(event.decision_source, _TRACE_DECISION_SOURCES, f"{label}.decision_source")
+            if event.decision_source is not None else None
+        ),
+        "intent_kind": (
+            _enum(event.intent_kind, _TRACE_INTENT_KINDS, f"{label}.intent_kind")
+            if event.intent_kind is not None else None
+        ),
+        "reason_code": _public_string(event.reason_code, f"{label}.reason_code"),
     }
 
 
@@ -423,7 +453,7 @@ def trace_from_dict(value: Any) -> TurnTrace:
         label = f"trace.events[{index}]"
         if not isinstance(item, dict):
             raise ValueError(f"{label} must be an object")
-        _require_exact_fields(item, _EVENT_FIELDS, label)
+        _require_exact_fields(item, _EVENT_FIELDS, label, optional=_OPTIONAL_EVENT_FIELDS)
         sequence = _non_negative_int(item["sequence"], f"{label}.sequence")
         if sequence <= previous_sequence:
             raise ValueError("trace.events must be in strictly increasing sequence order")
@@ -440,6 +470,15 @@ def trace_from_dict(value: Any) -> TurnTrace:
             result_count=_non_negative_int(item["result_count"], f"{label}.result_count", nullable=True),
             index_version=_public_string(item["index_version"], f"{label}.index_version"),
             error_code=_public_string(item["error_code"], f"{label}.error_code"),
+            decision_source=(
+                _enum(item["decision_source"], _TRACE_DECISION_SOURCES, f"{label}.decision_source")
+                if item.get("decision_source") is not None else None
+            ),
+            intent_kind=(
+                _enum(item["intent_kind"], _TRACE_INTENT_KINDS, f"{label}.intent_kind")
+                if item.get("intent_kind") is not None else None
+            ),
+            reason_code=_public_string(item.get("reason_code"), f"{label}.reason_code"),
         ))
     events_truncated = value["events_truncated"]
     if not isinstance(events_truncated, bool):

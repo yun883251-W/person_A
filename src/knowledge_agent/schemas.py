@@ -69,6 +69,27 @@ AnswerStatus = Literal[
     "limit_reached",
 ]
 
+RouteName = Literal["knowledge", "mcp", "direct"]
+IntentName = Literal[
+    "knowledge",
+    "mcp_tool",
+    "greeting",
+    "scope",
+    "needs_clarification",
+    "out_of_scope",
+]
+DecisionSource = Literal["rules", "model", "fallback"]
+
+
+@dataclass(frozen=True, slots=True)
+class RouteSummary:
+    """Stable public routing metadata for one completed turn."""
+
+    route: RouteName
+    intent: IntentName
+    decision_source: DecisionSource
+    reason_code: str
+
 
 @dataclass(frozen=True, slots=True)
 class AnswerSource:
@@ -111,3 +132,4 @@ class AnswerResult:
     tool_calls: int = 0
     stop_reason: str | None = None
     trace: TurnTrace | None = None
+    routing: RouteSummary | None = None

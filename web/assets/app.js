@@ -617,11 +617,16 @@
   }
 
   const traceStageLabels = {
-    classify: "理解问题", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
+    classify: "理解问题", intent: "识别意图", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
     model: "模型调用", tool: "工具调用", finalize: "整理回答与核验引用",
   };
   const traceStatusLabels = { success: "完成", empty: "无结果", error: "失败", skipped: "已跳过" };
   const traceOutcomeLabels = { completed: "流程完成", failed: "执行失败", interrupted: "执行中断" };
+  const traceDecisionSourceLabels = { rules: "规则", model: "模型", fallback: "回退" };
+  const traceIntentKindLabels = {
+    knowledge: "知识问答", greeting: "问候", scope: "能力范围", needs_clarification: "需要澄清",
+    out_of_scope: "超出范围", mcp_tool: "MCP 工具请求",
+  };
   const traceSkillLabels = {
     "concept-explanation": "概念讲解", "concept-comparison": "概念比较", "code-explanation": "代码解读",
   };
@@ -646,6 +651,20 @@
     skill_prepare_failed: "Skill 准备失败", answer_finalization_failed: "回答整理失败",
     trace_recording_failed: "执行记录未能完整生成", unfinished_event: "阶段结束状态未完整记录",
     turn_failed: "本轮执行失败", turn_interrupted: "本轮执行中断",
+    greeting_input: "识别为问候", scope_input: "询问助手范围", vague_input: "问题缺少必要信息",
+    out_of_scope_marker: "问题超出当前范围", default_knowledge: "按知识问题处理",
+    explicit_mcp_tool_request: "明确请求 MCP 工具", mcp_tools_unavailable: "没有可用的 MCP 工具",
+    mcp_tool_not_matched: "未匹配到唯一的 MCP 工具", unsupported_stateful_followup: "没有可继续的任务状态",
+    explicit_topic_switch: "明确切换话题", followup_without_context: "追问缺少上下文",
+    knowledge_followup: "知识问题追问", hybrid_mcp_tool: "模型识别为 MCP 工具请求",
+    hybrid_needs_clarification: "模型判断需要澄清", hybrid_knowledge: "模型识别为知识问题",
+    intent_model_empty_response: "意图模型未返回有效内容", intent_model_response_too_long: "意图模型响应过长",
+    intent_model_invalid_json: "意图模型返回的 JSON 无效", intent_model_invalid_structure: "意图模型响应结构无效",
+    intent_model_invalid_fields: "意图模型响应字段无效", intent_model_invalid_kind: "意图模型返回未知类别",
+    intent_model_capability_mismatch: "意图模型选择了不可用的工具",
+    intent_model_unconfirmed_tool_request: "工具请求未经用户明确确认", intent_model_ambiguous_tool: "工具选择存在歧义",
+    intent_model_timeout: "意图模型调用超时", intent_model_error: "意图模型调用失败",
+    intent_identification_failed: "意图识别失败",
   };
 
   function traceText(value, fallback = "未提供") {
@@ -723,6 +742,13 @@
     }
     if (traceText(event.index_version, "")) fields.push(["阶段索引版本", event.index_version]);
     if (traceText(event.tool_call_id, "")) fields.push(["工具调用 ID", event.tool_call_id]);
+    if (traceText(event.decision_source, "")) {
+      fields.push(["决策来源", traceLabel(traceDecisionSourceLabels, event.decision_source)]);
+    }
+    if (traceText(event.intent_kind, "")) fields.push(["意图类别", traceLabel(traceIntentKindLabels, event.intent_kind)]);
+    if (traceText(event.reason_code, "") && event.reason_code !== event.error_code) {
+      fields.push(["决策原因", traceReason(event.reason_code)]);
+    }
     if (traceText(event.error_code, "")) fields.push(["原因 / 错误码", traceReason(event.error_code)]);
     item.append(traceFields(fields, "trace-fields trace-event-fields"));
     return item;

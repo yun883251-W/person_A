@@ -86,7 +86,9 @@ from .session_store import (
 )
 from .skill_loader import discover_skills
 from .agent.trace import (
+    TraceDecisionSource,
     TraceInitiator,
+    TraceIntentKind,
     TraceOutcome,
     TraceStage,
     TraceStatus,
@@ -222,6 +224,9 @@ class TraceEventResponse(_PublicModel):
     result_count: int | None = Field(default=None, ge=0, strict=True)
     index_version: str | None = None
     error_code: str | None = None
+    decision_source: TraceDecisionSource | None = None
+    intent_kind: TraceIntentKind | None = None
+    reason_code: str | None = None
 
 
 class TurnTraceResponse(_PublicModel):
@@ -248,6 +253,13 @@ class TurnTraceResponse(_PublicModel):
     events_truncated: bool = False
 
 
+class RouteSummaryResponse(_PublicModel):
+    route: Literal["knowledge", "mcp", "direct"]
+    intent: TraceIntentKind
+    decision_source: TraceDecisionSource
+    reason_code: str
+
+
 class AnswerResponse(_PublicModel):
     session_id: SessionId
     question: str
@@ -262,6 +274,7 @@ class AnswerResponse(_PublicModel):
         default=None,
         description="本轮结束后的执行摘要；没有可用记录时为 null，不是实时进度",
     )
+    routing: RouteSummaryResponse | None = None
 
 
 class ErrorResponse(_PublicModel):
@@ -287,6 +300,7 @@ class TurnResponse(_PublicModel):
         default=None,
         description="随本轮回答保存的执行摘要；旧记录或不可用摘要为 null",
     )
+    routing: RouteSummaryResponse | None = None
 
 
 class TurnListResponse(_PublicModel):
@@ -1463,6 +1477,11 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
         trace=_trace_response(result.trace),
+        routing=(
+            RouteSummaryResponse.model_validate(result.routing, from_attributes=True)
+            if result.routing is not None
+            else None
+        ),
     )
 
 
@@ -1481,6 +1500,11 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
         trace=_trace_response(result.trace),
+        routing=(
+            RouteSummaryResponse.model_validate(result.routing, from_attributes=True)
+            if result.routing is not None
+            else None
+        ),
     )
 
 
