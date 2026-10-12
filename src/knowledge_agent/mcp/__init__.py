@@ -1,5 +1,25 @@
-"""MCP 客户端与工具注册器适配层，目前仅有模块说明和开发 TODO。
+"""Optional MCP runtime and registry adapter public API."""
 
-client.py 负责连接生命周期；adapter.py 负责接入 tools/registry.py。
-本包不在导入时启动 MCP 服务或加载可选 SDK。
-"""
+from .adapter import McpAdapterError, McpRuntimePort, create_mcp_tool_registry
+from .client import (
+    McpConfigurationError,
+    McpRuntime,
+    McpServerConfig,
+    McpServerState,
+    McpServerStatus,
+    McpToolSpec,
+    load_mcp_config,
+)
+
+__all__ = (
+    "McpAdapterError",
+    "McpConfigurationError",
+    "McpRuntime",
+    "McpRuntimePort",
+    "McpServerConfig",
+    "McpServerState",
+    "McpServerStatus",
+    "McpToolSpec",
+    "create_mcp_tool_registry",
+    "load_mcp_config",
+)

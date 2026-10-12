@@ -11,19 +11,23 @@ registry.py 管理工具定义与调用；knowledge.py 封装知识库搜索和�
 
 from .knowledge import KnowledgeToolDependencies, create_knowledge_tool_registry
 from .registry import (
+    ArgumentValidator,
     InMemoryToolRegistry,
     ToolCallResult,
     ToolRegistration,
     ToolRegistry,
+    combine_tool_registries,
     create_tool_registry,
 )
 
 __all__ = (
+    "ArgumentValidator",
     "InMemoryToolRegistry",
     "KnowledgeToolDependencies",
     "ToolCallResult",
     "ToolRegistration",
     "ToolRegistry",
+    "combine_tool_registries",
     "create_knowledge_tool_registry",
     "create_tool_registry",
 )

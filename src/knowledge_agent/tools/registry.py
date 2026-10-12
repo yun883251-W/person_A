@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, MutableSet
+from collections.abc import Callable, Iterable, Mapping, MutableSet
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -39,6 +39,9 @@ class ToolExecutor(Protocol[ExecutionContextT]):
     ) -> Any: ...
 
 
+ArgumentValidator = Callable[[Mapping[str, Any]], dict[str, Any]]
+
+
 @dataclass(frozen=True, slots=True)
 class ToolRegistration(Generic[ExecutionContextT]):
     """A model-visible tool definition paired with its server-side executor."""
@@ -46,6 +49,7 @@ class ToolRegistration(Generic[ExecutionContextT]):
     name: str
     definition: BaseTool
     executor: ToolExecutor[ExecutionContextT]
+    argument_validator: ArgumentValidator | None = None
 
 
 ToolCallStatus = Literal["success", "error"]
@@ -97,6 +101,24 @@ def _execute_registration(
             "tool_execution_failed",
             "The requested tool could not be completed.",
         )
+
+
+def _validate_arguments(
+    registration: ToolRegistration[ExecutionContextT],
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate arguments without losing fields from non-Pydantic schemas."""
+    validator = registration.argument_validator
+    if validator is not None:
+        validated = validator(arguments)
+        if not isinstance(validated, dict):
+            raise TypeError("argument validator must return a dictionary")
+        return validated
+    return (
+        registration.definition.get_input_schema()
+        .model_validate(dict(arguments))
+        .model_dump()
+    )
 
 
 def _start_tool_trace(
@@ -173,6 +195,9 @@ class ToolRegistry(Protocol[ExecutionContextT]):
     def list_definitions(self) -> tuple[BaseTool, ...]:
         """Return model-visible definitions in registration order."""
 
+    def list_registrations(self) -> tuple[ToolRegistration[ExecutionContextT], ...]:
+        """Return registrations in registration order."""
+
     def filter_for_skill(
         self,
         allowed_tools: Iterable[str] | None = None,
@@ -225,6 +250,11 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
             raise ValueError("tool definition name must match registration name")
         if not callable(registration.executor):
             raise TypeError("tool executor must be callable")
+        if (
+            registration.argument_validator is not None
+            and not callable(registration.argument_validator)
+        ):
+            raise TypeError("tool argument validator must be callable")
 
         self._registrations[name] = registration
 
@@ -235,6 +265,10 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
         return tuple(
             registration.definition for registration in self._registrations.values()
         )
+
+    def list_registrations(self) -> tuple[ToolRegistration[ExecutionContextT], ...]:
+        """Expose safe registration enumeration for composing registries."""
+        return tuple(self._registrations.values())
 
     def filter_for_skill(
         self,
@@ -261,7 +295,18 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
             return _tool_call_error(
                 "unknown_tool", "The requested tool is not available."
             )
-        return _execute_registration(registration, context, arguments)
+        if not isinstance(arguments, Mapping):
+            return _tool_call_error(
+                "invalid_tool_arguments", "Tool arguments must be an object."
+            )
+        try:
+            validated_arguments = _validate_arguments(registration, arguments)
+        except Exception:  # noqa: BLE001 - schemas may raise custom errors
+            return _tool_call_error(
+                "invalid_tool_arguments",
+                "Tool arguments do not match the required schema.",
+            )
+        return _execute_registration(registration, context, validated_arguments)
 
     def execute_tool_calls(
         self,
@@ -347,11 +392,7 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
                 continue
 
             try:
-                arguments = (
-                    registration.definition.get_input_schema()
-                    .model_validate(dict(raw_arguments))
-                    .model_dump()
-                )
+                arguments = _validate_arguments(registration, raw_arguments)
             except Exception:  # noqa: BLE001 - schemas may raise custom errors
                 output = _tool_call_error(
                     "invalid_tool_arguments",
@@ -431,6 +472,21 @@ def create_tool_registry(
         )
         for definition in tool_definitions
     )
+
+
+def combine_tool_registries(
+    *registries: ToolRegistry[ExecutionContextT],
+) -> InMemoryToolRegistry[ExecutionContextT]:
+    """Combine complete registrations, rejecting duplicate names.
+
+    Copying registrations rather than only definitions preserves custom argument
+    validators and keeps model visibility aligned with server-side execution.
+    """
+    combined: InMemoryToolRegistry[ExecutionContextT] = InMemoryToolRegistry()
+    for registry in registries:
+        for registration in registry.list_registrations():
+            combined.register(registration)
+    return combined
 
 
 # 第二阶段：开发完成后统一验证，本阶段不执行。

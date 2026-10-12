@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import uuid
@@ -210,10 +211,14 @@ class KnowledgeAgent:
         capabilities: list[dict[str, object]] = []
         for definition in self.mcp_registry.list_definitions():
             schema: object = {}
-            try:
-                schema = definition.get_input_schema().model_json_schema()
-            except (AttributeError, TypeError, ValueError):
-                pass
+            raw_schema = getattr(definition, "args_schema", None)
+            if isinstance(raw_schema, Mapping):
+                schema = copy.deepcopy(dict(raw_schema))
+            else:
+                try:
+                    schema = definition.get_input_schema().model_json_schema()
+                except (AttributeError, TypeError, ValueError):
+                    pass
             capabilities.append(
                 {
                     "name": definition.name,

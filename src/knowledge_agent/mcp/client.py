@@ -33,6 +33,10 @@ _MAX_ARGUMENT_CHARS = 128_000
 _MAX_TIMEOUT_SECONDS = 300.0
 _MAX_OUTPUT_CHARS = 1_000_000
 _STOP = object()
+_DRAFT_2020_12_URIS = frozenset({
+    "https://json-schema.org/draft/2020-12/schema",
+    "https://json-schema.org/draft/2020-12/schema#",
+})
 
 
 class McpConfigurationError(ValueError):
@@ -281,11 +285,30 @@ def _field(value: Any, *names: str, default: Any = None) -> Any:
     return default
 
 
+def _has_external_schema_reference(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if key in {"$ref", "$dynamicRef"} and (
+                not isinstance(child, str) or not child.startswith("#")
+            ):
+                return True
+            if _has_external_schema_reference(child):
+                return True
+    elif isinstance(value, list):
+        return any(_has_external_schema_reference(child) for child in value)
+    return False
+
+
 def _checked_schema(schema: Any) -> dict[str, Any]:
     try:
         plain = _plain_json(schema)
         if not isinstance(plain, dict) or _json_size(plain) > _MAX_SCHEMA_CHARS:
             raise ValueError("invalid_schema")
+        dialect = plain.get("$schema")
+        if dialect is not None and dialect not in _DRAFT_2020_12_URIS:
+            raise ValueError("unsupported_schema_dialect")
+        if _has_external_schema_reference(plain):
+            raise ValueError("external_schema_reference")
         from jsonschema import Draft202012Validator
         Draft202012Validator.check_schema(plain)
         return plain
