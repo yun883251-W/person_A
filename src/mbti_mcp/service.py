@@ -1,21 +1,19 @@
-"""只读复用 MindCare 问卷与评分代码，不启动它的 Web 应用。
+"""调用本项目内置的问卷与评分核心，源代码来自 MindCare。
 
 本服务没有答题会话、数据库或模型。宿主负责保存用户明确提交的答案；
-这里在收到完整且版本一致的答案后调用源项目的确定性评分函数。
+这里在收到完整且版本一致的答案后调用 core 中的确定性评分函数。
 """
 
 from __future__ import annotations
 
 import copy
 import hashlib
-import importlib
-import importlib.util
 import json
 import re
-import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
+
+from . import core
 
 QUESTION_COUNT = 48
 MAX_PAGE_SIZE = 12
@@ -31,59 +29,7 @@ _DESCRIPTION_FIELDS = (
 
 
 class MbtiSourceError(RuntimeError):
-    """源项目无法加载或数据契约不兼容；消息不包含用户答案。"""
-
-
-def default_mindcare_root() -> Path:
-    """源码目录部署时，Person_A 与 MindCare 默认位于同一父目录。"""
-    return Path(__file__).resolve().parents[3] / "MindCare"
-
-
-def _module_file(module: ModuleType) -> Path | None:
-    origin = getattr(module, "__file__", None)
-    return Path(origin).resolve() if isinstance(origin, str) else None
-
-
-def _load_source(root: Path) -> ModuleType:
-    """只从启动参数指定的项目根目录加载 backend.mbti，拒绝同名包混用。"""
-    expected = {
-        "backend": root / "backend" / "__init__.py",
-        "backend.mbti": root / "backend" / "mbti" / "__init__.py",
-        "backend.mbti.questions": root / "backend" / "mbti" / "questions.py",
-        "backend.mbti.scoring": root / "backend" / "mbti" / "scoring.py",
-        "backend.mbti.descriptions": root / "backend" / "mbti" / "descriptions.py",
-    }
-    if not all(path.is_file() for path in expected.values()):
-        raise MbtiSourceError("mindcare_source_missing: 请确认 MindCare 根目录包含 backend/mbti。")
-
-    for name, path in expected.items():
-        loaded = sys.modules.get(name)
-        if loaded is not None and _module_file(loaded) != path.resolve():
-            raise MbtiSourceError("mindcare_module_conflict: 已加载另一个同名 backend 包，请重启独立 MCP 进程。")
-
-    # 路径仅来自可信启动配置，不接受任何工具参数指定路径。
-    root_text = str(root)
-    if not sys.path or sys.path[0] != root_text:
-        sys.path.insert(0, root_text)
-    importlib.invalidate_caches()
-    spec = importlib.util.find_spec("backend")
-    if spec is None or not spec.origin or Path(spec.origin).resolve() != expected["backend"].resolve():
-        raise MbtiSourceError("mindcare_module_conflict: backend 导入位置与配置不一致。")
-    try:
-        backend = importlib.import_module("backend")
-        search_paths = [Path(item).resolve() for item in getattr(backend, "__path__", ())]
-        if search_paths != [(root / "backend").resolve()]:
-            raise MbtiSourceError("mindcare_module_conflict: backend 包搜索路径与配置不一致。")
-        source = importlib.import_module("backend.mbti")
-    except MbtiSourceError:
-        raise
-    except Exception as exc:
-        raise MbtiSourceError("mindcare_import_failed: 无法加载 MindCare MBTI 纯 Python 模块。") from exc
-    for name, path in expected.items():
-        loaded = sys.modules.get(name)
-        if loaded is None or _module_file(loaded) != path.resolve():
-            raise MbtiSourceError("mindcare_module_conflict: MBTI 子模块导入位置与配置不一致。")
-    return source
+    """内置题库或数据契约不兼容；消息不包含用户答案。"""
 
 
 def _json_digest(value: Any) -> str:
@@ -94,9 +40,8 @@ def _json_digest(value: Any) -> str:
 class MbtiService:
     """一个进程持有一个题库快照，工具调用不修改源数据或保存用户输入。"""
 
-    def __init__(self, mindcare_root: str | Path | None = None) -> None:
-        self._root = Path(mindcare_root or default_mindcare_root()).expanduser().resolve()
-        self._source = _load_source(self._root)
+    def __init__(self) -> None:
+        self._source = core
         try:
             self._questions = copy.deepcopy(self._source.get_questions())
             self._options = copy.deepcopy(self._source.OPTIONS)
@@ -108,7 +53,7 @@ class MbtiService:
                 "options": self._options,
             })
             # 内容版本保留计分文件哈希，修改源计分代码后旧结果仍可辨认所用规则。
-            scoring_bytes = (self._root / "backend" / "mbti" / "scoring.py").read_bytes()
+            scoring_bytes = Path(__file__).with_name("core").joinpath("scoring.py").read_bytes()
             self.scoring_version = "mindcare-scoring-v1:" + hashlib.sha256(scoring_bytes).hexdigest()
         except MbtiSourceError:
             raise

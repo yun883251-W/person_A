@@ -436,7 +436,10 @@ class KnowledgeAgent:
 
         def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             handle = trace_recorder.start_event("tool", "program", tool_name=name)
-            registration = self.mcp_registry.get(name) if name in assessment.TOOLS else None
+            registration = (
+                self.mcp_registry.get(name)
+                if name in assessment.TOOLS and name in route.allowed_tool_names else None
+            )
             if registration is None:
                 trace_recorder.finish_event(handle, "skipped", error_code="mbti_tool_unavailable")
                 raise assessment.AssessmentToolError("mbti_tool_unavailable")
@@ -483,7 +486,7 @@ class KnowledgeAgent:
                 reply = assessment.handle_request(action, question, previous, call_tool)
         except assessment.AssessmentToolError as exc:
             reply = assessment.AssessmentReply(
-                "MBTI 工具暂不可用，请确认 MCP 配置、依赖和 MindCare 路径。已有答题进度未改变。",
+                "MBTI 工具暂不可用，请确认 MCP 配置、mcp 可选依赖及内置题库文件。已有答题进度未改变。",
                 previous, "service_error", exc.code,
             )
         except (TypeError, ValueError, KeyError):

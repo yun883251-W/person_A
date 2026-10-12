@@ -264,13 +264,13 @@ class RouteSummaryResponse(_PublicModel):
 class AssessmentQuestionResponse(_PublicModel):
     """The current question only; the stored questionnaire stays private."""
 
-    id: str | int
+    id: int = Field(ge=0, le=47, strict=True)
     number: int = Field(ge=1, strict=True)
     text: str
 
 
 class AssessmentOptionResponse(_PublicModel):
-    value: str | int
+    value: int = Field(ge=1, le=5, strict=True)
     label: str
 
 

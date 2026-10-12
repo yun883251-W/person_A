@@ -131,6 +131,8 @@ def _write_json(payload: dict[str, Any], *, error: bool = False) -> None:
 def _error_details(exc: Exception) -> tuple[str, str]:
     """Use fixed public messages; exception text may contain credentials or URLs."""
     messages = {
+        "McpConfigurationError": ("mcp_configuration_failed", "MCP 配置无效，请检查 MCP_CONFIG_PATH 和对应 JSON 文件。"),
+        "McpAdapterError": ("mcp_adapter_failed", "MCP 工具定义无法接入，请检查工具服务和 mcp 可选依赖。"),
         "IndexNotBuiltError": ("index_not_built", "知识库索引尚未建立，请先运行 person-a build。"),
         "IndexRefreshError": ("index_refresh_failed", "索引刷新失败，请检查索引文件及 Embedding 配置。"),
         "EmbeddingCompatibilityError": ("embedding_incompatible", "向量模型与索引不兼容，请核对 Embedding 配置并重新建库。"),
@@ -222,9 +224,21 @@ def _run_ingest(command: str, *, json_output: bool) -> int:
     return _display_ingest(result, json_output=json_output)
 
 
+def _public_answer_payload(result: AnswerResult) -> dict[str, Any]:
+    """Serialize CLI answers with the same public assessment boundary as HTTP."""
+    from .agent.assessment import public_assessment
+    from .agent.trace import trace_to_dict
+
+    payload = asdict(result)
+    payload.pop("assessment_state", None)
+    payload["assessment"] = public_assessment(result.assessment_state)
+    payload["trace"] = trace_to_dict(result.trace) if result.trace is not None else None
+    return payload
+
+
 def _display_answer(result: AnswerResult, *, json_output: bool = False) -> int:
     if json_output:
-        _write_json(asdict(result))
+        _write_json(_public_answer_payload(result))
     else:
         # Agent 已把 [S1] 等标记转换为引用，CLI 原样展示，避免重新编号或编造来源。
         print(result.answer)
@@ -352,7 +366,7 @@ def _run_history(
             "turn_no": turn.turn_no,
             "question": turn.question,
             "retrieval_question": turn.retrieval_question,
-            "result": asdict(turn.result),
+            "result": _public_answer_payload(turn.result),
         }
         for turn in turns
     ]

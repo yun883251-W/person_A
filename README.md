@@ -1,6 +1,6 @@
 # Person_A：文档知识库问答 Agent
 
-本项目使用本地 `docs/` 中的 Markdown 教材，通过 Ollama 生成向量，结合向量与关键词检索，再由 DeepSeek 回答 Python / LangChain 学习问题并给出来源引用。另通过本地 MCP 服务复用 MindCare 的 MBTI 问卷与评分，支持在同一会话中答题、暂停、恢复和查看结果。
+本项目使用本地 `docs/` 中的 Markdown 教材，通过 Ollama 生成向量，结合向量与关键词检索，再由 DeepSeek 回答 Python / LangChain 学习问题并给出来源引用。另通过本地 MCP 服务提供 MBTI 问卷与评分，支持在同一会话中答题、暂停、恢复和查看结果。MBTI 核心代码源自 MindCare，已复制并适配到本项目，可独立运行。
 
 文档入库、检索、模型适配、Agent、意图识别、MCP 接入、MBTI 答题、命令行、HTTP API 和本地网页已有实现。**本次只开发，没有运行测试、语法检查、服务或模型联调，也没有安装依赖；新增接入仍待统一验收，不能据此认为已验证可用。**
 
@@ -137,7 +137,7 @@ Invoke-RestMethod -Method Delete -Uri "$baseUrl/sessions/$sessionId"
 
 ## MindCare MBTI 与 MCP
 
-MBTI 已接入 API 和 CLI 的 MCP 生命周期。宿主启动本地 stdio 子进程，子进程只导入 MindCare 的 `backend.mbti`，提供问卷、确定性评分与类型描述；无需启动 MindCare Web 服务或它的数据库，也不会修改 MindCare 源文件。
+MBTI 已接入 API 和 CLI 的 MCP 生命周期。宿主启动本地 stdio 子进程，子进程导入本项目 `src/mbti_mcp/core/` 内置的题库、确定性评分与类型描述。这四个 Python 文件源自 MindCare 的 `backend/mbti`，包内导入已适配为相对导入；运行 Person_A 不再需要原 MindCare 目录，也无需启动它的 Web 服务或数据库。
 
 使用完整网页功能前，在 Person_A 使用的同一个 Python 环境中自行安装依赖：
 
@@ -145,7 +145,7 @@ MBTI 已接入 API 和 CLI 的 MCP 生命周期。宿主启动本地 stdio 子�
 python -m pip install -e ".[api,mcp]"
 ```
 
-项目默认配置 `config/mcp_servers.json` 启用 `mbti`，源项目位置为 `C:/Users/qinjiangyi/Desktop/LL/MindCare`；目录变化时修改配置中的 `--mindcare-root` 参数。配置的 `command: "$PYTHON"` 由宿主替换为当前 Person_A 的 Python 解释器，不需要另外手动启动 MCP 服务。
+项目默认配置 `config/mcp_servers.json` 启用 `mbti`。配置的 `command: "$PYTHON"` 由宿主替换为当前 Person_A 的 Python 解释器，参数只指定项目内的 `examples/mbti_mcp_server.py` 启动文件，不含外部项目路径或 `--mindcare-root` 参数。移动整个 Person_A 目录时，无需另行定位 MindCare，也不需要手动启动 MCP 服务。
 
 未在环境变量或 `.env` 中设置 `MCP_CONFIG_PATH` 时，使用上述默认配置；如果旧 `.env` 已有空值 `MCP_CONFIG_PATH=`，MCP 会保持关闭，需要自行改为 `MCP_CONFIG_PATH=./config/mcp_servers.json`。开发过程没有覆盖实际 `.env`。`config/mcp_servers.mbti.example.json` 是默认禁用的独立模板，区别于已启用的运行配置。
 
@@ -153,7 +153,7 @@ python -m pip install -e ".[api,mcp]"
 
 答题进度与问答轮一起保存在现有 SQLite 的 `turns.result_json.assessment_state`，没有新建数据库或答题表；恢复会话时单独读取最新状态，不受模型历史窗口长度限制。清空或删除会话也会删除其中的答题记录。普通 MBTI 答题、评分与类型描述由程序调用 MCP，不消耗 DeepSeek 模型次数；知识问答仍走原检索与 DeepSeek 流程。
 
-这是 MindCare 项目中的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](MBTI_MCP.md)。
+这是源自 MindCare 项目、现内置于 Person_A 的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](MBTI_MCP.md)。
 
 ## 项目结构
 
@@ -191,19 +191,25 @@ Person_A/
 │   ├── mcp/                      # 外部工具连接与注册器适配
 │   │   ├── __init__.py
 │   │   ├── client.py
+│   │   ├── bootstrap.py          # API / CLI 共享的 MCP 启动与关闭
 │   │   └── adapter.py
 │   └── images/                   # 图片提问扩展 TODO，暂缓开发
 │       ├── __init__.py
 │       ├── ocr.py
 │       ├── attachments.py
 │       └── image_question.py
-├── src/mbti_mcp/                 # 独立进程内复用 MindCare 纯 Python 模块
+├── src/mbti_mcp/                 # 内置 MBTI 核心与独立 MCP 服务
 │   ├── __init__.py
 │   ├── service.py                # 题库分页、严格校验、评分与描述
-│   └── server.py                 # stdio MCP 工具入口
+│   ├── server.py                 # stdio MCP 工具入口
+│   └── core/                     # 从 MindCare 复制并适配的本地核心
+│       ├── __init__.py
+│       ├── questions.py          # 48 题题库与作答选项
+│       ├── scoring.py            # 确定性计分与类型判定
+│       └── descriptions.py       # 类型名称与说明
 ├── skills/                       # 概念讲解、概念比较、代码解读的 Skill
 ├── config/
-│   ├── mcp_servers.json          # 运行配置，启用 MindCare MBTI
+│   ├── mcp_servers.json          # 运行配置，启用本项目内置 MBTI
 │   ├── mcp_servers.mbti.example.json # MBTI 模板，默认禁用
 │   └── mcp_servers.example.json  # 演示服务模板，默认禁用
 ├── examples/
@@ -239,7 +245,7 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`knowledge
 - **引用由程序生成。** 引用协议要求模型只输出本轮有效的来源标记，如 `[S1]`。程序校验标记，再使用检索记录生成完整文件名、章节和原文起止行号，模型不能自行编造来源元数据。同为第 26 章的两份文档通过完整文件名区分。
 - **同步新增、修改和删除。** 文档清单记录内容与配置版本；更新时同步片段、向量和关键词记录，检索使用同一版索引，避免引用已删除或过期内容。
 - **答案受证据范围约束。** 资料不足时说明缺失信息，只回答有依据的部分。教材中的业务示例不代表任何公司的正式政策；不同文档存在差异时展示出处和差异，不自行确定哪个说法权威。
-- **MCP 结果有独立来源。** MBTI 问卷与评分来自 MindCare 工具，不生成本地教材的 `[S1]` 引用；工具只接受实际用户作答，不用模型推测缺失答案。
+- **MCP 结果有独立来源。** MBTI 问卷与评分来自本项目内置的 MCP 工具，核心代码源自 MindCare，不生成本地教材的 `[S1]` 引用；工具只接受实际用户作答，不用模型推测缺失答案。
 
 ## 待统一验收
 

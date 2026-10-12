@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 from pydantic import Field, StrictStr
 
-from .service import MbtiService, default_mindcare_root
+from .service import MbtiService
 
 QuestionOffset = Annotated[int, Field(strict=True, ge=0, le=47)]
 PageLimit = Annotated[int, Field(strict=True, ge=1, le=12)]
@@ -53,15 +53,14 @@ def create_server(service: MbtiService):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="通过 stdio 暴露 MindCare MBTI 纯 Python 模块")
-    parser.add_argument("--mindcare-root", default=str(default_mindcare_root()), help="MindCare 项目根目录，包含 backend/mbti")
-    args = parser.parse_args(argv)
+    parser = argparse.ArgumentParser(description="通过 stdio 暴露 Person_A 内置 MBTI 模块")
+    parser.parse_args(argv)
     try:
-        service = MbtiService(args.mindcare_root)
+        service = MbtiService()
         server = create_server(service)
     except Exception:
         # 不向 stdout 写日志，也不在启动错误中泄露配置路径或环境内容。
-        print("mbti_mcp_startup_failed: 请确认 MindCare 路径、源模块和 Person_A 的 mcp 可选依赖。", file=sys.stderr)
+        print("mbti_mcp_startup_failed: 请确认内置 MBTI 模块完整，且已安装 Person_A 的 mcp 可选依赖。", file=sys.stderr)
         return 1
     server.run(transport="stdio")
     return 0

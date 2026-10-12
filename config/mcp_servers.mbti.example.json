@@ -3,13 +3,10 @@
   "servers": {
     "mbti": {
       "enabled": false,
-      "command": "python",
+      "command": "$PYTHON",
       "args": [
         "-u",
-        "-m",
-        "mbti_mcp.server",
-        "--mindcare-root",
-        "C:/Users/qinjiangyi/Desktop/LL/MindCare"
+        "examples/mbti_mcp_server.py"
       ],
       "cwd": "..",
       "env_from": {},
@@ -20,7 +17,7 @@
       ],
       "startup_timeout_seconds": 15,
       "call_timeout_seconds": 30,
-      "max_output_chars": 16000
+      "max_output_chars": 24000
     }
   }
 }

@@ -54,7 +54,7 @@ def request_action(question: str, state: Mapping[str, Any] | None) -> str | None
     if has_mbti and any(word in text for word in ("重新", "重做", "重测")):
         return "restart"
     if has_mbti or ongoing:
-        if any(word in text for word in ("退出测试", "退出 MBTI", "退出MBTI", "结束测试", "取消测试")):
+        if any(word in folded for word in ("退出测试", "退出 mbti", "退出mbti", "结束测试", "取消测试")):
             return "cancel"
         if "暂停" in text and (has_mbti or text in {"暂停", "暂停测试"}):
             return "pause"
@@ -88,7 +88,7 @@ def validate_snapshot(value: object) -> dict[str, Any]:
         raise ValueError("Unsupported MBTI snapshot")
     if not isinstance(value["test_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", value["test_id"]):
         raise ValueError("Invalid MBTI test ID")
-    if value["status"] not in STATUSES or type(value["total"]) is not int or value["total"] != 48:
+    if not isinstance(value["status"], str) or value["status"] not in STATUSES or type(value["total"]) is not int or value["total"] != 48:
         raise ValueError("Invalid MBTI progress")
     for key in ("questionnaire_version", "scoring_version"):
         if not isinstance(value[key], str) or not 1 <= len(value[key]) <= 160:
@@ -137,7 +137,7 @@ def _validate_result(value: object, state: Mapping[str, Any]) -> None:
         raise ValueError("Invalid MBTI dimensions")
     for dimension, poles in {"EI": "EI", "SN": "SN", "TF": "TF", "JP": "JP"}.items():
         item = scores.get(dimension)
-        if not isinstance(item, dict) or item.get("result") not in poles or type(ties.get(dimension)) is not bool:
+        if not isinstance(item, dict) or item.get("result") not in tuple(poles) or type(ties.get(dimension)) is not bool:
             raise ValueError("Invalid MBTI dimension")
         for pole in poles:
             score = item.get(pole + "_pct")

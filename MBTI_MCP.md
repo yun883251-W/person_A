@@ -1,6 +1,6 @@
 # MindCare MBTI 接入
 
-Person_A 通过本地 stdio MCP 子进程复用 `C:/Users/qinjiangyi/Desktop/LL/MindCare/backend/mbti` 中的问卷、评分和类型描述。用户在 Person_A 的网页或 CLI 会话中答题，宿主保存进度并调用工具，不需要启动 MindCare 的 Web 服务、读取它的业务数据库或修改其源代码。
+Person_A 通过本地 stdio MCP 子进程提供问卷、评分和类型描述。核心代码源自 MindCare 的 `backend/mbti`，已复制到本项目 `src/mbti_mcp/core/`，并将包内导入适配为相对导入。用户在 Person_A 的网页或 CLI 会话中答题，宿主保存进度并调用工具；本项目可以独立运行，不再依赖原 MindCare 目录，也无需启动它的 Web 服务或业务数据库。
 
 **本次仅完成开发。未运行测试、语法检查、构建、服务或模型联调，也未安装依赖；以下启动命令与验收清单供后续使用，不是已执行记录。**
 
@@ -33,7 +33,7 @@ CLI 恢复已有会话时使用 `person-a chat --session-id ID`；`ask` 是单�
 - `mbti.enabled` 为 `true`，只允许问卷、评分、类型描述三个工具。
 - `command` 为宿主识别的 `$PYTHON` 占位符，启动时替换为当前 Person_A Python 解释器的绝对路径。它不是要求用户配置的环境变量。
 - 参数调用 `examples/mbti_mcp_server.py`；该启动文件补充源码包路径，再进入 `mbti_mcp.server`。
-- `--mindcare-root` 指向 MindCare 项目根目录，即包含 `backend/mbti` 的目录。移动项目后需要调整此参数；工具调用参数不能修改加载路径。
+- 问卷与评分直接从本地 `mbti_mcp.core` 导入，没有外部项目路径或 `--mindcare-root` 启动参数；移动整个 Person_A 目录时无需调整 MindCare 路径。
 - `cwd: ".."` 相对于配置文件目录解析，在当前布局中得到 Person_A 根目录。
 
 `MCP_CONFIG_PATH` 的含义：
@@ -45,7 +45,7 @@ CLI 恢复已有会话时使用 `person-a chat --session-id ID`；`ask` 是单�
 | `MCP_CONFIG_PATH=`，即显式空值 | 关闭 MCP |
 | 指向其他 JSON 配置 | 只使用该文件配置的服务，不自动合并默认配置 |
 
-本次没有覆盖实际 `.env`。如果旧文件中存在空值，需要自行改成运行配置路径才能启用。`config/mcp_servers.mbti.example.json` 保留为默认禁用的示例；它不会自动启动。正常使用由 API/CLI 管理 MCP 子进程的启动和关闭，无需另开终端运行服务。修改路径或配置后重启宿主。
+本次没有覆盖实际 `.env`。如果旧文件中存在空值，需要自行改成运行配置路径才能启用。`config/mcp_servers.mbti.example.json` 保留为默认禁用的示例；它不会自动启动。正常使用由 API/CLI 管理 MCP 子进程的启动和关闭，无需另开终端运行服务。若使用自行维护的旧 MCP 配置，应删除 MBTI 启动参数中的 `--mindcare-root` 及其路径值，只保留本项目启动文件；修改配置后重启宿主。
 
 ## 使用流程
 
@@ -80,10 +80,34 @@ CLI 恢复已有会话时使用 `person-a chat --session-id ID`；`ask` 是单�
 | `agent/assessment.py` | 识别明确答题操作，生成下一轮状态，编排三个固定 MCP 工具 |
 | `agent/runner.py` | 将答题分支与已有意图/路由、执行记录、问答提交整合 |
 | `mcp/client.py`、`mcp/adapter.py` | 管理外部服务生命周期、白名单、参数校验、调用预算和结果转换 |
-| `mbti_mcp/service.py` | 加载并校验 MindCare 模块，分页问卷、严格校验并调用原评分函数 |
+| `mcp/bootstrap.py` | API 与 CLI 共用的 MCP 运行时启动、注册器组装与关闭 |
+| `mbti_mcp/core/` | 内置从 MindCare 复制并适配的题库、评分与类型描述，包内使用相对导入 |
+| `mbti_mcp/service.py` | 直接导入本地核心，分页问卷、严格校验并调用内置评分函数 |
 | `mbti_mcp/server.py` | 使用官方 MCP Python SDK 暴露 stdio 工具 |
 | `session_store.py` | 在现有 SQLite 问答记录中保存与恢复测试状态 |
 | `web/assets/app.js`、`app.css` | 展示答题卡、进度、选项与四维结果 |
+
+相关目录如下：
+
+```text
+src/
+├── knowledge_agent/mcp/
+│   ├── __init__.py
+│   ├── client.py
+│   ├── adapter.py
+│   └── bootstrap.py
+└── mbti_mcp/
+    ├── __init__.py
+    ├── server.py
+    ├── service.py
+    └── core/
+        ├── __init__.py
+        ├── questions.py
+        ├── scoring.py
+        └── descriptions.py
+```
+
+`core/` 中四个文件的来源保留为 MindCare；本项目维护的是已复制的独立代码，原项目后续修改不会自动同步。题库、评分和类型描述均随 Person_A 一起保存和运行。
 
 状态保存在现有 `turns.result_json.assessment_state` 中，包含题库版本、评分版本、已提交答案、已加载题目、测试状态和结果。没有新增数据库服务或答题表，也不会写入 MindCare 的数据库。
 
@@ -99,21 +123,22 @@ CLI 恢复已有会话时使用 `person-a chat --session-id ID`；`ask` 是单�
 | --- | --- | --- |
 | `get_mbti_questionnaire` | `offset` 为 0—47 的整数；`limit` 为 1—12 的整数，默认 12 | 题目 ID/文本、五个选项、总题数、下一页位置、题库与评分版本 |
 | `score_mbti_answers` | 完整 `answers` 对象与 `questionnaire_version` | 类型、四维原始分/比例、各维是否平局、实际默认字母、版本 |
-| `get_mbti_description` | 四字母 `type_code`，如 `INTJ` | MindCare 提供的类型名称、特点、优势等一般性描述 |
+| `get_mbti_description` | 四字母 `type_code`，如 `INTJ` | 本地内置的类型名称、特点、优势等一般性描述，内容源自 MindCare |
 
-评分严格要求字符串题号 `"0"` 至 `"47"`，以及整数 1—5。缺题、额外题号、前导零题号、布尔值、小数与字符串分值均被拒绝；不会像原宽松校验那样转换数值或对缺题补默认答案。问卷页不公开计分方向；版本由加载的数据或源评分文件内容生成，分页和评分时校验版本一致。
+评分严格要求字符串题号 `"0"` 至 `"47"`，以及整数 1—5。缺题、额外题号、前导零题号、布尔值、小数与字符串分值均被拒绝；不会像原宽松校验那样转换数值或对缺题补默认答案。问卷页不公开计分方向；版本由本地内置的数据或评分文件内容生成，分页和评分时校验版本一致。
 
-计分本身复用 MindCare 原函数。当前实际平局默认字母为 EI→I、SN→S、TF→F、JP→J，结果同时返回平局标记；不能把默认字母解释成明确倾向。维度百分比只是该量表得分比例，不是模型置信度或诊断概率。这是项目中的自评问卷，不宣称是官方 MBTI 测评或心理诊断。类型描述省略原 `overview` 中无出处的人口比例。
+计分使用从 MindCare 复制到 `core/scoring.py` 的函数。当前实际平局默认字母为 EI→I、SN→S、TF→F、JP→J，结果同时返回平局标记；不能把默认字母解释成明确倾向。维度百分比只是该量表得分比例，不是模型置信度或诊断概率。这是项目中的自评问卷，不宣称是官方 MBTI 测评或心理诊断。类型描述省略原 `overview` 中无出处的人口比例。
 
-服务使用项目声明的 `mcp>=1.26,<2.0`，参考 [官方 SDK v1.26 文档](https://github.com/modelcontextprotocol/python-sdk/blob/v1.26.0/README.md)。业务错误通过 MCP 工具错误返回，成功结果提供结构化 JSON；stdout 专用于协议。模块导入不自动启动服务，源路径仅由可信启动配置决定。
+服务使用项目声明的 `mcp>=1.26,<2.0`，参考 [官方 SDK v1.26 文档](https://github.com/modelcontextprotocol/python-sdk/blob/v1.26.0/README.md)。业务错误通过 MCP 工具错误返回，成功结果提供结构化 JSON；stdout 专用于协议。模块导入不自动启动服务，业务核心固定使用本地 `mbti_mcp.core`，工具调用参数不能切换代码来源。
 
 ## 待统一验收
 
 以下均未在本次执行：
 
-- 在所用 Python 环境安装声明依赖，确认默认配置启用与显式空值关闭均符合预期；缺源目录、依赖缺失或服务不可用时给出可理解的失败提示。
+- 在所用 Python 环境安装声明依赖，确认默认配置启用与显式空值关闭均符合预期；内置核心文件缺失、依赖缺失或服务不可用时给出可理解的失败提示。
+- 在不提供原 MindCare 目录的环境中启动 Person_A，确认问卷、评分和描述均从本地 `core/` 运行；移动整个项目后，默认配置仍使用当前 Python 与本地启动文件。
 - 完成工具发现和三工具调用，确认白名单、命名空间、严格参数校验及错误结果处理。
-- 完成全部 48 题，与原 MindCare 函数对照评分；覆盖缺题、非法分值、无效类型、平局、分页及题库/评分版本变化。
+- 完成全部 48 题，与内置 `core/scoring.py` 函数对照评分；覆盖缺题、非法分值、无效类型、平局、分页及题库/评分版本变化。
 - 验证网页与 CLI 的开始、暂停、继续、退出、重新开始、结果查询，以及答题中穿插知识问题。
 - 验证页面刷新、宿主重启、超过模型历史窗口后的恢复；不同会话互不影响，清空/删除同步清除进度。
 - 验证重复点击、旧题目卡、切换会话、请求超时与断连；存储失败不推进已保存状态。
