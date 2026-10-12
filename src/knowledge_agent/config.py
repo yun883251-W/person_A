@@ -89,6 +89,14 @@ class IntentSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class McpSettings:
+    """Location of the optional MCP server configuration."""
+
+    config_path: Path | None = None
+    project_root: Path = PROJECT_ROOT
+
+
+@dataclass(frozen=True, slots=True)
 class SessionStoreSettings:
     """Validated SQLite session-store configuration."""
 
@@ -166,6 +174,24 @@ def get_intent_settings() -> IntentSettings:
     if normalized_mode not in {"rules", "hybrid"}:
         raise ValueError("INTENT_MODE 必须是 rules 或 hybrid")
     return IntentSettings(mode=normalized_mode)  # type: ignore[arg-type]
+
+
+def get_mcp_settings() -> McpSettings:
+    """Resolve MCP_CONFIG_PATH without reading the referenced configuration."""
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+    raw_path = os.environ.get(
+        "MCP_CONFIG_PATH", dotenv.get("MCP_CONFIG_PATH", "")
+    ).strip()
+    if not raw_path:
+        return McpSettings(project_root=PROJECT_ROOT)
+
+    config_path = Path(raw_path).expanduser()
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+    return McpSettings(
+        config_path=config_path.resolve(strict=False),
+        project_root=PROJECT_ROOT,
+    )
 
 
 def get_ingest_settings() -> IngestSettings:
