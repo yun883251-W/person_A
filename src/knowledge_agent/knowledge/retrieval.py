@@ -28,7 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from .config import get_ingest_settings, get_retrieval_settings
+from ..config import get_ingest_settings, get_retrieval_settings
 from .ingest import (
     OllamaEmbeddingError,
     OllamaEmbeddingModel,
@@ -36,8 +36,8 @@ from .ingest import (
     check_ollama_embedding_model,
 )
 from .keywords import extract_keywords
-from .models import create_embedding_model
-from .schemas import DocumentChunk, RetrievalChannel, RetrievalResult
+from ..models import create_embedding_model
+from ..schemas import DocumentChunk, RetrievalChannel, RetrievalResult
 
 
 @dataclass(frozen=True, slots=True)

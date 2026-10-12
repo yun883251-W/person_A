@@ -34,8 +34,8 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool, StructuredTool
 
-from .config import AgentConfig
-from .models import (
+from ..config import AgentConfig
+from ..models import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
     ChatModelNotFoundError,
@@ -47,23 +47,23 @@ from .models import (
     invoke_chat_model,
 )
 from .prompts import SYSTEM_PROMPT
-from .retrieval import KnowledgeRetriever
-from .schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
-from .session_store import (
+from ..knowledge.retrieval import KnowledgeRetriever
+from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
+from ..session_store import (
     SessionNotFoundError,
     SessionStore,
     SessionStoreError,
     StoredTurn,
 )
-from .skill_loader import load_skill, prepare_skill
-from .tools.knowledge import (
+from ..skill_loader import load_skill, prepare_skill
+from ..tools.knowledge import (
     READ_KNOWLEDGE_SECTION_DESCRIPTION,
     SEARCH_KNOWLEDGE_DESCRIPTION,
     ReadKnowledgeSectionInput,
     SearchKnowledgeInput,
     create_search_executor,
 )
-from .tools.registry import InMemoryToolRegistry, create_tool_registry
+from ..tools.registry import InMemoryToolRegistry, create_tool_registry
 from .trace import TraceRecorder, finish_trace_safely
 
 
@@ -951,7 +951,7 @@ class PreparedModelTurn:
 
 # 统一引用约定：模型只输出本轮资料中的 [S1] 等 source_id 标记。
 # finalize_answer 通过本轮 source_map 校验标记，再由程序用索引元数据生成文件名、小节和行号。
-# prompts.SYSTEM_PROMPT 第三节也须遵守此约定；旧文案的修改任务见 prompts.py 中的 TODO。
+# prompts.SYSTEM_PROMPT 第三节也须遵守此约定；旧文案的修改任务见 agent/prompts.py 中的 TODO。
 _SOURCE_CITATION_INSTRUCTION = (
     "For citations, use only the source_id tokens present in the reference "
     "materials (for example [S1]). Do not write source paths, headings, or line "

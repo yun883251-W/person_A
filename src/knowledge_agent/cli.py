@@ -16,8 +16,8 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .agent import KnowledgeAgentApplication
-    from .ingest import IngestRunResult
+    from .agent.runner import KnowledgeAgentApplication
+    from .knowledge.ingest import IngestRunResult
     from .schemas import AnswerResult
 
 
@@ -209,7 +209,7 @@ def _display_ingest(result: IngestRunResult, *, json_output: bool) -> int:
 
 
 def _run_ingest(command: str, *, json_output: bool) -> int:
-    from .ingest import build_index, update_index
+    from .knowledge.ingest import build_index, update_index
 
     operation = build_index if command == "build" else update_index
     print("正在建立索引……" if command == "build" else "正在更新索引……", file=sys.stderr)
@@ -255,7 +255,7 @@ def _session(
     persistent: bool = False,
     resume: bool = False,
 ) -> Iterator[KnowledgeAgentApplication]:
-    from .agent import create_agent_application
+    from .agent.runner import create_agent_application
 
     store = _create_session_store() if persistent else None
     application = create_agent_application(session_store=store)

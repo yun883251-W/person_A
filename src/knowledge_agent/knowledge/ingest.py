@@ -31,10 +31,10 @@ from typing import Any, Callable, Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .config import get_ingest_settings
+from ..config import get_ingest_settings
 from .keywords import extract_keywords
-from .models import create_embedding_model
-from .schemas import DocumentChunk
+from ..models import create_embedding_model
+from ..schemas import DocumentChunk
 
 
 @dataclass(frozen=True, slots=True)

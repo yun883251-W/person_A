@@ -138,18 +138,46 @@ Invoke-RestMethod -Method Delete -Uri "$baseUrl/sessions/$sessionId"
 Person_A/
 ├── docs/                         # 本地 Markdown 知识文档
 ├── src/knowledge_agent/
+│   ├── __init__.py
 │   ├── cli.py                    # 建库、更新、单次与多轮问答入口
 │   ├── api.py                    # 同源网页、HTTP API 与单工作线程运行时
 │   ├── config.py                 # 配置读取与校验
 │   ├── models.py                 # 对话与 Embedding 模型适配
 │   ├── schemas.py                # 片段、检索结果与回答的数据结构
-│   ├── ingest.py                 # 文档读取、分块、索引构建与同步
-│   ├── keywords.py               # 共享关键词分词规则
-│   ├── retrieval.py              # 向量与关键词检索、上下文补查
-│   ├── agent.py                  # 工具调用、会话管理与回答引用
-│   ├── trace.py                  # 单轮执行事件、耗时与公开摘要
 │   ├── session_store.py          # 本地 SQLite 会话持久化
-│   └── prompts.py                # 问答约束与来源标记规则
+│   ├── skill_loader.py           # 项目 Skill 的发现、加载与工具约束
+│   ├── evaluation.py             # 效果评估 TODO
+│   ├── agent/                    # Agent 执行流程、提示词与执行记录
+│   │   ├── __init__.py
+│   │   ├── runner.py             # 工具调用、会话管理与回答引用
+│   │   ├── intent.py             # 意图识别节点 TODO
+│   │   ├── router.py             # 知识 / MCP / 直接回复路由 TODO
+│   │   ├── prompts.py            # 问答约束与来源标记规则
+│   │   └── trace.py              # 单轮执行事件、耗时与公开摘要
+│   ├── knowledge/                # 文档、索引、检索与知识库管理
+│   │   ├── __init__.py
+│   │   ├── ingest.py             # 文档读取、分块、索引构建与同步
+│   │   ├── retrieval.py          # 向量与关键词检索、上下文补查
+│   │   ├── keywords.py           # 共享关键词分词规则
+│   │   └── manager.py            # 文档上传、预览与索引管理
+│   ├── tools/                    # 本地工具与统一注册、执行校验
+│   │   ├── __init__.py
+│   │   ├── registry.py
+│   │   └── knowledge.py
+│   ├── mcp/                      # 外部工具连接与注册器适配 TODO
+│   │   ├── __init__.py
+│   │   ├── client.py
+│   │   └── adapter.py
+│   └── images/                   # 图片提问扩展 TODO，暂缓开发
+│       ├── __init__.py
+│       ├── ocr.py
+│       ├── attachments.py
+│       └── image_question.py
+├── skills/                       # 概念讲解、概念比较、代码解读的 Skill
+├── config/
+│   └── mcp_servers.example.json  # MCP 配置草案，演示服务默认禁用
+├── examples/
+│   └── mcp_demo_server.py        # 无副作用演示 MCP 服务 TODO
 ├── web/
 │   ├── index.html                # 本地问答页面
 │   └── assets/                   # 原生 JavaScript 与 CSS
@@ -160,8 +188,13 @@ Person_A/
 ├── .env                          # 本地配置，不提交真实凭据
 ├── .env.example                  # 配置模板
 ├── pyproject.toml                # 依赖声明与命令入口
+├── INTENT_MCP_TODO.md             # 意图识别与 MCP 接入开发顺序
 └── README.md
 ```
+
+Python 模块按功能分包：`agent/` 组织问答执行，`knowledge/` 处理知识库，`tools/` 统一注册和校验工具，`mcp/` 预留外部工具接入，`images/` 预留图片提问。公共配置、数据结构、模型适配、会话存储和 Skill 加载仍放在包根目录；`cli.py`、`api.py` 保留入口位置，上面的启动命令不变。
+
+意图识别、路由、MCP 接入与图片模块目前仍只有说明和 TODO，分包不代表这些能力已经实现。先按 `INTENT_MCP_TODO.md` 开发意图识别和 MCP；MBTI 与图片提问仍留到后续。
 
 索引以本地文件保存，无需另行安装数据库服务。实际索引文件路径以 `manifest.json` 中的记录为准，不要手动修改片段、向量或清单来绕过建库流程。
 
@@ -177,7 +210,7 @@ Person_A/
 
 ## 待统一验收
 
-`prompts.py` 已与 Agent 统一为 `[S1]` 来源标记协议；最终文档名称、小节和行号由程序校验并生成，引用正确性仍需在真实问答中核对。
+`src/knowledge_agent/agent/prompts.py` 已与 Agent 统一为 `[S1]` 来源标记协议；最终文档名称、小节和行号由程序校验并生成，引用正确性仍需在真实问答中核对。
 
 `evaluation/questions.jsonl` 保留 5 条人工验收草案，覆盖概念比较、检索与生成质量、资料不足、跨章节检索及无答案场景。每行记录问题、期望来源、回答要点和验收标准，目前没有执行结果或通过率。
 

@@ -51,14 +51,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .agent import ApplicationBusyError, TurnPersistenceError
+from .agent.runner import ApplicationBusyError, TurnPersistenceError
 from .config import PROJECT_ROOT
 from .models import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
     ChatModelTimeoutError,
 )
-from .knowledge_base import (
+from .knowledge.manager import (
     DocumentAlreadyExistsError,
     DocumentReferenceMismatchError,
     DocumentSummary,
@@ -85,7 +85,7 @@ from .session_store import (
     StoredTurn,
 )
 from .skill_loader import discover_skills
-from .trace import (
+from .agent.trace import (
     TraceInitiator,
     TraceOutcome,
     TraceStage,
@@ -1094,7 +1094,7 @@ class ServiceRuntime:
 
     @staticmethod
     def _default_application_factory(store: Any) -> Any:
-        from .agent import create_agent_application
+        from .agent.runner import create_agent_application
 
         return create_agent_application(session_store=store)
 

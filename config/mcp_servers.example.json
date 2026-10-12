@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "servers": {
+    "demo": {
+      "enabled": false,
+      "command": "python",
+      "args": ["-u", "examples/mcp_demo_server.py"],
+      "cwd": "..",
+      "env_from": {},
+      "allowed_tools": ["add_numbers"],
+      "startup_timeout_seconds": 15,
+      "call_timeout_seconds": 30,
+      "max_output_chars": 12000
+    }
+  }
+}

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from knowledge_agent.agent import KnowledgeAgentApplication
+from knowledge_agent.agent.runner import KnowledgeAgentApplication
 from knowledge_agent.schemas import AnswerResult
 from knowledge_agent.session_store import (
     DATABASE_SCHEMA_VERSION,

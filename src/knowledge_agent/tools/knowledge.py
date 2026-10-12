@@ -4,8 +4,8 @@
 输入：KnowledgeRetriever，以及当前问答轮所需的检索和来源上下文。
 输出：供注册器使用的工具定义与执行函数，以及可追溯的检索结果。
 
-开发以迁移 agent.py 中现有实现为主，不重新实现向量化、检索或索引构建。
-当前文件只有 TODO，原有工具仍在 agent.py 中正常运行。
+开发以迁移 agent/runner.py 中现有实现为主，不重新实现向量化、检索或索引构建。
+当前文件只有 TODO，原有工具仍在 agent/runner.py 中正常运行。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any, Literal, Protocol
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..retrieval import IndexNotBuiltError
+from ..knowledge.retrieval import IndexNotBuiltError
 from ..schemas import DocumentChunk, RetrievalResult
 from .registry import InMemoryToolRegistry, ToolRegistration
 

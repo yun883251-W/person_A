@@ -4,7 +4,7 @@
 为人工判断答案正确性、完整性和忠实度提供报告。
 当前仅包含详细 TODO，尚未实现或执行评估，也没有自动评分结果。
 
-前置工作：先完成 prompts.py 中修改 SYSTEM_PROMPT 第三节的 TODO，
+前置工作：先完成 agent/prompts.py 中修改 SYSTEM_PROMPT 第三节的 TODO，
 统一为模型输出本轮 [S1] 等标记，由 Agent 校验并生成最终引用。
 开发顺序：TODO 01—12；对应 CLI 接入见 cli.py 的评估开发 TODO。
 全部实现后再集中执行 TODO 13—16，不逐项调用真实模型验证。

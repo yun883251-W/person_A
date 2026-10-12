@@ -42,7 +42,7 @@ from langchain_core.messages import (
 )
 
 from .schemas import AnswerResult, AnswerSource
-from .trace import trace_from_dict, trace_to_dict
+from .agent.trace import trace_from_dict, trace_to_dict
 
 
 # 第一阶段：存储层及应用接入开发。

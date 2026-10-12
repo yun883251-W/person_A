@@ -6,7 +6,7 @@
 
 职责分工：
 1. 本模块管理文档文件及知识库操作，不负责对话生成或 HTTP 请求解析。
-2. ingest.py 继续负责文档解析、切分、向量化、完整建库和增量更新。
+2. knowledge/ingest.py 继续负责文档解析、切分、向量化、完整建库和增量更新。
 3. api.py 负责请求校验、响应转换和 ServiceRuntime 的工作线程调度。
 4. Agent 通过已有 refresh_index() 加载新索引，前端负责展示状态和操作入口。
 
@@ -31,7 +31,7 @@ from pathlib import PureWindowsPath
 import tempfile
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Literal
 
-from .config import get_knowledge_base_settings
+from ..config import get_knowledge_base_settings
 
 if TYPE_CHECKING:
     from .ingest import IngestRunResult

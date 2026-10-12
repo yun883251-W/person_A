@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from .trace import TurnTrace
+    from .agent.trace import TurnTrace
 
 
 @dataclass(frozen=True, slots=True)

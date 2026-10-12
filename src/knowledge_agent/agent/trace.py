@@ -7,7 +7,7 @@
 
 职责分工：
 1. 本模块定义执行记录的数据结构、收集器和序列化规则，不发起模型或工具调用。
-2. agent.py、tools/registry.py 在实际执行位置记录事件，保留现有业务流程与预算。
+2. agent/runner.py、tools/registry.py 在实际执行位置记录事件，保留现有业务流程与预算。
 3. schemas.py 将摘要挂到 AnswerResult；session_store.py 保存并恢复该摘要。
 4. api.py 转换公开响应；前端显示本轮与历史问答的执行详情。
 
