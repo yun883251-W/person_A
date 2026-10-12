@@ -255,10 +255,10 @@ def _session(
     persistent: bool = False,
     resume: bool = False,
 ) -> Iterator[KnowledgeAgentApplication]:
-    from .agent.runner import create_agent_application
+    from .mcp.bootstrap import create_configured_application
 
     store = _create_session_store() if persistent else None
-    application = create_agent_application(session_store=store)
+    application = create_configured_application(session_store=store)
     try:
         if resume:
             if session_id is None:

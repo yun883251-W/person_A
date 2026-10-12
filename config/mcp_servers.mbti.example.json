@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "servers": {
+    "mbti": {
+      "enabled": false,
+      "command": "python",
+      "args": [
+        "-u",
+        "-m",
+        "mbti_mcp.server",
+        "--mindcare-root",
+        "C:/Users/qinjiangyi/Desktop/LL/MindCare"
+      ],
+      "cwd": "..",
+      "env_from": {},
+      "allowed_tools": [
+        "get_mbti_questionnaire",
+        "score_mbti_answers",
+        "get_mbti_description"
+      ],
+      "startup_timeout_seconds": 15,
+      "call_timeout_seconds": 30,
+      "max_output_chars": 16000
+    }
+  }
+}

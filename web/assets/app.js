@@ -8,7 +8,7 @@
     "session-search", "session-list", "load-more-sessions", "refresh-sessions",
     "service-status", "current-title", "session-subtitle", "refresh-history",
     "clear-session", "delete-session", "welcome", "conversation", "conversation-scroll",
-    "composer-form", "question", "skill-select", "send-button", "composer-hint", "char-count",
+    "composer-form", "question", "skill-select", "send-button", "composer-hint", "char-count", "mbti-start",
     "notice", "notice-text", "notice-dismiss", "confirm-dialog", "confirm-title",
     "confirm-description", "confirm-cancel", "confirm-accept", "knowledge-open",
     "knowledge-dialog", "knowledge-close", "knowledge-message", "knowledge-refresh",
@@ -26,7 +26,7 @@
   const KNOWLEDGE_PENDING_KEY = "person-a.pending-knowledge-operation";
   const state = {
     sessions: [], sessionOffset: 0, hasMore: false, current: null, turns: [],
-    operation: null, pendingQuestion: "", needsRefresh: false,
+    operation: null, pendingQuestion: "", needsRefresh: false, assessmentModeHint: false,
     knowledgeBusy: false, knowledgeOperation: null, knowledgeNeedsRefresh: false,
     knowledgeDocuments: [], knowledgeDocumentsLoaded: false, knowledgeDocumentsStale: true,
     knowledgeStatus: null, knowledgeStatusStale: true,
@@ -835,19 +835,180 @@
     return details;
   }
 
+  const assessmentStatusLabels = {
+    active: "进行中", paused: "已暂停", ready: "等待评分", completed: "已完成", cancelled: "已退出",
+  };
+
+  function assessmentData(result) {
+    const data = result?.assessment;
+    return data && typeof data === "object" && !Array.isArray(data)
+      && typeof data.test_id === "string" && data.test_id.length > 0
+      && Object.hasOwn(assessmentStatusLabels, data.status) ? data : null;
+  }
+
+  function assessmentCanSubmit(result, sessionId) {
+    return Boolean(sessionId && state.current?.session_id === sessionId
+      && state.turns[state.turns.length - 1] === result && !result.unsaved
+      && !["service_error", "limit_reached"].includes(result.status)
+      && !chatControlsLocked() && !state.needsRefresh);
+  }
+
+  function sendAssessmentCommand(command) {
+    if (chatControlsLocked() || state.needsRefresh) return;
+    ui["skill-select"].value = "";
+    state.assessmentModeHint = true;
+    updateControls();
+    // 仍经由单次问答接口提交，沿用同一会话锁和断连恢复机制。
+    void sendQuestion(null, command);
+  }
+
+  function assessmentButton(label, command, result, sessionId, className = "assessment-action") {
+    const button = element("button", className, label);
+    button.type = "button";
+    button.dataset.assessmentControl = "true";
+    button.dataset.assessmentCurrent = String(state.turns[state.turns.length - 1] === result
+      && !result.unsaved && !["service_error", "limit_reached"].includes(result.status));
+    button.disabled = !assessmentCanSubmit(result, sessionId);
+    button.addEventListener("click", () => {
+      // 捕获的会话和轮次必须仍有效，防止旧卡片、重复点击或切换会话后的事件提交。
+      if (assessmentCanSubmit(result, sessionId)) sendAssessmentCommand(command);
+    });
+    return button;
+  }
+
+  function assessmentPercent(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
+      ? value : null;
+  }
+
+  function renderAssessmentResult(result) {
+    const section = element("div", "assessment-result");
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      section.append(element("p", "assessment-note", "结果详情暂不可用，请查看本轮回答。"));
+      return section;
+    }
+    const heading = element("div", "assessment-type");
+    heading.append(element("strong", null, typeof result.type === "string" ? result.type : "测试结果"));
+    if (typeof result.type_name === "string") heading.append(element("span", null, result.type_name));
+    section.append(heading, element("h4", "assessment-section-title", "维度得分比例"));
+    section.append(element("p", "assessment-note", "以下比例来自本次答题计分，不代表人格判定的置信度。"));
+    const dimensionLabels = {
+      EI: ["外向 E", "内向 I"], SN: ["实感 S", "直觉 N"],
+      TF: ["思考 T", "情感 F"], JP: ["判断 J", "知觉 P"],
+    };
+    for (const [key, labels] of Object.entries(dimensionLabels)) {
+      const score = result.dimension_scores?.[key];
+      if (!score || typeof score !== "object" || Array.isArray(score)) continue;
+      const left = assessmentPercent(score[`${key[0]}_pct`]);
+      const right = assessmentPercent(score[`${key[1]}_pct`]);
+      const dimension = element("div", "assessment-dimension");
+      const values = element("div", "assessment-dimension-labels");
+      const format = (value) => value === null ? "未提供" : `${value.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%`;
+      values.append(element("span", null, `${labels[0]} · ${format(left)}`), element("span", null, `${labels[1]} · ${format(right)}`));
+      dimension.append(values);
+      if (left !== null && right !== null) {
+        const bar = element("div", "assessment-dimension-bar");
+        bar.setAttribute("aria-hidden", "true");
+        const fill = element("span"); fill.style.width = `${left}%`; bar.append(fill); dimension.append(bar);
+      }
+      if (result.ties?.[key] === true) {
+        const tie = typeof score.result === "string" ? `，按评分规则归为 ${score.result}` : "，以评分规则为准";
+        dimension.append(element("p", "assessment-tie", `本维度得分相同${tie}；本次回答未显示明确倾向。`));
+      }
+      section.append(dimension);
+    }
+    if (typeof result.notice === "string" && result.notice.trim()) {
+      section.append(element("p", "assessment-notice", result.notice));
+    }
+    return section;
+  }
+
+  function renderAssessment(result) {
+    const data = assessmentData(result);
+    if (!data) return null;
+    const sessionId = state.current?.session_id;
+    const card = element("section", "assessment-card");
+    card.setAttribute("aria-label", "MBTI 测试");
+    const header = element("div", "assessment-header");
+    header.append(element("h3", null, "MBTI 人格倾向测试"));
+    const status = element("span", "assessment-status", assessmentStatusLabels[data.status]);
+    status.dataset.status = data.status; header.append(status); card.append(header);
+    if (Number.isInteger(data.total) && data.total > 0 && Number.isInteger(data.answered_count)
+      && data.answered_count >= 0 && data.answered_count <= data.total) {
+      const progress = element("progress", "assessment-progress");
+      progress.max = data.total; progress.value = data.answered_count;
+      progress.setAttribute("aria-label", `已完成 ${data.answered_count} / ${data.total} 题`);
+      card.append(element("p", "assessment-progress-label", `已完成 ${data.answered_count} / ${data.total} 题`), progress);
+    }
+    const current = data.current_question;
+    if (["active", "paused"].includes(data.status) && current && Number.isInteger(current.id)
+      && typeof current.text === "string") {
+      const number = Number.isInteger(current.number) ? `第 ${current.number} 题` : "当前题目";
+      card.append(element("p", "assessment-question-number", number), element("p", "assessment-question", current.text));
+      if (data.status === "active" && Array.isArray(data.options)) {
+        const options = element("div", "assessment-options");
+        options.setAttribute("role", "group"); options.setAttribute("aria-label", `${number}的回答选项，点选即提交`);
+        for (const option of data.options) {
+          if (!option || !Number.isInteger(option.value) || option.value < 1 || option.value > 5
+            || typeof option.label !== "string") continue;
+          const button = assessmentButton("", `MBTI答题 ${data.test_id} ${current.id} ${option.value}`,
+            result, sessionId, "assessment-option");
+          button.append(element("span", "assessment-option-value", String(option.value)), element("span", null, option.label));
+          options.append(button);
+        }
+        card.append(options);
+      }
+    }
+    if (data.status === "active" && !current) {
+      card.append(element("p", "assessment-note", "已提交的答案已保留，下一题暂未取得，可重试获取。"));
+    }
+    if (data.status === "paused") card.append(element("p", "assessment-note", "进度已保留，继续测试后可提交下一题。"));
+    if (data.status === "ready") card.append(element("p", "assessment-note", "题目已答完，可以查看计分结果。"));
+    if (data.status === "cancelled") card.append(element("p", "assessment-note", "本次测试已退出。如需重新作答，可使用输入框上方的测试入口。"));
+    if (data.status === "completed") card.append(renderAssessmentResult(data.result));
+    const actions = element("div", "assessment-actions");
+    if (data.status === "active" && !current) {
+      actions.append(assessmentButton("重试获取题目", "继续 MBTI 测试", result, sessionId));
+    }
+    if (data.status === "active") actions.append(assessmentButton("暂停测试", "暂停 MBTI 测试", result, sessionId));
+    if (data.status === "paused") actions.append(assessmentButton("继续测试", "继续 MBTI 测试", result, sessionId));
+    if (data.status === "ready") actions.append(assessmentButton("查看结果", "查看 MBTI 结果", result, sessionId));
+    if (["active", "paused", "ready"].includes(data.status)) {
+      actions.append(assessmentButton("退出测试", "退出 MBTI 测试", result, sessionId));
+    }
+    if (actions.childNodes.length) card.append(actions);
+    const latest = state.turns[state.turns.length - 1] === result;
+    if (result.unsaved || ["service_error", "limit_reached"].includes(result.status)) {
+      card.append(element("p", "assessment-readonly", "本轮未保存，卡片仅供查看。请刷新历史确认当前测试进度。"));
+    } else if (!latest) {
+      card.append(element("p", "assessment-readonly", "历史快照，仅供查看。继续作答请使用最新一轮卡片，或发送“继续 MBTI 测试”。"));
+    } else if (data.status === "active" && current) {
+      card.append(element("p", "assessment-note", "点击选项即提交。本次测试操作使用普通问答模式。"));
+    }
+    return card;
+  }
+
+  function displayQuestion(text) {
+    const answer = typeof text === "string" ? /^MBTI答题\s+\S+\s+\d+\s+([1-5])$/.exec(text) : null;
+    return answer ? `MBTI 答题：选择 ${answer[1]}` : text;
+  }
+
   function message(role, text, result = null) {
     const article = element("article", `message message--${role}`);
     article.append(element("div", "message-avatar", role === "user" ? "你" : "A"));
     const content = element("div", "message-content");
     content.append(element("div", "message-label", role === "user" ? "你" : "Person A"));
     const body = element("div", "message-body");
-    if (role === "user") body.textContent = text;
+    if (role === "user") body.textContent = displayQuestion(text);
     else body.append(markdown(text));
     content.append(body);
     if (result) {
+      const assessment = renderAssessment(result);
+      if (assessment) content.append(assessment);
       if (result.sources?.length) content.append(renderSources(result.sources));
       const meta = element("div", "message-meta");
-      const badge = element("span", "status-badge", statusLabels[result.status] || "回答结果");
+      const label = assessment && result.status === "success" ? "MBTI 测试" : statusLabels[result.status] || "回答结果";
+      const badge = element("span", "status-badge", label);
       badge.dataset.status = result.status;
       meta.append(badge);
       if (result.unsaved || ["service_error", "limit_reached"].includes(result.status)) {
@@ -869,7 +1030,7 @@
     if (state.pendingQuestion) {
       fragment.append(message("user", state.pendingQuestion));
       if (state.operation === "send") {
-        const pending = message("assistant", "正在检索文档、整理回答，请稍候…");
+        const pending = message("assistant", "正在处理请求，请稍候…");
         pending.classList.add("loading-message");
         pending.setAttribute("role", "status");
         fragment.append(pending);
@@ -915,6 +1076,7 @@
     for (const id of ["refresh-history", "clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
     ui.question.disabled = busy;
     ui["skill-select"].disabled = busy;
+    ui["mbti-start"].disabled = busy || state.needsRefresh;
     ui["send-button"].disabled = busy || state.needsRefresh || !ui.question.value.trim();
     ui["send-button"].setAttribute("aria-label", state.operation === "send" ? "正在生成回答" : "发送问题");
     ui["composer-form"].setAttribute("aria-busy", String(isBusy()));
@@ -925,10 +1087,14 @@
       : state.knowledgeBusy ? "知识库操作进行中，完成后可继续提问。"
       : state.knowledgeNeedsRefresh ? "请先打开「知识库管理」刷新状态，确认上次操作结果。"
       : state.needsRefresh ? "请先点击上方「刷新历史」确认本轮结果，再继续提问。"
-      : state.operation ? "正在同步会话…" : "Enter 发送 · Shift + Enter 换行";
+      : state.operation ? "正在同步会话…"
+      : state.assessmentModeHint ? "MBTI 操作已使用普通问答模式；可点选题目作答。" : "Enter 发送 · Shift + Enter 换行";
     ui["char-count"].textContent = `${ui.question.value.length.toLocaleString("zh-CN")} / 10,000`;
     for (const button of document.querySelectorAll("[data-prompt]")) button.disabled = busy;
     for (const button of document.querySelectorAll("button.source-card")) button.disabled = isBusy();
+    for (const button of document.querySelectorAll("[data-assessment-control]")) {
+      button.disabled = busy || state.needsRefresh || button.dataset.assessmentCurrent !== "true";
+    }
     renderSessions();
     updateKnowledgeControls();
     renderOperationStatus();
@@ -959,7 +1125,7 @@
   }
 
   function resetConversation() {
-    state.current = null; state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false;
+    state.current = null; state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; state.assessmentModeHint = false;
     rememberSession(null); ui.question.value = ""; fitInput();
     renderConversation(); updateControls();
   }
@@ -971,6 +1137,7 @@
       const record = await request(`/sessions/${encodeURIComponent(id)}`);
       const turns = await loadHistory(id);
       state.current = record; state.turns = turns; state.pendingQuestion = ""; state.needsRefresh = false;
+      state.assessmentModeHint = false;
       rememberSession(id); ui.question.value = ""; fitInput(); renderConversation();
     } catch (error) {
       if (error.status === 404 && state.current?.session_id === id) resetConversation();
@@ -993,9 +1160,9 @@
     } finally { setOperation(null); }
   }
 
-  async function sendQuestion(event) {
-    event.preventDefault();
-    const question = ui.question.value.trim();
+  async function sendQuestion(event, command = null) {
+    event?.preventDefault();
+    const question = command === null ? ui.question.value.trim() : command;
     if (!question || chatControlsLocked() || state.needsRefresh) return;
     if (question.length > 10000) { notice(errorMessages.validation_error); return; }
     notice(""); closeSidebar(); setOperation("send");
@@ -1007,7 +1174,10 @@
         state.sessions.unshift(state.current);
         updateControls();
       }
-      state.pendingQuestion = question; ui.question.value = ""; fitInput(); renderConversation();
+      state.pendingQuestion = question;
+      // 卡片操作不覆盖输入框中尚未发送的学习问题。
+      if (command === null) ui.question.value = "";
+      fitInput(); renderConversation();
       submitted = true;
       // 不设置前端生成超时、不自动重发；后端负责模型超时，断连后人工刷新确认结果。
       const skillId = ui["skill-select"].value || null;
@@ -1019,16 +1189,17 @@
       catch { notice("回答已返回，会话列表暂未刷新，可稍后手动刷新。", "info"); }
     } catch (error) {
       if (error.body?.result) {
-        state.turns.push({ ...error.body.result, unsaved: error.body.persisted === false });
+        state.turns.push({ ...error.body.result, unsaved: error.body.persisted !== true });
         state.pendingQuestion = "";
       }
       state.needsRefresh = submitted && ["network_error", "request_timeout", "invalid_response", "internal_error"].includes(error.code);
-      if (!error.body?.result) ui.question.value = question;
+      if (!error.body?.result && command === null) ui.question.value = question;
       const recovery = state.needsRefresh ? " 后台可能仍在处理，请稍后刷新历史，避免重复提交。" : "";
       notice(error.message + recovery);
       if (error.status === 404 && state.current) {
         state.sessions = state.sessions.filter((item) => item.session_id !== state.current.session_id);
-        resetConversation(); ui.question.value = question;
+        const draft = command === null ? question : ui.question.value;
+        resetConversation(); ui.question.value = draft;
       }
     } finally {
       setOperation(null); renderConversation(); fitInput(); ui.question.focus();
@@ -1094,6 +1265,8 @@
   }
 
   ui["composer-form"].addEventListener("submit", sendQuestion);
+  ui["mbti-start"].addEventListener("click", () => sendAssessmentCommand("开始 MBTI 测试"));
+  ui["skill-select"].addEventListener("change", () => { state.assessmentModeHint = false; updateControls(); });
   ui.question.addEventListener("input", () => { fitInput(); updateControls(); });
   ui.question.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {

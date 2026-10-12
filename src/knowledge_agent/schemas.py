@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .agent.trace import TurnTrace
@@ -121,7 +121,11 @@ class AnswerSource:
 
 @dataclass(frozen=True, slots=True)
 class AnswerResult:
-    """Structured public result of one Agent answer."""
+    """Structured answer with an optional private, persisted assessment snapshot.
+
+    HTTP responses must convert ``assessment_state`` with ``public_assessment``;
+    the snapshot contains submitted answers and is never a public response body.
+    """
 
     question: str
     answer: str
@@ -133,3 +137,4 @@ class AnswerResult:
     stop_reason: str | None = None
     trace: TurnTrace | None = None
     routing: RouteSummary | None = None
+    assessment_state: dict[str, Any] | None = None

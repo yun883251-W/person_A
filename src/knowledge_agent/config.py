@@ -179,8 +179,11 @@ def get_intent_settings() -> IntentSettings:
 def get_mcp_settings() -> McpSettings:
     """Resolve MCP_CONFIG_PATH without reading the referenced configuration."""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+    default_path = PROJECT_ROOT / "config" / "mcp_servers.json"
     raw_path = os.environ.get(
-        "MCP_CONFIG_PATH", dotenv.get("MCP_CONFIG_PATH", "")
+        "MCP_CONFIG_PATH", dotenv.get(
+            "MCP_CONFIG_PATH", str(default_path) if default_path.is_file() else ""
+        )
     ).strip()
     if not raw_path:
         return McpSettings(project_root=PROJECT_ROOT)

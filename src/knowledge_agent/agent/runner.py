@@ -68,6 +68,7 @@ from ..tools.registry import InMemoryToolRegistry, create_tool_registry
 from .intent import IntentDecision, IntentModelBudgetError, identify_intent
 from .router import RouteDecision, RouteKind, resolve_route
 from .trace import TraceRecorder, finish_trace_safely
+from . import assessment
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +203,7 @@ class KnowledgeAgent:
         self.retriever = retriever if retriever is not None else KnowledgeRetriever()
         self.history = ConversationHistory(self.config.max_history_turns)
         self.session_store = session_store
+        self.assessment_states: dict[str, dict[str, Any]] = {}
         self.mcp_registry = (
             mcp_registry if mcp_registry is not None else InMemoryToolRegistry()
         )
@@ -316,6 +318,8 @@ class KnowledgeAgent:
 
         intent_model_calls = 0
         mcp_capabilities = self._mcp_capabilities()
+        assessment_state = self.assessment_states.get(session_id) if session_id is not None else None
+        assessment_action = assessment.request_action(question, assessment_state)
 
         def invoke_intent_model(messages: Sequence[BaseMessage]) -> object:
             nonlocal intent_model_calls
@@ -331,6 +335,7 @@ class KnowledgeAgent:
                 available_tools=mcp_capabilities,
                 max_history_turns=self.config.max_history_turns,
                 max_context_chars=self.config.max_context_chars,
+                assessment_state=assessment_state,
             )
         except Exception:
             trace_recorder.finish_event(
@@ -350,6 +355,7 @@ class KnowledgeAgent:
                 intent,
                 available_tools=mcp_capabilities,
                 skill_id=skill_id,
+                assessment_action=assessment_action,
             )
         except Exception:
             trace_recorder.finish_event(
@@ -365,6 +371,11 @@ class KnowledgeAgent:
         )
         if session_id is not None and route.route is RouteKind.KNOWLEDGE:
             history = self.history.messages(session_id, route=RouteKind.KNOWLEDGE)
+        if assessment_action is not None and route.route is RouteKind.MCP:
+            return self._ask_assessment(
+                question, session_id, assessment_action, assessment_state, route,
+                trace_recorder, intent_model_calls,
+            )
         if route.route is RouteKind.MCP:
             state = TurnState(
                 original_question=question.strip(),
@@ -415,6 +426,84 @@ class KnowledgeAgent:
             self._commit_turn(session_id, prepared.state, result, current_messages)
         return result
 
+    def _ask_assessment(
+        self, question: str, session_id: str | None, action: str,
+        previous: dict[str, Any] | None, route: RouteDecision,
+        trace_recorder: TraceRecorder, model_calls: int,
+    ) -> AnswerResult:
+        state = TurnState(original_question=question.strip(), trace_recorder=trace_recorder)
+        state.model_calls = model_calls
+
+        def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            handle = trace_recorder.start_event("tool", "program", tool_name=name)
+            registration = self.mcp_registry.get(name) if name in assessment.TOOLS else None
+            if registration is None:
+                trace_recorder.finish_event(handle, "skipped", error_code="mbti_tool_unavailable")
+                raise assessment.AssessmentToolError("mbti_tool_unavailable")
+            if state.tool_calls >= self.config.max_tool_calls:
+                trace_recorder.finish_event(handle, "skipped", error_code="tool_budget_exhausted")
+                raise assessment.AssessmentToolError("tool_budget_exhausted")
+            try:
+                if registration.argument_validator is not None:
+                    registration.argument_validator(arguments)
+            except Exception:
+                trace_recorder.finish_event(handle, "skipped", error_code="invalid_tool_arguments")
+                raise assessment.AssessmentToolError("invalid_tool_arguments") from None
+            state.tool_calls += 1
+            output = self.mcp_registry.execute(name, arguments, context=state)
+            if not isinstance(output, dict) or output.get("status") != "success":
+                error = output.get("error", {}) if isinstance(output, dict) else {}
+                code = error.get("code", "mbti_tool_failed") if isinstance(error, dict) else "mbti_tool_failed"
+                trace_recorder.finish_event(handle, "error", error_code=str(code))
+                raise assessment.AssessmentToolError(str(code))
+            payload = output.get("structured_content")
+            if not isinstance(payload, dict) and not output.get("truncated"):
+                try:
+                    payload = json.loads(output.get("text", ""))
+                except (TypeError, ValueError):
+                    payload = None
+            if not isinstance(payload, dict):
+                trace_recorder.finish_event(handle, "error", error_code="mbti_invalid_tool_result")
+                raise assessment.AssessmentToolError("mbti_invalid_tool_result")
+            size = len(json.dumps(payload, ensure_ascii=False))
+            if state.context_chars + size > self.config.max_context_chars:
+                trace_recorder.finish_event(handle, "error", error_code="context_budget_exhausted")
+                raise assessment.AssessmentToolError("context_budget_exhausted")
+            state.context_chars += size
+            trace_recorder.finish_event(handle, "success")
+            return payload
+
+        try:
+            if session_id is None and action != "describe":
+                reply = assessment.AssessmentReply(
+                    "请先创建会话，再开始 MBTI 测试。", status="needs_clarification",
+                    stop_reason="mbti_session_required",
+                )
+            else:
+                reply = assessment.handle_request(action, question, previous, call_tool)
+        except assessment.AssessmentToolError as exc:
+            reply = assessment.AssessmentReply(
+                "MBTI 工具暂不可用，请确认 MCP 配置、依赖和 MindCare 路径。已有答题进度未改变。",
+                previous, "service_error", exc.code,
+            )
+        except (TypeError, ValueError, KeyError):
+            reply = assessment.AssessmentReply(
+                "MBTI 工具返回的数据与当前问卷不兼容，已有进度未改变。",
+                previous, "service_error", "mbti_invalid_tool_result",
+            )
+        snapshot = assessment.validate_snapshot(reply.state) if reply.state is not None else None
+        result = AnswerResult(
+            question=state.original_question, answer=reply.answer,
+            status=reply.status, model_calls=state.model_calls, tool_calls=state.tool_calls,
+            stop_reason=reply.stop_reason, assessment_state=snapshot,
+        )
+        result = _attach_completed_trace(_attach_routing(result, route), state)
+        if session_id is not None:
+            self._commit_turn(session_id, state, result, (
+                HumanMessage(content=state.original_question), AIMessage(content=result.answer),
+            ))
+        return result
+
     def _commit_turn(
         self,
         session_id: str,
@@ -449,6 +538,8 @@ class KnowledgeAgent:
                 )
             except SessionStoreError as exc:
                 raise TurnPersistenceError(result) from exc
+        if result.assessment_state is not None:
+            self.assessment_states[session_id] = assessment.validate_snapshot(result.assessment_state)
         self.history.append(session_id, turn)
 
     def get_session_history(self, session_id: str) -> tuple[ConversationTurn, ...]:
@@ -458,6 +549,7 @@ class KnowledgeAgent:
     def clear_session(self, session_id: str) -> None:
         """Remove all retained turns for one session."""
         self.history.clear(session_id)
+        self.assessment_states.pop(session_id, None)
 
     def finalize_answer(
         self,
@@ -1945,6 +2037,7 @@ class KnowledgeAgentApplication:
         retriever: KnowledgeRetriever | None = None,
         session_store: SessionStore | None = None,
         mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
+        owned_mcp_runtime: Any | None = None,
     ) -> None:
         self.agent = KnowledgeAgent(
             config,
@@ -1954,6 +2047,7 @@ class KnowledgeAgentApplication:
             mcp_registry=mcp_registry,
         )
         self._session_id: str | None = None
+        self._owned_mcp_runtime = owned_mcp_runtime
         self._operation: str | None = None
         self._operation_lock = Lock()
         self._closed = False
@@ -2031,6 +2125,18 @@ class KnowledgeAgentApplication:
             stored_turns = store.load_context_turns(
                 key, max_history_turns=self.config.max_history_turns
             )
+            # 答题状态独立于模型历史窗口；中途问了多轮知识问题后仍可继续。
+            loader = getattr(store, "load_latest_assessment", None)
+            snapshot = loader(key) if callable(loader) else next(
+                (
+                    turn.result.assessment_state for turn in reversed(stored_turns)
+                    if turn.result.assessment_state is not None
+                ),
+                None,
+            )
+            restored_assessment = (
+                assessment.validate_snapshot(snapshot) if snapshot is not None else None
+            )
             self.agent.clear_session(key)
             for turn in stored_turns:
                 self.agent.history.append(
@@ -2042,6 +2148,8 @@ class KnowledgeAgentApplication:
                         result=turn.result,
                     ),
                 )
+            if restored_assessment is not None:
+                self.agent.assessment_states[key] = restored_assessment
             self._session_id = key
             return key
         finally:
@@ -2051,6 +2159,14 @@ class KnowledgeAgentApplication:
         """Run one complete turn in the active session."""
         self._begin_operation("ask")
         try:
+            if self._owned_mcp_runtime is not None:
+                # 每轮只更新能力快照，不重复启动进程；断连工具不会继续被宣称可用。
+                if self._owned_mcp_runtime.list_tools():
+                    from ..mcp.adapter import create_mcp_tool_registry
+
+                    self.agent.mcp_registry = create_mcp_tool_registry(self._owned_mcp_runtime)
+                else:
+                    self.agent.mcp_registry = InMemoryToolRegistry()
             return self.agent.ask(
                 question,
                 session_id=self._require_session(),
@@ -2101,7 +2217,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def close(self) -> None:
-        """Release the active session and owned storage connection once."""
+        """Release the active session, storage, and explicitly owned MCP runtime."""
         if self._closed:
             return
         self._begin_operation("close")
@@ -2115,7 +2231,11 @@ class KnowledgeAgentApplication:
                     if self.agent.session_store is not None:
                         self.agent.session_store.close()
                 finally:
-                    self._closed = True
+                    try:
+                        if self._owned_mcp_runtime is not None:
+                            self._owned_mcp_runtime.close()
+                    finally:
+                        self._closed = True
         finally:
             self._finish_operation()
 
@@ -2149,11 +2269,12 @@ def create_agent_application(
     retriever: KnowledgeRetriever | None = None,
     session_store: SessionStore | None = None,
     mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
+    owned_mcp_runtime: Any | None = None,
 ) -> KnowledgeAgentApplication:
     """Create the shared CLI/API boundary with an already prepared tool registry.
 
-    The caller owns the registry's backing runtime.  A question turn only borrows
-    the stable registry snapshot; it never starts, discovers, or closes services.
+    Injected registries remain caller-owned. Bootstrap can transfer its runtime
+    explicitly so the application refreshes snapshots and closes it on shutdown.
     """
     return KnowledgeAgentApplication(
         config,
@@ -2161,6 +2282,7 @@ def create_agent_application(
         retriever=retriever,
         session_store=session_store,
         mcp_registry=mcp_registry,
+        owned_mcp_runtime=owned_mcp_runtime,
     )
 
 

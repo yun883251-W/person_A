@@ -1,8 +1,8 @@
 # Person_A：文档知识库问答 Agent
 
-本项目使用本地 `docs/` 中的 Markdown 教材，通过 Ollama 生成向量，结合向量与关键词检索，再由 DeepSeek 回答 Python / LangChain 学习问题并给出来源引用。
+本项目使用本地 `docs/` 中的 Markdown 教材，通过 Ollama 生成向量，结合向量与关键词检索，再由 DeepSeek 回答 Python / LangChain 学习问题并给出来源引用。另通过本地 MCP 服务复用 MindCare 的 MBTI 问卷与评分，支持在同一会话中答题、暂停、恢复和查看结果。
 
-文档入库、检索、模型适配、Agent、命令行、HTTP API 和本地网页已有实现。**网页通过同一个本机服务访问；真实模型问答、检索效果及完整异常流程仍待统一验收，不能据此认为项目已验证可用。**
+文档入库、检索、模型适配、Agent、意图识别、MCP 接入、MBTI 答题、命令行、HTTP API 和本地网页已有实现。**本次只开发，没有运行测试、语法检查、服务或模型联调，也没有安装依赖；新增接入仍待统一验收，不能据此认为已验证可用。**
 
 ## 快速开始
 
@@ -24,6 +24,7 @@ python -m pip install -e .
 | `CHAT_PROVIDER` / `CHAT_MODEL` | 使用 `deepseek`，模型名填写账号实际可用的 API 模型 |
 | `CHAT_API_KEY` / `CHAT_BASE_URL` | 本地填写 DeepSeek 密钥，服务地址默认 `https://api.deepseek.com` |
 | `SESSION_DB_PATH` / `SESSION_DB_LOCK_TIMEOUT` | 本地会话数据库路径（默认 `./data/sessions/chat.db`）与 SQLite 锁等待秒数 |
+| `MCP_CONFIG_PATH` | MCP 服务配置路径；未设置该键时使用项目 `config/mcp_servers.json`，显式设为空字符串则关闭 MCP |
 
 启动 Ollama 服务，并确认向量模型可用。超时、重试次数、生成参数和检索条数可参考 `.env.example` 中的其他字段调整。
 
@@ -41,7 +42,7 @@ person-a chat
 person-a update
 ```
 
-也可使用模块入口，例如 `python -m knowledge_agent.cli ask "什么是 RAG？"`。运行问答需要可用的已发布索引；CLI 不会因提问自动完成首次建库。
+也可使用模块入口，例如 `python -m knowledge_agent.cli ask "什么是 RAG？"`。运行知识问答需要可用的已发布索引；CLI 不会因提问自动完成首次建库。MBTI 多轮答题使用 `chat` 或网页会话；安装与配置见下文“MindCare MBTI 与 MCP”。
 
 ## 命令与会话
 
@@ -78,11 +79,13 @@ person-a update
 先按“快速开始”配置模型并执行 `person-a build`，再安装 API 额外依赖并从项目根目录启动本机单进程服务：
 
 ```powershell
-python -m pip install -e ".[api]"
+python -m pip install -e ".[api,mcp]"
 python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 在浏览器打开 [本地问答页面](http://127.0.0.1:8000/)，新建会话后输入问题并发送。左侧可以选择已有会话、继续追问，或在确认后清空历史、删除会话。回答完成后可查看引用中的文档名称、小节和行号；历史记录保存在本地 SQLite 中，刷新页面或重启服务后可以重新读取。
+
+如果只使用知识问答，可安装 `.[api]`，并将 `MCP_CONFIG_PATH` 显式设为空字符串关闭 MCP。
 
 页面使用原生 HTML、CSS 和 JavaScript，无需安装 Node.js 或运行 npm。页面和 API 同源，由上面的单 worker 服务一起提供；不要直接双击 `web/index.html`，也无需另开前端开发服务器。服务器只公开首页和 `web/assets/` 中的页面资源，不公开项目配置、原始文档或数据库文件。
 
@@ -92,7 +95,7 @@ python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --po
 
 回答下方的“执行详情”默认折叠，点击或通过键盘展开即可查看该轮的执行摘要。详情随回答完成后一次性返回，历史回答使用当时保存的记录；它不是实时进度，也不展示模型内部推理。
 
-摘要记录实际经过的问题分类、初始检索、Skill 准备、模型调用、模型追加工具调用和回答收尾等阶段，展示执行顺序、发起方、状态、可用的结果数量与耗时，以及工具名称、索引版本和错误类别。回答自带的调用次数和停止原因也会一并显示；提前结束的问答不会补造未执行的阶段，事件被截断或耗时缺失时会按实际情况提示。
+摘要记录实际经过的意图识别、路由、问题分类、初始检索、Skill 准备、模型调用、工具调用和回答收尾等阶段，展示执行顺序、发起方、状态、可用的结果数量与耗时，以及工具名称、索引版本和错误类别。回答自带的调用次数和停止原因也会一并显示；提前结束的问答不会补造未执行的阶段，事件被截断或耗时缺失时会按实际情况提示。MBTI 分支的 MCP 工具由程序调用，执行记录不意味着一定调用了模型。
 
 各项数据的含义如下：
 
@@ -132,6 +135,26 @@ Invoke-RestMethod -Method Delete -Uri "$baseUrl/sessions/$sessionId"
 
 若只想清空历史并保留会话，可调用 `DELETE /sessions/{session_id}/messages`；删除会话则调用 `DELETE /sessions/{session_id}`。两者成功时均返回 `204`，且没有响应正文。
 
+## MindCare MBTI 与 MCP
+
+MBTI 已接入 API 和 CLI 的 MCP 生命周期。宿主启动本地 stdio 子进程，子进程只导入 MindCare 的 `backend.mbti`，提供问卷、确定性评分与类型描述；无需启动 MindCare Web 服务或它的数据库，也不会修改 MindCare 源文件。
+
+使用完整网页功能前，在 Person_A 使用的同一个 Python 环境中自行安装依赖：
+
+```powershell
+python -m pip install -e ".[api,mcp]"
+```
+
+项目默认配置 `config/mcp_servers.json` 启用 `mbti`，源项目位置为 `C:/Users/qinjiangyi/Desktop/LL/MindCare`；目录变化时修改配置中的 `--mindcare-root` 参数。配置的 `command: "$PYTHON"` 由宿主替换为当前 Person_A 的 Python 解释器，不需要另外手动启动 MCP 服务。
+
+未在环境变量或 `.env` 中设置 `MCP_CONFIG_PATH` 时，使用上述默认配置；如果旧 `.env` 已有空值 `MCP_CONFIG_PATH=`，MCP 会保持关闭，需要自行改为 `MCP_CONFIG_PATH=./config/mcp_servers.json`。开发过程没有覆盖实际 `.env`。`config/mcp_servers.mbti.example.json` 是默认禁用的独立模板，区别于已启用的运行配置。
+
+在网页新建会话后输入“开始 MBTI 测试”，按题目点击 1—5 选项；CLI 的 `person-a chat` 可以直接回复数字 1—5。支持“暂停 MBTI 测试”“继续 MBTI 测试”“退出 MBTI 测试”“查看 MBTI 结果”“重新开始 MBTI 测试”。完成 48 题后展示四维得分与类型，也可提问“介绍 INTJ 的特点”。历史题目卡不可重复提交。
+
+答题进度与问答轮一起保存在现有 SQLite 的 `turns.result_json.assessment_state`，没有新建数据库或答题表；恢复会话时单独读取最新状态，不受模型历史窗口长度限制。清空或删除会话也会删除其中的答题记录。普通 MBTI 答题、评分与类型描述由程序调用 MCP，不消耗 DeepSeek 模型次数；知识问答仍走原检索与 DeepSeek 流程。
+
+这是 MindCare 项目中的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](MBTI_MCP.md)。
+
 ## 项目结构
 
 ```text
@@ -150,8 +173,9 @@ Person_A/
 │   ├── agent/                    # Agent 执行流程、提示词与执行记录
 │   │   ├── __init__.py
 │   │   ├── runner.py             # 工具调用、会话管理与回答引用
-│   │   ├── intent.py             # 意图识别节点 TODO
-│   │   ├── router.py             # 知识 / MCP / 直接回复路由 TODO
+│   │   ├── intent.py             # 意图识别节点
+│   │   ├── router.py             # 知识 / MCP / 直接回复路由
+│   │   ├── assessment.py         # 会话内 MBTI 答题状态与工具编排
 │   │   ├── prompts.py            # 问答约束与来源标记规则
 │   │   └── trace.py              # 单轮执行事件、耗时与公开摘要
 │   ├── knowledge/                # 文档、索引、检索与知识库管理
@@ -164,7 +188,7 @@ Person_A/
 │   │   ├── __init__.py
 │   │   ├── registry.py
 │   │   └── knowledge.py
-│   ├── mcp/                      # 外部工具连接与注册器适配 TODO
+│   ├── mcp/                      # 外部工具连接与注册器适配
 │   │   ├── __init__.py
 │   │   ├── client.py
 │   │   └── adapter.py
@@ -173,10 +197,17 @@ Person_A/
 │       ├── ocr.py
 │       ├── attachments.py
 │       └── image_question.py
+├── src/mbti_mcp/                 # 独立进程内复用 MindCare 纯 Python 模块
+│   ├── __init__.py
+│   ├── service.py                # 题库分页、严格校验、评分与描述
+│   └── server.py                 # stdio MCP 工具入口
 ├── skills/                       # 概念讲解、概念比较、代码解读的 Skill
 ├── config/
-│   └── mcp_servers.example.json  # MCP 配置草案，演示服务默认禁用
+│   ├── mcp_servers.json          # 运行配置，启用 MindCare MBTI
+│   ├── mcp_servers.mbti.example.json # MBTI 模板，默认禁用
+│   └── mcp_servers.example.json  # 演示服务模板，默认禁用
 ├── examples/
+│   ├── mbti_mcp_server.py        # 确保源码包可导入的 MBTI 启动入口
 │   └── mcp_demo_server.py        # 无副作用演示 MCP 服务 TODO
 ├── web/
 │   ├── index.html                # 本地问答页面
@@ -189,24 +220,26 @@ Person_A/
 ├── .env.example                  # 配置模板
 ├── pyproject.toml                # 依赖声明与命令入口
 ├── INTENT_MCP_TODO.md             # 意图识别与 MCP 接入开发顺序
+├── MBTI_MCP.md                   # MindCare MBTI 接入与待验收说明
 └── README.md
 ```
 
-Python 模块按功能分包：`agent/` 组织问答执行，`knowledge/` 处理知识库，`tools/` 统一注册和校验工具，`mcp/` 预留外部工具接入，`images/` 预留图片提问。公共配置、数据结构、模型适配、会话存储和 Skill 加载仍放在包根目录；`cli.py`、`api.py` 保留入口位置，上面的启动命令不变。
+Python 模块按功能分包：`agent/` 组织问答与答题执行，`knowledge/` 处理知识库，`tools/` 统一注册和校验工具，`mcp/` 管理外部工具接入，`images/` 预留图片提问。公共配置、数据结构、模型适配、会话存储和 Skill 加载仍放在包根目录；`cli.py`、`api.py` 保留入口位置，上面的启动命令不变。
 
-意图识别、路由、MCP 接入与图片模块目前仍只有说明和 TODO，分包不代表这些能力已经实现。先按 `INTENT_MCP_TODO.md` 开发意图识别和 MCP；MBTI 与图片提问仍留到后续。
+意图识别、路由、MCP 和 MBTI 已有实现，运行结果仍待统一验证；图片提问与效果评估继续保留 TODO。
 
 索引以本地文件保存，无需另行安装数据库服务。实际索引文件路径以 `manifest.json` 中的记录为准，不要手动修改片段、向量或清单来绕过建库流程。
 
 ## 数据与问答规则
 
-建库流程：读取 `docs/` → 保留文档结构并分块 → 生成 Embedding → 发布片段、向量、关键词索引与文档清单。问答流程：理解问题 → 混合检索 → 必要时补查章节 → 基于证据回答 → 校验并生成来源引用。
+建库流程：读取 `docs/` → 保留文档结构并分块 → 生成 Embedding → 发布片段、向量、关键词索引与文档清单。请求先结合会话状态识别意图并分流；知识问答执行混合检索 → 必要时补查章节 → 基于证据回答 → 校验并生成来源引用，MBTI 则进入独立答题与 MCP 工具流程。
 
 - **对话与向量模型分开配置。** 入库和查询使用兼容的 Embedding 配置；更换向量模型或向量维度后需要重建索引。
 - **保留 Markdown 结构。** 片段保存标题层级；代码、概念图和 Prompt 与对应说明保持关联。文档中的 Prompt 是知识内容，不是 Agent 的运行指令。
 - **引用由程序生成。** 引用协议要求模型只输出本轮有效的来源标记，如 `[S1]`。程序校验标记，再使用检索记录生成完整文件名、章节和原文起止行号，模型不能自行编造来源元数据。同为第 26 章的两份文档通过完整文件名区分。
 - **同步新增、修改和删除。** 文档清单记录内容与配置版本；更新时同步片段、向量和关键词记录，检索使用同一版索引，避免引用已删除或过期内容。
 - **答案受证据范围约束。** 资料不足时说明缺失信息，只回答有依据的部分。教材中的业务示例不代表任何公司的正式政策；不同文档存在差异时展示出处和差异，不自行确定哪个说法权威。
+- **MCP 结果有独立来源。** MBTI 问卷与评分来自 MindCare 工具，不生成本地教材的 `[S1]` 引用；工具只接受实际用户作答，不用模型推测缺失答案。
 
 ## 待统一验收
 
@@ -215,3 +248,5 @@ Python 模块按功能分包：`agent/` 组织问答执行，`knowledge/` 处理
 `evaluation/questions.jsonl` 保留 5 条人工验收草案，覆盖概念比较、检索与生成质量、资料不足、跨章节检索及无答案场景。每行记录问题、期望来源、回答要点和验收标准，目前没有执行结果或通过率。
 
 开发完成后统一检查：首次建库与文档更新是否正确；检索是否命中对应章节；回答是否有原文支持；引用能否定位实际片段；多轮追问、清空会话和索引刷新是否符合预期；模型服务异常、参数错误与中断时是否正确退出。网页的会话切换、历史分页、清空与删除确认、请求异常提示也需纳入完整端到端联调。假运行时下的页面和路由检查不能代替真实模型与索引的验收。
+
+新增 MBTI 接入还需统一验证：三工具发现与调用、完整 48 题评分、分页和版本不一致处理、暂停恢复与重启续答、会话隔离、旧题目卡重复点击、存储失败及 MCP 退出清理。具体清单见 [MBTI_MCP.md](MBTI_MCP.md#待统一验收)。以上均为待执行项目，没有本次测试通过结论。

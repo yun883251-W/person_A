@@ -28,6 +28,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -199,6 +200,10 @@ class SessionStore(Protocol):
         self, session_id: str, *, max_history_turns: int
     ) -> Sequence[StoredTurn]:
         """Load the most recent complete turns in chronological order."""
+        ...
+
+    def load_latest_assessment(self, session_id: str) -> dict[str, Any] | None:
+        """Restore the latest assessment snapshot, independent of chat limits."""
         ...
 
     def clear_session(self, session_id: str) -> bool:
@@ -643,6 +648,54 @@ class SQLiteSessionStore:
             raise _storage_error(exc, operation="load") from exc
         return tuple(self._restore_turn(row) for row in rows)
 
+    def load_latest_assessment(self, session_id: str) -> dict[str, Any] | None:
+        """Restore the newest committed snapshot for this session only.
+
+        Assessment state shares the turn transaction with the answer. Searching
+        separately from the bounded model history lets a paused test survive
+        later knowledge questions without another table or schema migration.
+        Corrupt snapshots must fail explicitly instead of restarting the test or
+        reviving an older snapshot whose answers may already have been changed.
+        """
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        connection = self._require_connection()
+        try:
+            self._require_session(connection, session_id)
+            rows = connection.execute(
+                """
+                SELECT result_json, serialization_version
+                FROM turns
+                WHERE session_id = ? AND result_json LIKE ?
+                ORDER BY turn_no DESC
+                """,
+                (session_id, '%"assessment_state":%'),
+            )
+            try:
+                for row in rows:
+                    payload = _load_json_object(row["result_json"], "result_json")
+                    # LIKE is only a candidate filter; an unrelated nested field
+                    # must never be interpreted as the top-level snapshot.
+                    if "assessment_state" not in payload:
+                        continue
+                    if row["serialization_version"] != MESSAGE_SERIALIZATION_VERSION:
+                        raise SessionStoreCorruptionError(
+                            "Stored assessment uses an unsupported serialization version"
+                        )
+                    result = _deserialize_result(row["result_json"])
+                    return deepcopy(result.assessment_state)
+            finally:
+                rows.close()
+        except SessionStoreError:
+            raise
+        except sqlite3.Error as exc:
+            raise _storage_error(exc, operation="load assessment") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SessionStoreCorruptionError(
+                "Stored assessment data is corrupt"
+            ) from exc
+        return None
+
     def clear_session(self, session_id: str) -> bool:
         """Delete all turns for a session while retaining its metadata."""
         if not isinstance(session_id, str) or not session_id.strip():
@@ -945,7 +998,7 @@ def _messages_from_json(value: str) -> tuple[BaseMessage, ...]:
 
 
 def _result_to_json(result: AnswerResult) -> str:
-    """Serialize the complete public answer result without internal state."""
+    """Serialize an answer and its validated, private assessment snapshot."""
     sources = [
         {
             "chunk_id": source.chunk_id,
@@ -979,6 +1032,10 @@ def _result_to_json(result: AnswerResult) -> str:
             "decision_source": result.routing.decision_source,
             "reason_code": result.routing.reason_code,
         }
+    if result.assessment_state is not None:
+        from .agent.assessment import validate_snapshot
+
+        payload["assessment_state"] = validate_snapshot(result.assessment_state)
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -1001,7 +1058,9 @@ def _result_from_json(value: str) -> AnswerResult:
         "tool_calls",
         "stop_reason",
     }
-    _require_fields(root, fields, {"trace", "routing"}, "result_json")
+    _require_fields(
+        root, fields, {"trace", "routing", "assessment_state"}, "result_json"
+    )
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
         raise ValueError(f"Unsupported result serialization version: {root['version']!r}")
     question = _require_string(root["question"], "result_json.question")
@@ -1104,6 +1163,11 @@ def _result_from_json(value: str) -> AnswerResult:
                 item["reason_code"], "result_json.routing.reason_code"
             ),
         )
+    assessment_state = None
+    if root.get("assessment_state") is not None:
+        from .agent.assessment import validate_snapshot
+
+        assessment_state = validate_snapshot(root["assessment_state"])
     return AnswerResult(
         question=question,
         answer=answer,
@@ -1115,6 +1179,7 @@ def _result_from_json(value: str) -> AnswerResult:
         stop_reason=stop_reason,
         trace=trace,
         routing=routing,
+        assessment_state=assessment_state,
     )
 
 
@@ -1123,4 +1188,3 @@ _serialize_messages = _messages_to_json
 _deserialize_messages = _messages_from_json
 _serialize_result = _result_to_json
 _deserialize_result = _result_from_json
-

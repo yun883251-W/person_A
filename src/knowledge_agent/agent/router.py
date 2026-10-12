@@ -1,15 +1,14 @@
-"""意图路由与 Agent 分支衔接（待开发，仅模块说明与 TODO）。
+"""意图路由与 Agent 分支衔接。
 
 模块功能：根据已经校验的 IntentDecision 和当前能力，决定本轮执行分支。
 输入：意图、显式 Skill 选择、可用工具快照及单轮上下文。
 输出：RouteDecision，供 KnowledgeAgent.ask() 执行知识问答、MCP 工具或直接回复。
 
 路由节点不注册为工具，不自行调用识别模型，也不负责启动 MCP 子进程。
-第一版只增加 knowledge、mcp、direct 三种分支，不创建 workflows 或 MBTI 答题流程。
+保留 knowledge、mcp、direct 三种分支；MBTI 会话操作属于受控的 MCP 分支。
 知识分支保留检索与 [S1] 引用协议；MCP 分支使用独立提示、工具权限和结果校验。
 
-当前只有说明和 TODO，尚未接入 agent/runner.py。
-开发 TODO 01—09；完成全部接入后统一验证 TODO 10—12。
+已接入 agent/runner.py；验证 TODO 10—12 留待统一执行。
 """
 
 
@@ -51,6 +50,8 @@ def resolve_route(
     intent: IntentDecision,
     available_tools: Sequence[object] = (),
     skill_id: str | None = None,
+    *,
+    assessment_action: str | None = None,
 ) -> RouteDecision:
     """Route an already validated intent without classifying it again."""
     if not isinstance(intent, IntentDecision):
@@ -78,7 +79,16 @@ def resolve_route(
             capability.name for capability in snapshot_mcp_capabilities(available_tools)
         }
         requested_names = intent.allowed_tool_names
-        if requested_names and all(name in available_names for name in requested_names):
+        from .assessment import ACTIONS, TOOLS
+
+        if (
+            assessment_action in ACTIONS
+            and intent.reason_code == f"mbti_{assessment_action}"
+            and requested_names == TOOLS
+        ):
+            # 暂停、退出等只改会话状态；实际远程调用仍必须通过可用工具白名单。
+            allowed_tool_names = tuple(name for name in TOOLS if name in available_names)
+        elif requested_names and all(name in available_names for name in requested_names):
             allowed_tool_names = requested_names
         else:
             route = RouteKind.DIRECT

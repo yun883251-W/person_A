@@ -220,6 +220,45 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
 .trace-event-fields .trace-field dd { font-size: 10px; }
 .trace-alert { margin: 12px 0 0; padding: 9px 11px; border: 1px solid #e4dbbd; border-radius: 6px; background: #faf5e6; color: #8e7642; font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
 .trace-alert[data-kind="error"] { border-color: #e8cfc4; background: #fbf0e9; color: #995e49; }
+
+/* Questionnaire cards are snapshots; only the latest saved turn can submit. */
+.assessment-card { min-width: 0; margin-top: 18px; padding: 20px; border: 1px solid #d8e2cc; border-radius: 13px; background: #f7f9f1; overflow-wrap: anywhere; }
+.assessment-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.assessment-header h3 { margin: 0; color: #3c5836; font-size: 14px; font-weight: 600; line-height: 1.7; }
+.assessment-status { flex: 0 0 auto; padding: 3px 8px; border-radius: 20px; background: #e7efdc; color: #63804c; font-size: 10px; }
+.assessment-status[data-status="paused"], .assessment-status[data-status="ready"] { background: #f2ebd5; color: #887339; }
+.assessment-status[data-status="cancelled"] { background: #eaede5; color: #7a8470; }
+.assessment-progress-label { margin: 16px 0 5px; color: #7a896c; font-size: 10px; font-variant-numeric: tabular-nums; }
+.assessment-progress { display: block; width: 100%; height: 5px; overflow: hidden; border: 0; border-radius: 5px; background: #e5ebdc; accent-color: #7f9d62; }
+.assessment-progress::-webkit-progress-bar { border-radius: 5px; background: #e5ebdc; }
+.assessment-progress::-webkit-progress-value { border-radius: 5px; background: #7f9d62; }
+.assessment-progress::-moz-progress-bar { border-radius: 5px; background: #7f9d62; }
+.assessment-question-number { margin: 23px 0 7px; color: #8a997a; font-size: 10px; letter-spacing: .5px; }
+.assessment-question { margin: 0 0 17px; color: #344f31; font-size: 15px; font-weight: 500; line-height: 1.9; white-space: pre-wrap; }
+.assessment-options { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.assessment-option { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 9px; min-width: 0; min-height: 88px; padding: 12px 8px; border: 1px solid #d9e3cc; border-radius: 8px; background: #fffefa; color: #5d754e; font-size: 11px; line-height: 1.7; text-align: center; }
+.assessment-option-value { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid #dce5d1; border-radius: 50%; background: #f2f6eb; color: #617b4e; font-size: 10px; }
+.assessment-option:hover:not(:disabled) { border-color: #8da775; background: #eef4e4; }
+.assessment-option:hover:not(:disabled) .assessment-option-value { border-color: #8da775; background: #dfeacf; }
+.assessment-option:disabled { color: #87917d; background: #f1f4eb; opacity: .7; cursor: default; }
+.assessment-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+.assessment-action { min-height: 34px; padding: 7px 12px; border: 1px solid #d5dfc7; border-radius: 7px; background: #fdfef7; color: #667d52; font-size: 11px; }
+.assessment-action:hover:not(:disabled) { border-color: #97ae7d; background: #eaf1df; color: #3f6137; }
+.assessment-action:disabled { color: #919b84; opacity: .6; cursor: default; }
+.assessment-note, .assessment-readonly { margin: 12px 0 0; color: #829073; font-size: 10px; line-height: 1.8; }
+.assessment-readonly { padding-top: 11px; border-top: 1px dashed #dce4d1; }
+.assessment-type { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.assessment-type strong { color: #416039; font-family: var(--mono); font-size: 30px; font-weight: 600; letter-spacing: 2px; }
+.assessment-type span { color: #789263; font-size: 13px; }
+.assessment-section-title { margin: 19px 0 0; color: #5b754b; font-size: 11px; font-weight: 600; }
+.assessment-result .assessment-note { margin-top: 6px; }
+.assessment-dimension { margin-top: 16px; }
+.assessment-dimension-labels { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px 12px; margin-bottom: 6px; color: #697e59; font-size: 11px; font-variant-numeric: tabular-nums; }
+.assessment-dimension-labels span:last-child { color: #8d825c; }
+.assessment-dimension-bar { height: 7px; border-radius: 6px; overflow: hidden; background: #d8cba7; }
+.assessment-dimension-bar span { display: block; height: 100%; background: #86a26b; }
+.assessment-tie { margin: 6px 0 0; color: #8a794b; font-size: 10px; line-height: 1.8; }
+.assessment-notice { margin: 18px 0 0; padding: 11px 12px; border: 1px solid #e1dfcc; border-radius: 7px; background: #f6f3e7; color: #8b7d58; font-size: 10px; line-height: 1.9; white-space: pre-wrap; }
 .loading-message .message-body { display: flex; align-items: center; gap: 10px; color: #859274; font-size: 12px; }
 .thinking-dots { display: inline-flex; align-items: center; gap: 4px; min-height: 15px; }
 .thinking-dots span { display: block; width: 4px; height: 4px; border-radius: 50%; background: #8da271; animation: thinking 1.2s ease-in-out infinite; }
@@ -228,6 +267,11 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
 
 /* Grounded composer, kept separate from the scrollable reading area. */
 .composer-area { z-index: 1; flex: 0 0 auto; width: min(930px, 100%); margin: 0 auto; padding: 15px 35px 15px; background: var(--paper); }
+.composer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 11px; margin-bottom: 9px; }
+.composer-tools > span { color: #929c85; font-size: 10px; line-height: 1.6; }
+.mbti-launch { display: inline-flex; align-items: center; gap: 14px; min-height: 31px; padding: 6px 10px; border: 1px solid #d9e2cd; border-radius: 8px; background: #f0f4e8; color: #64804e; font-size: 11px; }
+.mbti-launch:hover:not(:disabled) { border-color: #9fb587; background: #e8efdc; color: #405f35; }
+.mbti-launch:disabled { opacity: .5; cursor: default; }
 .composer-form { padding: 15px 17px 11px; border: 1px solid #d8dfcb; border-radius: 14px; background: var(--surface); box-shadow: 0 5px 22px rgb(64 77 48 / 5%); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer-form:focus-within { border-color: #98ad80; box-shadow: 0 0 0 3px rgb(142 166 113 / 9%), 0 5px 22px rgb(64 77 48 / 4%); }
 .skill-picker { display: flex; align-items: center; gap: 7px; color: #7c8771; font-size: 11px; }
@@ -429,6 +473,9 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
   .suggestion-bottom { grid-column: 2; margin-top: 3px; padding-right: 18px; font-size: 9px; }
   .suggestion-bottom .icon { position: absolute; right: 14px; top: calc(50% - 7px); }
   .composer-area { padding: 10px 15px max(12px, env(safe-area-inset-bottom)); }
+  .composer-tools { gap: 5px 8px; margin-bottom: 7px; }
+  .composer-tools > span { font-size: 9px; }
+  .mbti-launch { gap: 10px; min-height: 30px; font-size: 10px; }
   .composer-form { padding: 12px 13px 10px; border-radius: 12px; }
   .composer-form textarea { min-height: 47px; max-height: 145px; font-size: 16px; line-height: 1.6; }
   .composer-form textarea::placeholder { font-size: 13px; }
@@ -459,6 +506,16 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
   .trace-fields { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .trace-events { padding-left: 19px; }
   .trace-event { padding: 9px; }
+  .assessment-card { padding: 15px 12px; }
+  .assessment-header { gap: 8px; }
+  .assessment-header h3 { font-size: 12px; }
+  .assessment-status { font-size: 9px; }
+  .assessment-question { font-size: 14px; }
+  .assessment-options { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  .assessment-option { flex-direction: row; justify-content: flex-start; min-height: 43px; gap: 11px; padding: 8px 12px; text-align: left; }
+  .assessment-option-value { flex: 0 0 auto; width: 24px; height: 24px; }
+  .assessment-type strong { font-size: 26px; }
+  .assessment-dimension-labels { font-size: 10px; }
   .notice { gap: 8px; margin: 10px 15px 0; padding: 9px 11px; font-size: 11px; }
   .operation-status { margin: 10px 15px 0; padding: 9px 11px; font-size: 11px; }
   .confirm-dialog { padding: 23px; }

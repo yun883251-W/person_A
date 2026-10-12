@@ -261,6 +261,31 @@ class RouteSummaryResponse(_PublicModel):
     reason_code: str
 
 
+class AssessmentQuestionResponse(_PublicModel):
+    """The current question only; the stored questionnaire stays private."""
+
+    id: str | int
+    number: int = Field(ge=1, strict=True)
+    text: str
+
+
+class AssessmentOptionResponse(_PublicModel):
+    value: str | int
+    label: str
+
+
+class AssessmentResponse(_PublicModel):
+    """Public progress and result, without submitted answers or cached pages."""
+
+    test_id: str
+    status: Literal["active", "paused", "ready", "completed", "cancelled"]
+    answered_count: int = Field(ge=0, strict=True)
+    total: int = Field(ge=1, strict=True)
+    current_question: AssessmentQuestionResponse | None = None
+    options: list[AssessmentOptionResponse] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+
+
 class AnswerResponse(_PublicModel):
     session_id: SessionId
     question: str
@@ -276,6 +301,10 @@ class AnswerResponse(_PublicModel):
         description="本轮结束后的执行摘要；没有可用记录时为 null，不是实时进度",
     )
     routing: RouteSummaryResponse | None = None
+    assessment: AssessmentResponse | None = Field(
+        default=None,
+        description="本轮测试进度、当前题目和结果；不包含已提交答案或内部问卷缓存",
+    )
 
 
 class ErrorResponse(_PublicModel):
@@ -302,6 +331,10 @@ class TurnResponse(_PublicModel):
         description="随本轮回答保存的执行摘要；旧记录或不可用摘要为 null",
     )
     routing: RouteSummaryResponse | None = None
+    assessment: AssessmentResponse | None = Field(
+        default=None,
+        description="该历史轮次保存的测试进度；旧记录或非测试轮次为 null",
+    )
 
 
 class TurnListResponse(_PublicModel):
@@ -1109,9 +1142,9 @@ class ServiceRuntime:
 
     @staticmethod
     def _default_application_factory(store: Any) -> Any:
-        from .agent.runner import create_agent_application
+        from .mcp.bootstrap import create_configured_application
 
-        return create_agent_application(session_store=store)
+        return create_configured_application(session_store=store)
 
     def initialize(self) -> None:
         """Construct and initialize storage in the dedicated worker thread."""
@@ -1465,6 +1498,20 @@ def _trace_response(trace: TurnTrace | None) -> TurnTraceResponse | None:
         return None
 
 
+def _assessment_response(
+    snapshot: dict[str, Any] | None,
+) -> AssessmentResponse | None:
+    """Expose only the assessment allow-list, never the stored answer payload."""
+    if snapshot is None:
+        return None
+    from .agent.assessment import public_assessment
+
+    public = public_assessment(snapshot)
+    if public is None:
+        return None
+    return AssessmentResponse.model_validate(public)
+
+
 def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
     """Convert an answer without serializing any Agent or model state."""
     return AnswerResponse(
@@ -1483,6 +1530,7 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
             if result.routing is not None
             else None
         ),
+        assessment=_assessment_response(result.assessment_state),
     )
 
 
@@ -1506,6 +1554,7 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
             if result.routing is not None
             else None
         ),
+        assessment=_assessment_response(result.assessment_state),
     )
 
 

@@ -1,4 +1,4 @@
-"""意图识别节点（待开发，仅模块说明与 TODO）。
+"""意图识别节点：规则识别、可选模型补充与 MBTI 会话操作。
 
 模块功能：在知识检索和工具调用之前，判断本轮请求应进入哪类处理流程。
 输入：用户问题、同一会话的有限历史、用户指定的 Skill、当前可用工具的公开描述。
@@ -7,10 +7,8 @@
 本模块由程序主动调用，不注册到 tools/registry.py，也不作为 MCP 工具暴露。
 agent/router.py 根据识别结果决定分支；agent/runner.py 负责实际执行与统一的单轮预算。
 第一版保留现有知识问答和手动 Skill 选择，增加通用 MCP 工具请求识别。
-MBTI 答题流程和图片问答不在本次开发范围内。
-
-当前没有可执行实现，现有 Agent 仍使用 agent/runner.py 中的 classify_question()。
-开发 TODO 01—09；两个节点和 MCP 接入完成后统一验证 TODO 10—12。
+MBTI 操作由 assessment 模块结合会话状态确定；图片问答继续保留为后续扩展。
+开发实现已接入 runner；验证 TODO 仍留待统一执行。
 完整接入顺序和现有文件改动位置见项目根目录 INTENT_MCP_TODO.md。
 """
 
@@ -632,6 +630,7 @@ def identify_intent(
     skill_id: str | None = None,
     context: Sequence[object] = (),
     available_tools: Sequence[object] = (),
+    assessment_state: Mapping[str, Any] | None = None,
     settings: IntentSettings | None = None,
     model: BaseChatModel | None = None,
     model_invoker: Callable[[Sequence[BaseMessage]], object] | None = None,
@@ -654,6 +653,15 @@ def identify_intent(
         max_history_turns=max_history_turns,
         max_context_chars=max_context_chars,
     )
+    from .assessment import TOOLS, request_action
+
+    action = request_action(question, assessment_state)
+    if action is not None:
+        return IntentDecision(
+            kind=IntentKind.MCP_TOOL,
+            allowed_tool_names=TOOLS,
+            reason_code=f"mbti_{action}",
+        )
     if settings.mode == "rules" or rules_decision.reason_code not in {
         "default_knowledge",
         "mcp_tool_not_matched",

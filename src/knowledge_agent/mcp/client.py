@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 import time
 from contextlib import AsyncExitStack
@@ -219,7 +220,8 @@ def load_mcp_config(config_path: Path | str) -> tuple[McpServerConfig, ...]:
                 or not 1 <= output_limit <= _MAX_OUTPUT_CHARS):
             raise _config_error("invalid_config", "max_output_chars 必须是有效正整数")
         configs.append(McpServerConfig(
-            server_name=server_name, enabled=enabled, command=command.strip(),
+            server_name=server_name, enabled=enabled,
+            command=sys.executable if command.strip() == "$PYTHON" else command.strip(),
             args=tuple(args), cwd=cwd, env_from=MappingProxyType(dict(env_pairs)),
             allowed_tools=allowed_tools,
             startup_timeout_seconds=_positive_number(
