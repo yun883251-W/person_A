@@ -617,7 +617,7 @@
   }
 
   const traceStageLabels = {
-    classify: "理解问题", intent: "识别意图", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
+    classify: "理解问题", intent: "识别意图", route: "选择执行路线", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
     model: "模型调用", tool: "工具调用", finalize: "整理回答与核验引用",
   };
   const traceStatusLabels = { success: "完成", empty: "无结果", error: "失败", skipped: "已跳过" };
@@ -627,6 +627,7 @@
     knowledge: "知识问答", greeting: "问候", scope: "能力范围", needs_clarification: "需要澄清",
     out_of_scope: "超出范围", mcp_tool: "MCP 工具请求",
   };
+  const traceRouteKindLabels = { knowledge: "知识问答", mcp: "MCP 工具", direct: "直接回复" };
   const traceSkillLabels = {
     "concept-explanation": "概念讲解", "concept-comparison": "概念比较", "code-explanation": "代码解读",
   };
@@ -664,7 +665,9 @@
     intent_model_capability_mismatch: "意图模型选择了不可用的工具",
     intent_model_unconfirmed_tool_request: "工具请求未经用户明确确认", intent_model_ambiguous_tool: "工具选择存在歧义",
     intent_model_timeout: "意图模型调用超时", intent_model_error: "意图模型调用失败",
-    intent_identification_failed: "意图识别失败",
+    intent_identification_failed: "意图识别失败", route_resolution_failed: "路由选择失败",
+    manual_skill_mcp_conflict: "所选 Skill 与 MCP 工具请求冲突",
+    mcp_capability_unavailable: "请求的 MCP 工具能力不可用",
   };
 
   function traceText(value, fallback = "未提供") {
@@ -746,6 +749,7 @@
       fields.push(["决策来源", traceLabel(traceDecisionSourceLabels, event.decision_source)]);
     }
     if (traceText(event.intent_kind, "")) fields.push(["意图类别", traceLabel(traceIntentKindLabels, event.intent_kind)]);
+    if (traceText(event.route_kind, "")) fields.push(["执行路线", traceLabel(traceRouteKindLabels, event.route_kind)]);
     if (traceText(event.reason_code, "") && event.reason_code !== event.error_code) {
       fields.push(["决策原因", traceReason(event.reason_code)]);
     }
@@ -789,6 +793,17 @@
       ["执行记录 ID", traceText(trace.trace_id)],
     ]));
     body.append(element("p", "trace-note", "处理耗时截至 Agent 生成本轮结果，不包含服务排队、会话写入和 HTTP 传输。模型阶段包含内部重试的等待，但重试不单独增加模型调用次数。"));
+    const routing = result.routing && typeof result.routing === "object" && !Array.isArray(result.routing)
+      ? result.routing : null;
+    if (routing) {
+      body.append(element("h4", "trace-section-title", "意图与路由"));
+      body.append(traceFields([
+        ["意图类别", traceLabel(traceIntentKindLabels, routing.intent)],
+        ["执行路线", traceLabel(traceRouteKindLabels, routing.route)],
+        ["决策来源", traceLabel(traceDecisionSourceLabels, routing.decision_source)],
+        ["决策原因", traceReason(routing.reason_code)],
+      ]));
+    }
     body.append(element("h4", "trace-section-title", "本轮 Skill"));
     body.append(traceFields([
       ["已选择", traceSkill(trace.requested_skill_id, "未选择")],

@@ -42,6 +42,7 @@ _TURN_INTERRUPTED = "turn_interrupted"
 TraceStage = Literal[
     "classify",
     "intent",
+    "route",
     "initial_retrieval",
     "skill_prepare",
     "model",
@@ -55,6 +56,7 @@ TraceDecisionSource = Literal["rules", "model", "fallback"]
 TraceIntentKind = Literal[
     "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ]
+TraceRouteKind = Literal["knowledge", "mcp", "direct"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,7 @@ class TraceEvent:
     error_code: str | None = None
     decision_source: TraceDecisionSource | None = None
     intent_kind: TraceIntentKind | None = None
+    route_kind: TraceRouteKind | None = None
     reason_code: str | None = None
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +206,7 @@ class TraceRecorder:
         error_code: str | None = None,
         decision_source: TraceDecisionSource | None = None,
         intent_kind: TraceIntentKind | None = None,
+        route_kind: TraceRouteKind | None = None,
         reason_code: str | None = None,
     ) -> TraceEvent | None:
         """Finish one event; events omitted by the cap return ``None``."""
@@ -231,6 +235,7 @@ class TraceRecorder:
             error_code=self._bounded(error_code),
             decision_source=decision_source,
             intent_kind=intent_kind,
+            route_kind=route_kind,
             reason_code=self._bounded(reason_code),
         )
         self._events.append(event)
@@ -324,8 +329,8 @@ _EVENT_FIELDS = {
     "index_version",
     "error_code",
 }
-_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "reason_code"}
-_TRACE_STAGES = frozenset(("classify", "intent", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
+_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code"}
+_TRACE_STAGES = frozenset(("classify", "intent", "route", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
 _TRACE_INITIATORS = frozenset(("program", "model"))
 _TRACE_STATUSES = frozenset(("success", "empty", "error", "skipped"))
 _TRACE_OUTCOMES = frozenset(("completed", "failed", "interrupted"))
@@ -333,6 +338,7 @@ _TRACE_DECISION_SOURCES = frozenset(("rules", "model", "fallback"))
 _TRACE_INTENT_KINDS = frozenset((
     "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ))
+_TRACE_ROUTE_KINDS = frozenset(("knowledge", "mcp", "direct"))
 
 
 def _require_exact_fields(
@@ -394,6 +400,10 @@ def _event_to_dict(event: TraceEvent, label: str) -> dict[str, Any]:
         "intent_kind": (
             _enum(event.intent_kind, _TRACE_INTENT_KINDS, f"{label}.intent_kind")
             if event.intent_kind is not None else None
+        ),
+        "route_kind": (
+            _enum(event.route_kind, _TRACE_ROUTE_KINDS, f"{label}.route_kind")
+            if event.route_kind is not None else None
         ),
         "reason_code": _public_string(event.reason_code, f"{label}.reason_code"),
     }
@@ -477,6 +487,10 @@ def trace_from_dict(value: Any) -> TurnTrace:
             intent_kind=(
                 _enum(item["intent_kind"], _TRACE_INTENT_KINDS, f"{label}.intent_kind")
                 if item.get("intent_kind") is not None else None
+            ),
+            route_kind=(
+                _enum(item["route_kind"], _TRACE_ROUTE_KINDS, f"{label}.route_kind")
+                if item.get("route_kind") is not None else None
             ),
             reason_code=_public_string(item.get("reason_code"), f"{label}.reason_code"),
         ))

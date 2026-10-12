@@ -30,6 +30,8 @@ data/sessions/
 # 测试运行残留：验证脚本在项目根目录留下的临时库与目录（含运行时 chat.db）
 verification-tmp-*/
 .pytest-tmp-*/
+# pytest tmp_path_factory 的根目录，内含逐用例的 chat.db
+.tmp/
 
 # 日志
 logs/

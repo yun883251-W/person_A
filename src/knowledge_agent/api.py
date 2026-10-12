@@ -226,6 +226,7 @@ class TraceEventResponse(_PublicModel):
     error_code: str | None = None
     decision_source: TraceDecisionSource | None = None
     intent_kind: TraceIntentKind | None = None
+    route_kind: Literal["knowledge", "mcp", "direct"] | None = None
     reason_code: str | None = None
 
 

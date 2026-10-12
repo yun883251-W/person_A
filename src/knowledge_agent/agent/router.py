@@ -106,23 +106,6 @@ def resolve_route(
 
 # 第二阶段：在 agent/runner.py 衔接分支，保持现有生命周期。
 
-# TODO 08：接入统一执行记录与前端展示。
-# agent/trace.py 增加 route 阶段及可公开路由摘要；与 intent 阶段各记一次，耗时用单调时钟。
-# MCP 工具执行仍使用 registry 的 tool 事件，记录公开命名空间名称、状态和稳定错误码。
-# 服务启动/发现发生在应用启动期间，不伪造成每轮问答中的工具调用或模型调用。
-# 同步 trace_to_dict()/trace_from_dict() 的字段白名单和旧 trace 兼容逻辑。
-# api.py 的公开模型、web/assets/app.js 的执行详情增加意图/路由说明与新停止原因标签。
-# 不把 MCP 参数、环境变量、原始异常或完整工具输出放入默认公开执行详情。
-# 本次只增加已有执行详情的必要字段，不实现 MBTI 页面或图片上传界面。
-
-# TODO 09：明确模块调用方向与完成条件。
-# agent/runner.py -> agent/intent.py -> agent/router.py；agent/runner.py -> mcp/adapter.py -> mcp/client.py。
-# 上述箭头表示组织关系；intent/router 只读取工具元信息，不能自行执行 MCP 工具。
-# 运行时由 Application/API/CLI 持有并关闭，单轮 ask() 只借用已就绪的 registry。
-# 完成标志是 CLI 和 API 入口都经过同一意图/路由入口，不能只在演示脚本中调用新节点。
-# 实现细节集中在对应模块；别复制一份知识 Agent、会话管理器或注册器到 agent/router.py。
-
-
 # 第三阶段：开发完成后统一验证，本阶段不执行。
 
 # TODO 10：验证知识分支兼容性及分支隔离。

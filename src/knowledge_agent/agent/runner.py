@@ -339,10 +339,24 @@ class KnowledgeAgent:
             reason_code=intent.reason_code,
             error_code=intent.reason_code if fallback else None,
         )
-        route = resolve_route(
-            intent,
-            available_tools=mcp_capabilities,
-            skill_id=skill_id,
+        route_event = trace_recorder.start_event("route", "program")
+        try:
+            route = resolve_route(
+                intent,
+                available_tools=mcp_capabilities,
+                skill_id=skill_id,
+            )
+        except Exception:
+            trace_recorder.finish_event(
+                route_event, "error", error_code="route_resolution_failed"
+            )
+            raise
+        trace_recorder.finish_event(
+            route_event, "success",
+            decision_source=route.intent.decision_source,
+            intent_kind=route.intent.kind.value,
+            route_kind=route.route.value,
+            reason_code=route.reason_code,
         )
         if session_id is not None and route.route is RouteKind.KNOWLEDGE:
             history = self.history.messages(session_id, route=RouteKind.KNOWLEDGE)
@@ -1925,12 +1939,14 @@ class KnowledgeAgentApplication:
         model: object | None = None,
         retriever: KnowledgeRetriever | None = None,
         session_store: SessionStore | None = None,
+        mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
     ) -> None:
         self.agent = KnowledgeAgent(
             config,
             model=model,
             retriever=retriever,
             session_store=session_store,
+            mcp_registry=mcp_registry,
         )
         self._session_id: str | None = None
         self._operation: str | None = None
@@ -2127,13 +2143,19 @@ def create_agent_application(
     model: object | None = None,
     retriever: KnowledgeRetriever | None = None,
     session_store: SessionStore | None = None,
+    mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
 ) -> KnowledgeAgentApplication:
-    """Create the application boundary used by a future command-line adapter."""
+    """Create the shared CLI/API boundary with an already prepared tool registry.
+
+    The caller owns the registry's backing runtime.  A question turn only borrows
+    the stable registry snapshot; it never starts, discovers, or closes services.
+    """
     return KnowledgeAgentApplication(
         config,
         model=model,
         retriever=retriever,
         session_store=session_store,
+        mcp_registry=mcp_registry,
     )
 
 
