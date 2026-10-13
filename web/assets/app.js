@@ -26,7 +26,7 @@
   const KNOWLEDGE_PENDING_KEY = "person-a.pending-knowledge-operation";
   const state = {
     sessions: [], sessionOffset: 0, hasMore: false, current: null, turns: [],
-    operation: null, pendingQuestion: "", needsRefresh: false, assessmentModeHint: false,
+    operation: null, pendingQuestion: "", liveProgress: [], needsRefresh: false, assessmentModeHint: false,
     knowledgeBusy: false, knowledgeOperation: null, knowledgeNeedsRefresh: false,
     knowledgeDocuments: [], knowledgeDocumentsLoaded: false, knowledgeDocumentsStale: true,
     knowledgeStatus: null, knowledgeStatusStale: true,
@@ -103,6 +103,68 @@
       throw new ApiError(error.name === "AbortError" ? "request_timeout" : "network_error");
     } finally {
       if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  async function streamAnswer(path, body, onProgress) {
+    // 一次 POST 对应一轮问答。流中只有公开阶段和已校验的最终结果，不自动重连或重发。
+    let reader;
+    try {
+      const response = await fetch(path, {
+        method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        let data;
+        try { data = await response.json(); }
+        catch { throw new ApiError("invalid_response", response.status); }
+        throw new ApiError(data.code || "http_error", response.status, data);
+      }
+      if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+        throw new ApiError("invalid_response", response.status);
+      }
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        if (buffer.length > 4_000_000) throw new ApiError("invalid_response");
+        let delimiter;
+        while ((delimiter = /\r?\n\r?\n/.exec(buffer))) {
+          const frame = buffer.slice(0, delimiter.index);
+          buffer = buffer.slice(delimiter.index + delimiter[0].length);
+          let type = "message";
+          const dataLines = [];
+          for (const line of frame.split(/\r?\n/)) {
+            if (line.startsWith("event:")) type = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+          }
+          if (!dataLines.length) continue; // SSE 注释心跳。
+          let data;
+          try { data = JSON.parse(dataLines.join("\n")); }
+          catch { throw new ApiError("invalid_response"); }
+          if (!data || typeof data !== "object" || Array.isArray(data)) throw new ApiError("invalid_response");
+          if (type === "progress") onProgress(data);
+          else if (type === "error") throw new ApiError(data.code || "internal_error", data.http_status || 0, data);
+          else if (type === "result") {
+            if (typeof data.answer !== "string" || typeof data.question !== "string" || typeof data.status !== "string") {
+              throw new ApiError("invalid_response");
+            }
+            return data;
+          }
+        }
+        if (done) throw new ApiError("network_error"); // 没有最终帧，不能将已有进度当作答案。
+      }
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError("network_error");
+    } finally {
+      if (reader) {
+        try { await reader.cancel(); } catch { /* 保留原结果或错误。 */ }
+        reader.releaseLock();
+      }
     }
   }
 
@@ -620,10 +682,13 @@
     classify: "理解问题", intent: "识别意图", route: "选择执行路线", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
     model: "模型调用", tool: "工具调用", finalize: "整理回答与核验引用",
     planning: "任务规划", plan_step: "执行计划步骤",
+    skill_select: "选择 Skill", skill_retrieval: "执行技能检索策略",
   };
-  const traceStatusLabels = { success: "完成", empty: "无结果", error: "失败", skipped: "已跳过" };
+  const traceStatusLabels = { running: "进行中", success: "完成", empty: "无结果", error: "失败", skipped: "已跳过" };
   const traceOutcomeLabels = { completed: "流程完成", failed: "执行失败", interrupted: "执行中断" };
-  const traceDecisionSourceLabels = { rules: "规则", model: "模型", fallback: "回退" };
+  const traceDecisionSourceLabels = { rules: "规则", model: "模型", fallback: "回退", manual: "手动指定", disabled: "未启用" };
+  const skillModeLabels = { off: "普通问答", auto: "自动选择", manual: "手动指定" };
+  const strategyLabels = { default: "普通检索", concept: "概念讲解检索", comparison: "比较对象检索", code: "代码 API 检索" };
   const traceIntentKindLabels = {
     knowledge: "知识问答", greeting: "问候", scope: "能力范围", needs_clarification: "需要澄清",
     out_of_scope: "超出范围", mcp_tool: "MCP 工具请求",
@@ -670,6 +735,17 @@
     manual_skill_mcp_conflict: "所选 Skill 与 MCP 工具请求冲突",
     mcp_capability_unavailable: "请求的 MCP 工具能力不可用",
     multi_step_plan: "按多步骤任务执行",
+    skill_disabled: "本轮使用普通问答", skill_manual: "使用手动指定的技能",
+    skill_rule_match: "规则匹配到技能", skill_model_match: "模型选择了技能",
+    skill_no_match: "没有匹配的技能，使用普通问答",
+    skill_catalog_invalid: "技能目录不可用，使用普通问答", skill_catalog_empty: "没有可用技能，使用普通问答",
+    skill_selector_budget_exhausted: "为回答保留预算，使用普通问答",
+    skill_selector_unavailable: "选择模型不可用，使用普通问答",
+    skill_selector_timeout: "技能选择超时，使用普通问答",
+    skill_selector_invalid_output: "选择结果无效，使用普通问答",
+    skill_selector_error: "技能选择失败，使用普通问答",
+    skill_load_failed: "技能加载失败，使用普通问答",
+    skill_non_knowledge_route: "当前路线不使用知识技能",
   };
 
   function traceText(value, fallback = "未提供") {
@@ -741,6 +817,10 @@
       ["阶段耗时", traceDuration(event.duration_ms)],
     ];
     if (traceText(event.tool_name, "")) fields.push(["工具", event.tool_name]);
+    if (traceText(event.step_id, "")) fields.push(["计划步骤", event.step_id]);
+    if (traceText(event.skill_mode, "")) fields.push(["技能模式", traceLabel(skillModeLabels, event.skill_mode)]);
+    if (traceText(event.selected_skill_id, "")) fields.push(["选中技能", traceSkill(event.selected_skill_id, "普通问答")]);
+    if (traceText(event.strategy_id, "")) fields.push(["检索策略", traceLabel(strategyLabels, event.strategy_id)]);
     if (Number.isInteger(event.result_count) && event.result_count >= 0) {
       const label = event.stage === "finalize" ? "引用来源数量" : "返回结果数量";
       fields.push([label, traceNumber(event.result_count, " 个")]);
@@ -808,11 +888,11 @@
     }
     body.append(element("h4", "trace-section-title", "本轮 Skill"));
     body.append(traceFields([
-      ["已选择", traceSkill(trace.requested_skill_id, "未选择")],
+      ["手动指定", traceSkill(trace.requested_skill_id, "未指定")],
       ["已准备", traceSkill(trace.prepared_skill_id, "未准备")],
       ["实际应用", traceSkill(trace.applied_skill_id, "未应用")],
     ], "trace-fields trace-skill-fields"));
-    body.append(element("p", "trace-note", "“实际应用”表示已携带技能说明开始调用模型，不代表调用成功或模型遵循全部步骤。"));
+    body.append(element("p", "trace-note", "“实际应用”表示已携带技能说明开始调用模型，不代表调用成功。多步骤任务请查看各步骤的选择与准备记录；上方显示最近一次准备和应用的技能。"));
     if (traceText(trace.error_code, "")) {
       const warning = element("p", "trace-alert", `本轮原因 / 错误码：${traceReason(trace.error_code)}`);
       warning.dataset.kind = "error"; body.append(warning);
@@ -877,6 +957,17 @@
         ["模型调用", traceNumber(step.model_calls, " 次")],
         ["工具调用", traceNumber(step.tool_calls, " 次")],
       ];
+      const stepEvents = Array.isArray(result.trace?.events)
+        ? result.trace.events.filter((event) => event?.step_id === step.step_id) : [];
+      const selection = stepEvents.find((event) => event.stage === "skill_select");
+      if (selection) {
+        fields.push(["技能模式", traceLabel(skillModeLabels, selection.skill_mode)]);
+        fields.push(["选中技能", traceSkill(selection.selected_skill_id, "普通问答")]);
+        fields.push(["检索策略", traceLabel(strategyLabels, selection.strategy_id)]);
+        fields.push(["选择原因", traceReason(selection.reason_code)]);
+        const applied = stepEvents.some((event) => event.stage === "model" && event.selected_skill_id === selection.selected_skill_id);
+        fields.push(["技能进入回答模型", selection.selected_skill_id && applied ? "是" : "否"]);
+      }
       if (traceText(step.stop_reason, "")) fields.push(["结束原因", traceReason(step.stop_reason)]);
       item.append(traceFields(fields, "trace-fields plan-step-fields"));
       list.append(item);
@@ -1087,14 +1178,58 @@
       if (state.operation === "send") {
         const pending = message("assistant", "正在处理请求，请稍候…");
         pending.classList.add("loading-message");
-        pending.setAttribute("role", "status");
+        const progress = element("div", "live-progress");
+        const label = element("p", "live-progress-title", "正在接收执行进度…");
+        label.setAttribute("role", "status");
+        label.setAttribute("aria-live", "polite");
+        progress.append(label, element("ol", "live-progress-events"));
+        pending.querySelector(".message-body").replaceChildren(progress);
         fragment.append(pending);
       }
     }
     ui.conversation.replaceChildren(fragment);
+    renderLiveProgress();
     ui.welcome.hidden = state.turns.length > 0 || Boolean(state.pendingQuestion);
     ui.conversation.hidden = !ui.welcome.hidden;
     requestAnimationFrame(() => { ui["conversation-scroll"].scrollTop = ui["conversation-scroll"].scrollHeight; });
+  }
+
+  function receiveProgress(event) {
+    if (!Number.isInteger(event.sequence) || event.sequence < 0
+      || !Object.hasOwn(traceStageLabels, event.stage)
+      || !Object.hasOwn(traceStatusLabels, event.status)) return;
+    const position = state.liveProgress.findIndex((item) => item.sequence === event.sequence);
+    if (position >= 0) state.liveProgress[position] = event;
+    else if (state.liveProgress.length < 128) state.liveProgress.push(event);
+    renderLiveProgress();
+  }
+
+  function renderLiveProgress() {
+    const panel = ui.conversation.querySelector(".live-progress");
+    if (!panel) return;
+    const events = state.liveProgress.slice().sort((a, b) => a.sequence - b.sequence);
+    const list = document.createDocumentFragment();
+    for (const event of events.slice(-8)) {
+      const item = element("li", "live-progress-event");
+      item.dataset.status = event.status;
+      const prefix = event.step_id ? `${traceText(event.step_id)} · ` : "";
+      item.append(element("span", "", `${prefix}${traceStageLabels[event.stage]}`));
+      item.append(element("span", "live-progress-state", traceStatusLabels[event.status]));
+      if (event.stage === "skill_select" && event.status !== "running") {
+        item.append(element("small", "live-progress-detail", event.selected_skill_id
+          ? `选中：${traceSkill(event.selected_skill_id, "普通问答")}`
+          : traceReasonLabels[event.reason_code] || "使用普通问答"));
+      } else if (event.strategy_id) {
+        item.append(element("small", "live-progress-detail", traceLabel(strategyLabels, event.strategy_id)));
+      }
+      list.append(item);
+    }
+    panel.querySelector("ol").replaceChildren(list);
+    const running = events.filter((event) => event.status === "running").at(-1);
+    const title = panel.querySelector(".live-progress-title");
+    const next = running ? `正在${traceStageLabels[running.stage]}…`
+      : events.length ? "等待后续步骤或最终结果…" : "正在接收执行进度…";
+    if (title.textContent !== next) title.textContent = next;
   }
 
   function displayDate(value) {
@@ -1230,15 +1365,17 @@
         updateControls();
       }
       state.pendingQuestion = question;
+      state.liveProgress = [];
       // 卡片操作不覆盖输入框中尚未发送的学习问题。
       if (command === null) ui.question.value = "";
       fitInput(); renderConversation();
       submitted = true;
       // 不设置前端生成超时、不自动重发；后端负责模型超时，断连后人工刷新确认结果。
-      const skillId = ui["skill-select"].value || null;
-      const result = await request(`/sessions/${encodeURIComponent(state.current.session_id)}/messages`, {
-        method: "POST", body: { question, skill_id: skillId }, timeout: 0,
-      });
+      const choice = command === null ? ui["skill-select"].value : "";
+      const skillMode = choice === "auto" ? "auto" : choice ? "manual" : "off";
+      const skillId = skillMode === "manual" ? choice : null;
+      const result = await streamAnswer(`/sessions/${encodeURIComponent(state.current.session_id)}/messages/stream`,
+        { question, skill_mode: skillMode, skill_id: skillId }, receiveProgress);
       state.turns.push(result); state.pendingQuestion = ""; renderConversation();
       try { await loadSessions(); }
       catch { notice("回答已返回，会话列表暂未刷新，可稍后手动刷新。", "info"); }
@@ -1257,6 +1394,7 @@
         resetConversation(); ui.question.value = draft;
       }
     } finally {
+      state.liveProgress = [];
       setOperation(null); renderConversation(); fitInput(); ui.question.focus();
     }
   }

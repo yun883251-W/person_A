@@ -5,8 +5,8 @@
 输出：轻量技能目录、被选中技能的完整说明和对应工具限制。
 
 这里的技能服务于 Person_A 学习助手，不安装到 Codex，也不参与知识库向量化。
-已实现发现、加载、提示准备及技能检索策略；当前仍由用户手动选择，未选择时
-维持普通检索。自动选择仍见 AUTO_SKILL_TODO.md 与 agent/skill_selector.py。
+已实现发现、加载、提示准备及技能检索策略；选择在首次检索前完成，加载后的
+技能内容由当前知识步骤持有并复用。未选择技能时维持普通检索。
 """
 
 from __future__ import annotations
@@ -212,9 +212,12 @@ def prepare_skill(
     *,
     allowed_tools: Iterable[str] | None = None,
     skills_root: Path | None = None,
+    loaded_skill: LoadedSkill | None = None,
 ) -> PreparedSkill[ExecutionContextT]:
-    """Load a skill and restrict it to configured, registered read-only tools."""
-    loaded = load_skill(skill_id, skills_root)
+    """Prepare frozen skill content and restrict it to read-only tools."""
+    loaded = loaded_skill if loaded_skill is not None else load_skill(skill_id, skills_root)
+    if loaded.metadata.skill_id != skill_id:
+        raise ValueError("Loaded skill does not match the selected skill_id")
     configured = (
         SKILL_TOOL_NAMES if allowed_tools is None else frozenset(allowed_tools)
     )

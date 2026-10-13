@@ -217,6 +217,14 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
 .trace-status[data-status="empty"], .trace-status[data-status="skipped"] { border-color: #e4ddc1; background: #f8f4e7; color: #8e7946; }
 .trace-status[data-status="error"] { border-color: #e8cfc4; background: #faf0e9; color: #a05f48; }
 .trace-event-fields { gap: 7px 13px; }
+.live-progress { min-width: 0; }
+.live-progress-title { margin: 0 0 10px; color: #49623d; font-size: 13px; }
+.live-progress-events { display: grid; gap: 7px; list-style: none; margin: 0; padding: 0; }
+.live-progress-event { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; padding: 7px 10px; border-left: 2px solid #d5dfc7; background: #f5f7ef; font-size: 11px; }
+.live-progress-event[data-status="running"] { border-left-color: #75944f; background: #edf3e3; }
+.live-progress-event[data-status="error"] { border-left-color: #ac7057; }
+.live-progress-state { color: #738369; }
+.live-progress-detail { flex-basis: 100%; color: #78866c; overflow-wrap: anywhere; }
 .trace-event-fields .trace-field dd { font-size: 10px; }
 .trace-alert { margin: 12px 0 0; padding: 9px 11px; border: 1px solid #e4dbbd; border-radius: 6px; background: #faf5e6; color: #8e7642; font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
 .trace-alert[data-kind="error"] { border-color: #e8cfc4; background: #fbf0e9; color: #995e49; }

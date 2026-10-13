@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from ..skill_loader import LoadedSkill, discover_skills, load_skill
+from ..knowledge.code_analysis import extract_visible_code
 
 SkillMode = Literal["off", "auto", "manual"]
 DecisionSource = Literal["manual", "rules", "model", "fallback", "disabled"]
@@ -80,11 +81,10 @@ _STRATEGIES: dict[str, StrategyId] = {
     "concept-comparison": "comparison",
     "code-explanation": "code",
 }
-_CODE_TASK = re.compile(r"(?:解释|解读|分析|逐行|explain|walk\s+through|analy[sz]e).{0,40}(?:代码|函数|类|API|调用|code|function|class|call)", re.I | re.S)
-_CODE_VISIBLE = re.compile(r"```|(?:^|\n)\s*(?:from\s+\w+\s+import|import\s+\w+|def\s+\w+\s*\(|class\s+\w+)|\b\w+(?:\.\w+)+\s*\(", re.M)
+_CODE_TASK = re.compile(r"(?:解释|讲解|解读|分析|逐行|explain|walk\s+through|analy[sz]e).{0,40}(?:代码|函数|类|API|调用|code|function|class|call)|(?:代码|函数|API|调用).{0,20}(?:做什么|什么意思|作用|如何)", re.I | re.S)
 _COMPARE = re.compile(r"区别|差异|异同|对比|比较|优缺点|哪个好|如何选择|相比|相较|\bvs\.?\b|versus|difference\s+between|compare|better\s+than", re.I)
 _PAIR = re.compile(r"\S.{0,80}(?:和|与|及|跟|相比|相较|\bvs\.?\b|versus|\band\b).{0,80}\S", re.I | re.S)
-_CONCEPT = re.compile(r"什么是|何为|解释一下|介绍一下|概念|定义|原理|机制|作用|用途|流程|过程|如何工作|为什么|what\s+is|define|definition|explain|how\s+.+work|purpose|mechanism|process", re.I)
+_CONCEPT = re.compile(r"什么是|何为|解释|介绍|讲解|概念|定义|原理|机制|作用|用途|流程|过程|如何工作|为什么|what\s+is|define|definition|explain|how\s+.+work|purpose|mechanism|process", re.I)
 _NO_CODE = re.compile(r"(?:不要|无需|不必|别).{0,5}(?:解释|解读|分析).{0,10}(?:代码|API)|(?:do not|don't).{0,8}(?:explain|analy[sz]e).{0,8}code", re.I)
 _NO_COMPARE = re.compile(r"(?:不要|无需|不必|别).{0,5}(?:比较|对比)|(?:do not|don't).{0,8}compare", re.I)
 _NO_CONCEPT = re.compile(r"(?:不要|无需|不必|别).{0,5}(?:解释|介绍|说明)|(?:do not|don't).{0,8}(?:explain|define)", re.I)
@@ -149,8 +149,9 @@ def _decision(req: SkillRequest, sid: str | None, source: DecisionSource, reason
     return SkillSelection(req.mode, req.skill_id, sid, source, reason, calls)
 
 
-def _rule(question: str, available: frozenset[str]) -> str | None:
-    code = not _NO_CODE.search(question) and bool(_CODE_TASK.search(question) and _CODE_VISIBLE.search(question))
+def _rule(question: str, available: frozenset[str], visible_context: str = "") -> str | None:
+    visible_code, _ = extract_visible_code(question, visible_context=visible_context)
+    code = not _NO_CODE.search(question) and bool(_CODE_TASK.search(question) and visible_code)
     compare = not _NO_COMPARE.search(question) and bool(_COMPARE.search(question) and _PAIR.search(question))
     concept = not _NO_CONCEPT.search(question) and bool(_CONCEPT.search(question))
     requested = []
@@ -166,7 +167,7 @@ def _rule(question: str, available: frozenset[str]) -> str | None:
 def _history(context: Sequence[object], cfg: SkillSelectionSettings) -> list[str]:
     result, remaining = [], cfg.max_history_chars
     for item in context[-cfg.max_history_items:]:
-        content = item if isinstance(item, str) else (item.get("content") if isinstance(item, Mapping) else getattr(item, "content", None))
+        content = item if isinstance(item, str) else (item.get("content", item.get("question")) if isinstance(item, Mapping) else getattr(item, "content", getattr(item, "question", None)))
         if isinstance(content, str) and content.strip() and remaining:
             text = content.strip()[:remaining]
             result.append(text)
@@ -216,7 +217,7 @@ def _messages(question: str, context: Sequence[object], catalog: tuple[SkillCata
     return SystemMessage(content=system), HumanMessage(content=json.dumps(payload, ensure_ascii=False))
 
 
-def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[object] | None = None, context: Sequence[object] = (), model_invoker: Callable[[Sequence[object]], object] | None = None, remaining_model_calls: int = 0, settings: SkillSelectionSettings | None = None) -> SkillSelection:
+def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[object] | None = None, context: Sequence[object] = (), visible_context: str = "", model_invoker: Callable[[Sequence[object]], object] | None = None, remaining_model_calls: int = 0, settings: SkillSelectionSettings | None = None) -> SkillSelection:
     """Select once; hybrid classification reserves one model call for answering."""
     if not isinstance(request, SkillRequest) or not isinstance(question, str):
         raise TypeError("invalid selection request")
@@ -227,7 +228,7 @@ def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[obje
         return _decision(request, None, "disabled", "skill_disabled")
     if request.mode == "manual":
         assert request.skill_id is not None
-        load_skill(request.skill_id)  # Preserve explicit unknown/read errors.
+        # Validation/loading occurs once in load_selected_skill, before retrieval.
         return _decision(request, request.skill_id, "manual", "skill_manual")
     try:
         candidates = discover_skill_catalog(settings=cfg) if catalog is None else snapshot_skill_catalog(catalog, settings=cfg)
@@ -236,7 +237,7 @@ def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[obje
     if not candidates:
         return _decision(request, None, "fallback", "skill_catalog_empty")
     available = frozenset(x.skill_id for x in candidates)
-    selected = _rule(question.strip(), available)
+    selected = _rule(question.strip(), available, visible_context)
     if selected:
         return _decision(request, selected, "rules", "skill_rule_match")
     if cfg.mode == "rules":
@@ -264,7 +265,16 @@ def strategy_id_for_skill(selected_skill_id: str | None) -> StrategyId:
 
 def load_selected_skill(selection: SkillSelection) -> SelectedSkillSnapshot:
     """Freeze the selected instructions before retrieval."""
-    loaded = load_skill(selection.selected_skill_id) if selection.selected_skill_id else None
+    try:
+        loaded = load_skill(selection.selected_skill_id) if selection.selected_skill_id else None
+    except Exception:
+        if selection.requested_mode != "auto":
+            raise
+        selection = replace(
+            selection, selected_skill_id=None, decision_source="fallback",
+            reason_code="skill_load_failed",
+        )
+        loaded = None
     return SelectedSkillSnapshot(selection, loaded, strategy_id_for_skill(selection.selected_skill_id))
 
 

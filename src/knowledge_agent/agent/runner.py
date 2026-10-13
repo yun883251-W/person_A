@@ -34,7 +34,7 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool, StructuredTool
 
-from ..config import AgentConfig
+from ..config import AgentConfig, get_skill_selection_settings
 from ..models import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
@@ -53,6 +53,7 @@ from ..knowledge.skill_retrieval import (
     SkillRetrievalPlan,
     build_retrieval_plan,
     execute_retrieval_plan,
+    reconcile_retrieval_outcome,
     retrieval_summary,
 )
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult, RouteSummary
@@ -76,6 +77,13 @@ from .router import RouteDecision, RouteKind, resolve_route
 from .trace import TraceRecorder, finish_trace_safely
 from . import assessment, planner
 from .plan_executor import StepBudget, StepOutcome, execute_plan
+from .skill_selector import (
+    SelectedSkillSnapshot,
+    SkillSelectionSettings,
+    load_selected_skill,
+    normalize_skill_request,
+    select_skill_for_step,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,10 +211,15 @@ class KnowledgeAgent:
         retriever: KnowledgeRetriever | None = None,
         session_store: SessionStore | None = None,
         mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
+        skill_selection_settings: SkillSelectionSettings | None = None,
     ) -> None:
         self.config = config if config is not None else AgentConfig()
         self.model = model if model is not None else initialize_chat_model()
         self.system_prompt = SYSTEM_PROMPT
+        self.skill_selection_settings = (
+            skill_selection_settings if skill_selection_settings is not None
+            else get_skill_selection_settings()
+        )
         self.retriever = retriever if retriever is not None else KnowledgeRetriever()
         self.history = ConversationHistory(self.config.max_history_turns)
         self.session_store = session_store
@@ -242,6 +255,7 @@ class KnowledgeAgent:
         question: str,
         *,
         skill_id: str | None = None,
+        skill_mode: str | None = None,
         retrieval_question: str | None = None,
         trace_recorder: TraceRecorder | None = None,
         context: Sequence[object] = (),
@@ -264,6 +278,8 @@ class KnowledgeAgent:
             intent_decision=intent_decision,
             intent_model_calls=intent_model_calls,
             skill_id=skill_id,
+            skill_mode=skill_mode,
+            selection_settings=self.skill_selection_settings,
         )
 
     def prepare_model_turn(
@@ -312,23 +328,26 @@ class KnowledgeAgent:
         session_id: str | None = None,
         *,
         skill_id: str | None = None,
+        skill_mode: str | None = None,
     ) -> AnswerResult:
         """Dispatch an ordinary request or one bounded, explicitly multi-step task."""
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be a non-empty string")
-        if skill_id is not None:
-            load_skill(skill_id)
+        request = normalize_skill_request(skill_mode, skill_id)
+        if request.mode == "manual":
+            load_skill(request.skill_id)
         snapshot = self.assessment_states.get(session_id) if session_id is not None else None
         if (
             planner.should_plan(question)
             and assessment.request_action(question, snapshot) is None
             and assessment.request_clarification(question, snapshot) is None
         ):
-            return self._ask_plan(question.strip(), session_id, skill_id=skill_id)
-        return self._ask_single(question, session_id, skill_id=skill_id)
+            return self._ask_plan(question.strip(), session_id, skill_id=request.skill_id, skill_mode=request.mode)
+        return self._ask_single(question, session_id, skill_id=request.skill_id, skill_mode=request.mode)
 
     def _ask_plan(
         self, question: str, session_id: str | None, *, skill_id: str | None,
+        skill_mode: str | None = None,
     ) -> AnswerResult:
         trace = TraceRecorder(requested_skill_id=skill_id)
         event = trace.start_event("planning", "program")
@@ -378,6 +397,7 @@ class KnowledgeAgent:
                 initial_model_calls=planning_calls, trace=trace,
                 run_step=lambda step, budget, context, recorder: self._run_planned_step(
                     step, budget, context, recorder, original_question=question, skill_id=skill_id,
+                    skill_mode=skill_mode,
                 ),
             )
             if session_id is not None:
@@ -409,9 +429,10 @@ class KnowledgeAgent:
     def _run_planned_step(
         self, step: planner.PlanStep, budget: StepBudget, dependency_context: str,
         trace: TraceRecorder, *, original_question: str, skill_id: str | None,
+        skill_mode: str | None = None,
     ) -> StepOutcome:
         """Execute one leaf with the remaining budget; never commit a child turn."""
-        state = TurnState(original_question=step.goal, trace_recorder=trace)
+        state = TurnState(original_question=step.goal, trace_recorder=trace, step_id=step.step_id)
         context = json.dumps({
             "original_user_request": original_question,
             "completed_dependency_data": dependency_context,
@@ -429,6 +450,11 @@ class KnowledgeAgent:
                     max_tool_calls=budget.tool_calls,
                     max_followup_searches=budget.followup_searches,
                     skill_id=skill_id,
+                    skill_mode=skill_mode,
+                    model=self.model,
+                    selection_settings=self.skill_selection_settings,
+                    step_id=step.step_id,
+                    visible_context=original_question,
                 )
                 state = prepared.state
                 if prepared.terminal_result is not None:
@@ -473,15 +499,14 @@ class KnowledgeAgent:
         session_id: str | None = None,
         *,
         skill_id: str | None = None,
+        skill_mode: str | None = None,
     ) -> AnswerResult:
         """Run one complete question-answer turn and return its public result."""
         if not isinstance(question, str):
             raise TypeError("question must be a string")
         if not question.strip():
             raise ValueError("question must not be blank")
-        if skill_id is not None:
-            # Fail before retrieval/model work; the selected skill is turn-local.
-            load_skill(skill_id)
+        request = normalize_skill_request(skill_mode, skill_id)
         trace_recorder = TraceRecorder(requested_skill_id=skill_id)
         turns: tuple[ConversationTurn, ...] = ()
         history: tuple[BaseMessage, ...] = ()
@@ -498,7 +523,7 @@ class KnowledgeAgent:
             if intent_model_calls >= self.config.max_model_calls:
                 raise IntentModelBudgetError()
             intent_model_calls += 1
-            return invoke_chat_model(self.model, messages)
+            return invoke_chat_model(self.model, messages, max_retries=0)
 
         intent_event = trace_recorder.start_event("intent", "program")
         try:
@@ -571,6 +596,7 @@ class KnowledgeAgent:
         prepared = self.prepare_question(
             question,
             skill_id=skill_id,
+            skill_mode=request.mode,
             trace_recorder=trace_recorder,
             context=turns,
             intent_decision=route.intent,
@@ -763,6 +789,8 @@ class TurnState:
     skill_retrieval_plan: SkillRetrievalPlan | None = None
     skill_retrieval_outcome: SkillRetrievalOutcome | None = None
     skill_retrieval_summary: dict[str, Any] | None = None
+    selected_skill: SelectedSkillSnapshot | None = None
+    step_id: str | None = None
     trace_recorder: TraceRecorder | None = None
 
     def __post_init__(self) -> None:
@@ -1142,6 +1170,10 @@ def prepare_question(
     intent_decision: IntentDecision | None = None,
     intent_model_calls: int = 0,
     skill_id: str | None = None,
+    skill_mode: str | None = None,
+    selection_settings: SkillSelectionSettings | None = None,
+    step_id: str | None = None,
+    visible_context: str = "",
 ) -> PreparedQuestion:
     """Prepare one question and enforce retrieval before knowledge answers.
 
@@ -1155,6 +1187,7 @@ def prepare_question(
     cleaned_question = question.strip()
     if not cleaned_question:
         raise ValueError("question must not be blank")
+    skill_request = normalize_skill_request(skill_mode, skill_id)
     if isinstance(max_model_calls, bool) or not isinstance(max_model_calls, int):
         raise TypeError("max_model_calls must be an integer")
     if max_model_calls < 0:
@@ -1180,6 +1213,7 @@ def prepare_question(
         original_question=cleaned_question,
         retrieval_question=cleaned_retrieval_question,
         trace_recorder=trace_recorder,
+        step_id=step_id,
     )
     state.model_calls = intent_model_calls
 
@@ -1188,7 +1222,7 @@ def prepare_question(
             raise IntentModelBudgetError()
         state.model_calls += 1
         classifier = model if model is not None else initialize_chat_model()
-        return invoke_chat_model(classifier, messages)
+        return invoke_chat_model(classifier, messages, max_retries=0)
 
     intent_event = (
         trace_recorder.start_event("intent", "program")
@@ -1286,11 +1320,51 @@ def prepare_question(
             stop_reason="model_call_budget_exhausted",
         )
 
-    visible_context = "\n".join(
+    knowledge_context = tuple(
+        item for item in context[-max_history_turns:]
+        if getattr(item, "route", "knowledge") == "knowledge"
+    )
+    history_text = "\n".join(
         str(getattr(item, "question", ""))
-        for item in context[-max_history_turns:]
+        for item in reversed(knowledge_context)
         if getattr(item, "question", None)
     )[:max_context_chars]
+    visible_context = (visible_context + "\n" + history_text)[:max_context_chars]
+
+    def invoke_selector(messages: Sequence[BaseMessage]) -> object:
+        # Selection attempts, including failures, share the turn/plan budget.
+        # Keep one request for the eventual answer and disable hidden retries.
+        if max_model_calls - state.model_calls < 2:
+            raise IntentModelBudgetError()
+        state.model_calls += 1
+        classifier = model if model is not None else initialize_chat_model()
+        return invoke_chat_model(classifier, messages, max_retries=0)
+
+    selection_event = (
+        trace_recorder.start_event("skill_select", "program", skill_mode=skill_request.mode, step_id=step_id)
+        if trace_recorder is not None else None
+    )
+    try:
+        selection = select_skill_for_step(
+            cleaned_question, request=skill_request, route="knowledge",
+            context=knowledge_context, visible_context=visible_context,
+            model_invoker=invoke_selector,
+            remaining_model_calls=max(0, max_model_calls - state.model_calls),
+            settings=selection_settings,
+        )
+        state.selected_skill = load_selected_skill(selection)
+        selection = state.selected_skill.selection
+    except Exception:
+        if trace_recorder is not None and selection_event is not None:
+            trace_recorder.finish_event(selection_event, "error", error_code="skill_load_failed")
+        raise
+    skill_id = selection.selected_skill_id
+    if trace_recorder is not None and selection_event is not None:
+        trace_recorder.finish_event(
+            selection_event, "success" if skill_id else "skipped",
+            decision_source=selection.decision_source, reason_code=selection.reason_code,
+            selected_skill_id=skill_id, strategy_id=state.selected_skill.strategy_id,
+        )
     remaining_searches = min(
         max_tool_calls - state.tool_calls,
         1 + max_followup_searches - state.followup_searches,
@@ -1316,6 +1390,12 @@ def prepare_question(
     raw_search = create_search_executor(retriever, state)
     raw_section = create_section_executor(retriever, state)
     search_number = 0
+    retrieval_event = (
+        trace_recorder.start_event(
+            "skill_retrieval", "program", selected_skill_id=skill_id,
+            strategy_id=plan.strategy_id, step_id=step_id,
+        ) if trace_recorder is not None else None
+    )
 
     def traced_search(query: str) -> Mapping[str, Any]:
         nonlocal search_number
@@ -1323,7 +1403,7 @@ def prepare_question(
         handle = (
             trace_recorder.start_event(
                 "initial_retrieval" if search_number == 1 else "tool",
-                "program", tool_name="search_knowledge",
+                "program", tool_name="search_knowledge", step_id=step_id,
             )
             if trace_recorder is not None else None
         )
@@ -1355,6 +1435,11 @@ def prepare_question(
     state.skill_retrieval_summary = retrieval_summary(plan, outcome)
 
     if not outcome.retained_chunk_ids:
+        if trace_recorder is not None and retrieval_event is not None:
+            trace_recorder.finish_event(
+                retrieval_event, "error" if outcome.errors else "empty",
+                result_count=0, reason_code=plan.reason_code,
+            )
         if outcome.errors and outcome.executed == 0:
             index_missing = any(item.stop_reason == "index_not_built" for item in outcome.step_results)
             return _terminal_preparation(
@@ -1379,6 +1464,16 @@ def prepare_question(
         max_chars=max_context_chars,
         preferred_chunk_ids=outcome.retained_chunk_ids,
     )
+    outcome = reconcile_retrieval_outcome(
+        outcome, available_chunk_ids=tuple(source.chunk_id for source in state.source_map.values()),
+    )
+    state.skill_retrieval_outcome = outcome
+    state.skill_retrieval_summary = retrieval_summary(plan, outcome)
+    if trace_recorder is not None and retrieval_event is not None:
+        trace_recorder.finish_event(
+            retrieval_event, "success" if evidence_context else "empty",
+            result_count=len(outcome.retained_chunk_ids), reason_code=plan.reason_code,
+        )
     if not evidence_context:
         return _terminal_preparation(
             state,
@@ -1500,8 +1595,18 @@ def prepare_model_turn(
         raise ValueError("max_retries must be a non-negative integer")
 
     state = prepared.state
+    # A prepared knowledge turn owns its selection. Later callers cannot swap
+    # instructions after the retrieval strategy has already run.
+    frozen = state.selected_skill
+    if frozen is not None:
+        if skill_id is not None and skill_id != frozen.selection.selected_skill_id:
+            raise ValueError("skill_id differs from the prepared skill selection")
+        skill_id = frozen.selection.selected_skill_id
     skill_event = (
-        state.trace_recorder.start_event("skill_prepare", "program")
+        state.trace_recorder.start_event(
+            "skill_prepare", "program", selected_skill_id=skill_id, step_id=state.step_id,
+            strategy_id=frozen.strategy_id if frozen is not None else None,
+        )
         if state.trace_recorder is not None
         else None
     )
@@ -1517,7 +1622,8 @@ def prepare_model_turn(
     )
     try:
         selected_skill = (
-            prepare_skill(skill_id, tools.registry) if skill_id is not None else None
+            prepare_skill(skill_id, tools.registry, loaded_skill=frozen.loaded_skill if frozen is not None else None)
+            if skill_id is not None else None
         )
         if selected_skill is not None:
             tools = KnowledgeTools(
@@ -1547,7 +1653,9 @@ def prepare_model_turn(
                         + json.dumps(state.skill_retrieval_summary, ensure_ascii=False)
                         + "\nEND_RETRIEVAL_STRATEGY_SUMMARY\n"
                         "The listed searches are already complete. Use further knowledge tools "
-                        "only for a material coverage gap and within the remaining budget."
+                        "only for a material coverage gap and within the remaining budget. "
+                        "Query attempts do not prove coverage. Coverage only describes evidence actually "
+                        "provided here; lexical object matches are not a guarantee of sufficient facts."
                         if state.skill_retrieval_summary is not None
                         else ""
                     )
@@ -1616,7 +1724,9 @@ def invoke_model_turn(
     """Synchronously invoke the model and choose the next agent action."""
     state.model_calls += 1
     model_event = (
-        state.trace_recorder.start_event("model", "program")
+        state.trace_recorder.start_event(
+            "model", "program", selected_skill_id=turn.skill_id, step_id=state.step_id,
+        )
         if state.trace_recorder is not None
         else None
     )
@@ -2416,7 +2526,9 @@ class KnowledgeAgentApplication:
         finally:
             self._finish_operation()
 
-    def ask(self, question: str, *, skill_id: str | None = None) -> AnswerResult:
+    def ask(
+        self, question: str, *, skill_id: str | None = None, skill_mode: str | None = None,
+    ) -> AnswerResult:
         """Run one complete turn in the active session."""
         self._begin_operation("ask")
         try:
@@ -2432,6 +2544,7 @@ class KnowledgeAgentApplication:
                 question,
                 session_id=self._require_session(),
                 skill_id=skill_id,
+                skill_mode=skill_mode,
             )
         finally:
             self._finish_operation()

@@ -4,7 +4,7 @@
 和会话存储接口，将回答、引用、会话信息与错误转换为约定的 JSON 响应。
 检索、模型调用、来源校验和 SQLite 持久化继续复用已有模块。
 
-第一版范围：本机 127.0.0.1、单服务进程、同步完整回答、持久化会话。
+第一版范围：本机 127.0.0.1、单服务进程、完整回答与实时阶段进度、持久化会话。
 使用贯穿服务生命周期的固定工作线程串行执行 Agent 和数据库操作。
 HTTP 接口异步等待任务，SQLite 连接在同一个工作线程创建、使用和关闭。
 
@@ -16,6 +16,7 @@ POST   /sessions                        创建会话
 GET    /sessions                        分页列出会话
 GET    /sessions/{session_id}            查询会话信息
 POST   /sessions/{session_id}/messages   在已有会话中提问
+POST   /sessions/{session_id}/messages/stream  SSE 阶段进度与最终完整回答
 GET    /sessions/{session_id}/messages    分页读取已完成问答轮
 DELETE /sessions/{session_id}/messages   清空历史，保留会话
 DELETE /sessions/{session_id}            删除会话及其历史
@@ -35,10 +36,11 @@ python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --po
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from threading import Lock, get_ident
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -46,12 +48,13 @@ from urllib.parse import urlsplit
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .agent.runner import ApplicationBusyError, TurnPersistenceError
+from .agent.skill_selector import normalize_skill_request
 from .config import PROJECT_ROOT
 from .models import (
     ChatModelAuthenticationError,
@@ -92,7 +95,9 @@ from .agent.trace import (
     TraceOutcome,
     TraceStage,
     TraceStatus,
+    TraceSkillMode,
     TurnTrace,
+    observe_trace_progress,
     trace_to_dict,
 )
 
@@ -165,15 +170,27 @@ class AskRequest(_PublicModel):
     )
     skill_id: str | None = Field(
         default=None,
+        max_length=256,
         pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
-        description="本轮显式选择的技能 ID；不传时使用普通问答流程",
+        description="手动模式的技能 ID；省略 skill_mode 时提供此字段仍按旧版手动模式处理",
         examples=["concept-explanation"],
+    )
+    skill_mode: TraceSkillMode | None = Field(
+        default=None,
+        description="off 普通问答、auto 自动选择、manual 手动选择；省略时按 skill_id 兼容旧行为",
     )
 
     @field_validator("question", mode="before")
     @classmethod
     def normalize_question(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_skill_request(self) -> AskRequest:
+        # Validate the same contract as CLI/Agent without loading skill files or
+        # turning an omitted mode into an implicit request for automatic routing.
+        normalize_skill_request(self.skill_mode, self.skill_id)
+        return self
 
 
 class SessionResponse(_PublicModel):
@@ -228,6 +245,10 @@ class TraceEventResponse(_PublicModel):
     intent_kind: TraceIntentKind | None = None
     route_kind: Literal["knowledge", "mcp", "direct"] | None = None
     reason_code: str | None = None
+    skill_mode: TraceSkillMode | None = None
+    selected_skill_id: str | None = None
+    strategy_id: str | None = None
+    step_id: str | None = None
 
 
 class TurnTraceResponse(_PublicModel):
@@ -470,6 +491,79 @@ def _error_content(
         persisted=persisted,
         details=details,
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _answer_service_error(response: AnswerResponse) -> JSONResponse:
+    """Share business-error mapping between complete JSON and SSE responses."""
+    if response.stop_reason == "index_not_built":
+        status_code, code, message = (
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "index_not_built",
+            "The knowledge index has not been built; run `person-a build` and restart the API service",
+        )
+    elif response.stop_reason == "model_timeout":
+        status_code, code, message = (
+            status.HTTP_504_GATEWAY_TIMEOUT, "model_timeout", "The model response timed out",
+        )
+    elif response.stop_reason == "model_authentication_failed":
+        status_code, code, message = (
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "service_configuration_error",
+            "The model service is not configured correctly",
+        )
+    else:
+        status_code, code, message = (
+            status.HTTP_503_SERVICE_UNAVAILABLE, "service_error", "The model service is unavailable",
+        )
+    return JSONResponse(
+        status_code=status_code,
+        content=_error_content(code, message, result=response),
+    )
+
+
+class _ProgressChannel:
+    """A bounded worker-to-event-loop channel for one connected HTTP stream.
+
+    The cap bounds both scheduled callbacks and queued payloads. Terminal results
+    travel through the worker Future, so a slow client cannot lose its answer to
+    a full progress queue. Detaching never cancels the business operation.
+    """
+
+    MAX_EVENTS = 256
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        self._lock = Lock()
+        self._attached = True
+        self._sent = 0
+        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.MAX_EVENTS)
+
+    def publish(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            if not self._attached or self._sent >= self.MAX_EVENTS:
+                return
+            self._sent += 1
+            # Payloads come only from trace's public field serializer, never
+            # from model messages, tool arguments or retrieved source text.
+            try:
+                self._loop.call_soon_threadsafe(self._enqueue, dict(payload))
+            except RuntimeError:
+                self._attached = False
+
+    def _enqueue(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            attached = self._attached
+        if attached and not self.queue.full():
+            self.queue.put_nowait(payload)
+
+    def detach(self) -> None:
+        with self._lock:
+            self._attached = False
+
+
+def _sse_event(event: Literal["progress", "result", "error"], value: dict[str, Any]) -> str:
+    # JSON escapes embedded newlines, so text cannot inject an extra SSE frame.
+    return f"event: {event}\ndata: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
 RuntimeFactory = Callable[[], Any]
@@ -1003,12 +1097,14 @@ def create_app(
     ) -> AnswerResponse:
         runtime: ServiceRuntime = application.state.runtime
         try:
-            if request.skill_id is None:
-                result = await runtime.ask_session(session_id, request.question)
-            else:
-                result = await runtime.ask_session(
-                    session_id, request.question, skill_id=request.skill_id
-                )
+            skill_options: dict[str, Any] = {}
+            if request.skill_id is not None:
+                skill_options["skill_id"] = request.skill_id
+            if request.skill_mode is not None:
+                skill_options["skill_mode"] = request.skill_mode
+            result = await runtime.ask_session(
+                session_id, request.question, **skill_options,
+            )
         except KeyError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1022,29 +1118,109 @@ def create_app(
         response = _answer_response(session_id, result)
         if result.status != "service_error":
             return response
+        return _answer_service_error(response)
 
-        if result.stop_reason == "index_not_built":
-            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            code = "index_not_built"
-            message = (
-                "The knowledge index has not been built; run `person-a build` "
-                "and restart the API service"
+    @application.post(
+        "/sessions/{session_id}/messages/stream",
+        response_class=StreamingResponse,
+        summary="提问并订阅实时阶段进度",
+        description=(
+            "使用 POST fetch 读取 text/event-stream。progress 为公开阶段状态；result 为"
+            "完整 AnswerResponse；error 使用既有 ErrorResponse，可携带未保存的 result。"
+            "流开始后的业务错误通过 error 事件返回；流开始前的参数和忙碌错误仍为 HTTP JSON。"
+            "不会发送模型推理、Token 或检索原文，也不提供自动重试或请求级断线恢复。"
+        ),
+        responses={
+            422: {"model": ErrorResponse, "description": "请求参数不合法"},
+            503: {"model": ErrorResponse, "description": "服务忙或不可用"},
+        },
+    )
+    async def ask_session_stream(
+        session_id: SessionId,
+        request: AskRequest,
+        http_request: Request,
+    ) -> StreamingResponse:
+        runtime: ServiceRuntime = application.state.runtime
+        channel = _ProgressChannel(asyncio.get_running_loop())
+        try:
+            # Reserve the same single worker before sending response headers, so
+            # concurrent questions and mutations keep their existing busy policy.
+            worker_future = runtime.submit_ask_session(
+                session_id, request.question,
+                skill_id=request.skill_id, skill_mode=request.skill_mode,
+                progress_observer=channel.publish,
             )
-        elif result.stop_reason == "model_timeout":
-            status_code = status.HTTP_504_GATEWAY_TIMEOUT
-            code = "model_timeout"
-            message = "The model response timed out"
-        elif result.stop_reason == "model_authentication_failed":
-            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            code = "service_configuration_error"
-            message = "The model service is not configured correctly"
-        else:
-            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            code = "service_error"
-            message = "The model service is unavailable"
-        return JSONResponse(
-            status_code=status_code,
-            content=_error_content(code, message, result=response),
+        except BaseException:
+            channel.detach()
+            raise
+        wrapped = asyncio.wrap_future(worker_future)
+        # asyncio.wait below never cancels this Future. If the browser leaves,
+        # completion still retrieves failures and the worker owns persistence.
+        wrapped.add_done_callback(ServiceRuntime._consume_future_exception)
+
+        async def stream_events():
+            pending_progress: asyncio.Task[dict[str, Any]] | None = None
+            try:
+                while True:
+                    while not channel.queue.empty():
+                        yield _sse_event("progress", channel.queue.get_nowait())
+                    if wrapped.done():
+                        break
+                    pending_progress = asyncio.create_task(channel.queue.get())
+                    completed, _ = await asyncio.wait(
+                        (wrapped, pending_progress), timeout=15,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if pending_progress in completed:
+                        yield _sse_event("progress", pending_progress.result())
+                    else:
+                        pending_progress.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await pending_progress
+                    pending_progress = None
+                    if not completed:
+                        yield ": keep-alive\n\n"
+
+                result = wrapped.result()
+                if result is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
+                response = _answer_response(session_id, result)
+                if result.status == "service_error":
+                    error_response = _answer_service_error(response)
+                    yield _sse_event("error", {
+                        **json.loads(error_response.body), "http_status": error_response.status_code,
+                    })
+                else:
+                    yield _sse_event("result", response.model_dump(mode="json"))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if isinstance(exc, KeyError):
+                    exc = HTTPException(
+                        status_code=422, detail=f"Unknown skill: {request.skill_id}",
+                    )
+                handler = next(
+                    (
+                        application.exception_handlers[exception_type]
+                        for exception_type in type(exc).__mro__
+                        if exception_type in application.exception_handlers
+                    ),
+                    internal_error_handler,
+                )
+                error_response = await handler(http_request, exc)
+                yield _sse_event("error", {
+                    **json.loads(error_response.body), "http_status": error_response.status_code,
+                })
+            finally:
+                channel.detach()
+                if pending_progress is not None and not pending_progress.done():
+                    pending_progress.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pending_progress
+
+        return StreamingResponse(
+            stream_events(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
 
     @application.get(
@@ -1391,25 +1567,44 @@ class ServiceRuntime:
         question: str,
         *,
         skill_id: str | None = None,
+        skill_mode: TraceSkillMode | None = None,
     ) -> Any | None:
         """Ask one question in an existing persisted session."""
-        return await self.run(
-            self._ask_session_on_worker, session_id, question, skill_id
+        return await self._wait_for_future(self.submit_ask_session(
+            session_id, question, skill_id=skill_id, skill_mode=skill_mode,
+        ))
+
+    def submit_ask_session(
+        self, session_id: str, question: str, *,
+        skill_id: str | None = None,
+        skill_mode: TraceSkillMode | None = None,
+        progress_observer: Callable[[dict[str, Any]], None] | None = None,
+    ) -> Future[Any]:
+        """Submit exactly once; JSON and SSE share worker ownership and locking."""
+        return self.submit(
+            self._ask_session_on_worker, session_id, question, skill_id, skill_mode,
+            progress_observer,
         )
 
     def _ask_session_on_worker(
-        self, session_id: str, question: str, skill_id: str | None = None
+        self, session_id: str, question: str, skill_id: str | None = None,
+        skill_mode: TraceSkillMode | None = None,
+        progress_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> Any | None:
         self._require_worker_thread()
         if self.store.get_session(session_id) is None:
             return None
 
         application = self.application
-        application.resume_session(session_id)
-        try:
-            return application.ask(question, skill_id=skill_id)
-        finally:
-            application.end_session()
+        with observe_trace_progress(progress_observer):
+            application.resume_session(session_id)
+            try:
+                options: dict[str, Any] = {"skill_id": skill_id}
+                if skill_mode is not None:
+                    options["skill_mode"] = skill_mode
+                return application.ask(question, **options)
+            finally:
+                application.end_session()
 
     async def load_turns(
         self, session_id: str, *, limit: int, offset: int

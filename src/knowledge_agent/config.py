@@ -176,6 +176,28 @@ def get_intent_settings() -> IntentSettings:
     return IntentSettings(mode=normalized_mode)  # type: ignore[arg-type]
 
 
+def get_skill_selection_settings():
+    """Read bounded auto-selection options without initializing a model."""
+    # Local import avoids a config -> loader -> config import cycle.
+    from .agent.skill_selector import SkillSelectionSettings
+
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+
+    def value(name: str, default: str) -> str:
+        return os.environ.get(name, dotenv.get(name, default)).strip()
+
+    mode = value("SKILL_SELECTION_MODE", "rules").lower()
+    if mode not in {"rules", "hybrid"}:
+        raise ValueError("SKILL_SELECTION_MODE 必须是 rules 或 hybrid")
+    return SkillSelectionSettings(
+        mode=mode,
+        max_candidates=int(value("SKILL_SELECTION_MAX_CANDIDATES", "32")),
+        max_catalog_chars=int(value("SKILL_SELECTION_MAX_CATALOG_CHARS", "8000")),
+        max_history_items=int(value("SKILL_SELECTION_MAX_HISTORY_ITEMS", "6")),
+        max_history_chars=int(value("SKILL_SELECTION_MAX_HISTORY_CHARS", "4000")),
+    )
+
+
 def get_mcp_settings() -> McpSettings:
     """Resolve MCP_CONFIG_PATH without reading the referenced configuration."""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")

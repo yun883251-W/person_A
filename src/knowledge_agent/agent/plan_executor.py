@@ -62,7 +62,7 @@ def execute_plan(
     limit_hit = False
 
     for step in plan.steps:
-        handle = trace.start_event("plan_step", "program")
+        handle = trace.start_event("plan_step", "program", step_id=step.step_id)
         dependencies = [results.get(key) for key in step.depends_on]
         skip_reason = None
         if any(result is None or result.status != "success" for result in dependencies):

@@ -65,6 +65,14 @@ def _nonnegative_int(value: str) -> int:
     return parsed
 
 
+def _add_skill_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--skill-mode", choices=("off", "auto", "manual"),
+        help="普通问答 / 自动选择 / 手动技能；省略时按 --skill 是否提供保持原行为",
+    )
+    parser.add_argument("--skill", type=_nonempty, help="手动技能 ID；不能与 auto/off 同用")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Declare commands without importing model or retrieval dependencies."""
     parser = argparse.ArgumentParser(
@@ -85,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name, help=description, description=description)
         if name == "ask":
             command.add_argument("question", type=_nonempty, help="问题；包含空格时请用引号包围")
+            _add_skill_arguments(command)
         command.add_argument("--json", action="store_true", help="将结构化结果以 JSON 输出")
 
     chat = commands.add_parser(
@@ -100,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_nonempty,
         help="恢复已有会话 ID；省略时创建新的随机 ID",
     )
+    _add_skill_arguments(chat)
 
     sessions = commands.add_parser(
         "sessions", help="列出本地持久化会话（不加载模型或知识库）"
@@ -252,6 +262,16 @@ def _display_answer(result: AnswerResult, *, json_output: bool = False) -> int:
         )
         if result.stop_reason == "index_not_built":
             print("请先运行 person-a build。", file=sys.stderr)
+        if result.trace is not None:
+            for event in result.trace.events:
+                if event.stage == "skill_select":
+                    prefix = f"步骤 {event.step_id}；" if event.step_id else ""
+                    print(
+                        f"{prefix}技能模式：{event.skill_mode}；"
+                        f"选择：{event.selected_skill_id or '普通问答'}；"
+                        f"策略：{event.strategy_id or 'default'}；原因：{event.reason_code}",
+                        file=sys.stderr,
+                    )
     return 1 if result.status in {"service_error", "limit_reached"} else 0
 
 
@@ -287,12 +307,29 @@ def _session(
         application.close()
 
 
-def _run_ask(question: str, *, json_output: bool) -> int:
+def _skill_options(skill_mode: str | None, skill_id: str | None) -> dict[str, str]:
+    options = {}
+    if skill_mode is not None:
+        options["skill_mode"] = skill_mode
+    if skill_id is not None:
+        options["skill_id"] = skill_id
+    return options
+
+
+def _run_ask(
+    question: str, *, json_output: bool,
+    skill_mode: str | None = None, skill_id: str | None = None,
+) -> int:
     with _session("cli-ask") as application:
-        return _display_answer(application.ask(question), json_output=json_output)
+        return _display_answer(
+            application.ask(question, **_skill_options(skill_mode, skill_id)),
+            json_output=json_output,
+        )
 
 
-def _run_chat(session_id: str | None) -> int:
+def _run_chat(
+    session_id: str | None, *, skill_mode: str | None = None, skill_id: str | None = None,
+) -> int:
     with _session(
         session_id,
         persistent=True,
@@ -324,7 +361,7 @@ def _run_chat(session_id: str | None) -> int:
                 elif question.startswith("/"):
                     print("未知命令，请输入 /help 查看支持的命令。", file=sys.stderr)
                 else:
-                    _display_answer(application.ask(question))
+                    _display_answer(application.ask(question, **_skill_options(skill_mode, skill_id)))
             except Exception as exc:
                 # 单轮失败不终止交互会话；正常 /exit 或 EOF 仍返回 0。
                 _report_error(exc)
@@ -399,15 +436,21 @@ def _run_delete_session(session_id: str, *, json_output: bool) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch one command; importing this module never starts an application."""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command in {"ask", "chat"}:
+        if args.skill_mode == "manual" and args.skill is None:
+            parser.error("--skill-mode manual 需要 --skill ID")
+        if args.skill_mode in {"off", "auto"} and args.skill is not None:
+            parser.error("--skill 不能与 --skill-mode off/auto 同时使用")
     json_output = getattr(args, "json", False)
     try:
         if args.command in {"build", "update"}:
             return _run_ingest(args.command, json_output=json_output)
         if args.command == "ask":
-            return _run_ask(args.question, json_output=json_output)
+            return _run_ask(args.question, json_output=json_output, skill_mode=args.skill_mode, skill_id=args.skill)
         if args.command == "chat":
-            return _run_chat(args.session_id)
+            return _run_chat(args.session_id, skill_mode=args.skill_mode, skill_id=args.skill)
         if args.command == "sessions":
             return _run_sessions(limit=args.limit, offset=args.offset, json_output=json_output)
         if args.command == "history":

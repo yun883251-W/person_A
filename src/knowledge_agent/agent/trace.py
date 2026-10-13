@@ -11,8 +11,8 @@
 3. schemas.py 将摘要挂到 AnswerResult；session_store.py 保存并恢复该摘要。
 4. api.py 转换公开响应；前端显示本轮与历史问答的执行详情。
 
-第一版在回答结束后一次性返回记录，复用当前 SQLite 的 turns.result_json。
-展示可观察到的执行步骤，不记录模型的内部推理内容，不提供实时进度或流式输出。
+回答结束后返回完整记录，复用当前 SQLite 的 turns.result_json。
+可选订阅器实时发布公开阶段进度；不记录模型内部推理、Token 或检索原文。
 已实现收集器、问答记录及存储接入，API 与页面展示的接入位置见下方完成说明。
 
 开发项 01—16 已实现；TODO 17—20 保留为待统一执行的验证，不代表已经验收通过。
@@ -22,6 +22,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import isfinite
@@ -46,6 +49,8 @@ TraceStage = Literal[
     "intent",
     "route",
     "initial_retrieval",
+    "skill_select",
+    "skill_retrieval",
     "skill_prepare",
     "model",
     "tool",
@@ -54,11 +59,38 @@ TraceStage = Literal[
 TraceInitiator = Literal["program", "model"]
 TraceStatus = Literal["success", "empty", "error", "skipped"]
 TraceOutcome = Literal["completed", "failed", "interrupted"]
-TraceDecisionSource = Literal["rules", "model", "fallback"]
+TraceDecisionSource = Literal["rules", "model", "fallback", "manual", "disabled"]
+TraceSkillMode = Literal["off", "auto", "manual"]
 TraceIntentKind = Literal[
     "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ]
 TraceRouteKind = Literal["knowledge", "mcp", "direct"]
+
+_PROGRESS_OBSERVER: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "trace_progress_observer", default=None,
+)
+
+
+@contextmanager
+def observe_trace_progress(observer: Callable[[dict[str, Any]], None] | None) -> Iterator[None]:
+    """Subscribe only the current worker operation, and always restore its context."""
+    token = _PROGRESS_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _PROGRESS_OBSERVER.reset(token)
+
+
+def _publish_progress(payload: dict[str, Any]) -> None:
+    observer = _PROGRESS_OBSERVER.get()
+    if observer is None:
+        return
+    try:
+        observer(payload)
+    except Exception:
+        # A disconnected UI or failed optional subscriber must not retry work or
+        # discard an otherwise useful answer. Do not log any payload content.
+        _LOGGER.warning("trace_progress_unavailable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +112,10 @@ class TraceEvent:
     intent_kind: TraceIntentKind | None = None
     route_kind: TraceRouteKind | None = None
     reason_code: str | None = None
+    skill_mode: TraceSkillMode | None = None
+    selected_skill_id: str | None = None
+    strategy_id: str | None = None
+    step_id: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class TurnTrace:
@@ -108,6 +144,10 @@ class _PendingEvent:
     started: float | None
     tool_name: str | None
     tool_call_id: str | None
+    skill_mode: TraceSkillMode | None = None
+    selected_skill_id: str | None = None
+    strategy_id: str | None = None
+    step_id: str | None = None
 
 
 class TraceRecorder:
@@ -178,6 +218,10 @@ class TraceRecorder:
         *,
         tool_name: str | None = None,
         tool_call_id: str | None = None,
+        skill_mode: TraceSkillMode | None = None,
+        selected_skill_id: str | None = None,
+        strategy_id: str | None = None,
+        step_id: str | None = None,
     ) -> int:
         """Start an event and return its recorder-local opaque handle."""
 
@@ -195,7 +239,23 @@ class TraceRecorder:
             started=now,
             tool_name=self._bounded(tool_name),
             tool_call_id=self._bounded(tool_call_id),
+            skill_mode=skill_mode,
+            selected_skill_id=self._bounded(selected_skill_id),
+            strategy_id=self._bounded(strategy_id),
+            step_id=self._bounded(step_id),
         )
+        # Deliberately enumerate safe public fields rather than forward caller
+        # kwargs; prompts, raw tool arguments and evidence never enter this API.
+        _publish_progress({
+            "sequence": handle, "stage": stage, "initiator": initiator,
+            "status": "running",
+            "started_offset_ms": self._milliseconds(self._started, now),
+            "tool_name": self._bounded(tool_name),
+            "skill_mode": skill_mode,
+            "selected_skill_id": self._bounded(selected_skill_id),
+            "strategy_id": self._bounded(strategy_id),
+            "step_id": self._bounded(step_id),
+        })
         return handle
 
     def finish_event(
@@ -210,6 +270,10 @@ class TraceRecorder:
         intent_kind: TraceIntentKind | None = None,
         route_kind: TraceRouteKind | None = None,
         reason_code: str | None = None,
+        skill_mode: TraceSkillMode | None = None,
+        selected_skill_id: str | None = None,
+        strategy_id: str | None = None,
+        step_id: str | None = None,
     ) -> TraceEvent | None:
         """Finish one event; events omitted by the cap return ``None``."""
 
@@ -239,9 +303,27 @@ class TraceRecorder:
             intent_kind=intent_kind,
             route_kind=route_kind,
             reason_code=self._bounded(reason_code),
+            skill_mode=skill_mode if skill_mode is not None else pending.skill_mode,
+            selected_skill_id=self._bounded(selected_skill_id) if selected_skill_id is not None else pending.selected_skill_id,
+            strategy_id=self._bounded(strategy_id) if strategy_id is not None else pending.strategy_id,
+            step_id=self._bounded(step_id) if step_id is not None else pending.step_id,
         )
         self._events.append(event)
+        self._publish_finished(event)
         return event
+
+    @staticmethod
+    def _publish_finished(event: TraceEvent) -> None:
+        try:
+            payload = _event_to_dict(event, "progress")
+        except (TypeError, ValueError):
+            _LOGGER.warning("trace_progress_unavailable")
+            return
+        # Tool call IDs and index fingerprints are useful in the final trace,
+        # but unnecessary for the live stage indicator.
+        payload.pop("tool_call_id", None)
+        payload.pop("index_version", None)
+        _publish_progress(payload)
 
     def mark_skill_prepared(self, skill_id: str | None) -> None:
         self._ensure_active()
@@ -270,7 +352,7 @@ class TraceRecorder:
                 "interrupted": _TURN_INTERRUPTED,
             }.get(outcome, _UNFINISHED_EVENT)
             for handle, pending in self._pending.items():
-                self._events.append(TraceEvent(
+                event = TraceEvent(
                     sequence=pending.sequence,
                     stage=pending.stage,
                     initiator=pending.initiator,
@@ -280,7 +362,13 @@ class TraceRecorder:
                     tool_name=pending.tool_name,
                     tool_call_id=pending.tool_call_id,
                     error_code=self._bounded(pending_error_code),
-                ))
+                    skill_mode=pending.skill_mode,
+                    selected_skill_id=pending.selected_skill_id,
+                    strategy_id=pending.strategy_id,
+                    step_id=pending.step_id,
+                )
+                self._events.append(event)
+                self._publish_finished(event)
                 self._finished_handles.add(handle)
             self._pending.clear()
         self._snapshot = TurnTrace(
@@ -331,12 +419,13 @@ _EVENT_FIELDS = {
     "index_version",
     "error_code",
 }
-_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code"}
-_TRACE_STAGES = frozenset(("planning", "plan_step", "classify", "intent", "route", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
+_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code", "skill_mode", "selected_skill_id", "strategy_id", "step_id"}
+_TRACE_STAGES = frozenset(("planning", "plan_step", "classify", "intent", "route", "initial_retrieval", "skill_select", "skill_retrieval", "skill_prepare", "model", "tool", "finalize"))
 _TRACE_INITIATORS = frozenset(("program", "model"))
 _TRACE_STATUSES = frozenset(("success", "empty", "error", "skipped"))
 _TRACE_OUTCOMES = frozenset(("completed", "failed", "interrupted"))
-_TRACE_DECISION_SOURCES = frozenset(("rules", "model", "fallback"))
+_TRACE_DECISION_SOURCES = frozenset(("rules", "model", "fallback", "manual", "disabled"))
+_TRACE_SKILL_MODES = frozenset(("off", "auto", "manual"))
 _TRACE_INTENT_KINDS = frozenset((
     "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ))
@@ -408,6 +497,13 @@ def _event_to_dict(event: TraceEvent, label: str) -> dict[str, Any]:
             if event.route_kind is not None else None
         ),
         "reason_code": _public_string(event.reason_code, f"{label}.reason_code"),
+        "skill_mode": (
+            _enum(event.skill_mode, _TRACE_SKILL_MODES, f"{label}.skill_mode")
+            if event.skill_mode is not None else None
+        ),
+        "selected_skill_id": _public_string(event.selected_skill_id, f"{label}.selected_skill_id"),
+        "strategy_id": _public_string(event.strategy_id, f"{label}.strategy_id"),
+        "step_id": _public_string(event.step_id, f"{label}.step_id"),
     }
 
 
@@ -495,6 +591,13 @@ def trace_from_dict(value: Any) -> TurnTrace:
                 if item.get("route_kind") is not None else None
             ),
             reason_code=_public_string(item.get("reason_code"), f"{label}.reason_code"),
+            skill_mode=(
+                _enum(item["skill_mode"], _TRACE_SKILL_MODES, f"{label}.skill_mode")
+                if item.get("skill_mode") is not None else None
+            ),
+            selected_skill_id=_public_string(item.get("selected_skill_id"), f"{label}.selected_skill_id"),
+            strategy_id=_public_string(item.get("strategy_id"), f"{label}.strategy_id"),
+            step_id=_public_string(item.get("step_id"), f"{label}.step_id"),
         ))
     events_truncated = value["events_truncated"]
     if not isinstance(events_truncated, bool):

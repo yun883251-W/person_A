@@ -12,10 +12,11 @@ import ast
 import re
 from collections import deque
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from ..schemas import RetrievalResult
+from .code_analysis import extract_visible_code
 
 
 RetrievalOperation = Literal["search", "read_section"]
@@ -115,6 +116,8 @@ class SkillRetrievalOutcome:
     step_results: tuple[RetrievalStepResult, ...] = ()
     index_version: str | None = None
     retained_chunk_ids: tuple[str, ...] = ()
+    target_chunk_ids: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    query_attempted_targets: tuple[str, ...] = ()
 
     @property
     def error(self) -> int:
@@ -137,7 +140,6 @@ ToolResult = Mapping[str, Any]
 SearchExecutor = Callable[[str], ToolResult]
 SectionExecutor = Callable[[str], ToolResult]
 
-_CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n([\s\S]*?)(?:```|$)", re.I)
 _PATH_ONLY = re.compile(r"^\s*(?:[A-Za-z]:)?[^\n]+\.(?:py|pyi)\s*$", re.I)
 _COMPARISON_PATTERNS = (
     re.compile(
@@ -197,7 +199,10 @@ def _comparison_subjects(question: str) -> tuple[str, ...]:
         match = pattern.search(question)
         if match is None:
             continue
-        values = tuple(_clean_subject(value) for value in match.groups())
+        values = tuple(_clean_subject(re.sub(
+            r"(?:的)?(?:区别|差异|异同|优缺点|适用场景|如何选择|哪个好)(?:是什么|有哪些|是什么呢)?$",
+            "", _clean_subject(value),
+        )) for value in match.groups())
         if (
             len(values) == 2
             and all(values)
@@ -208,16 +213,10 @@ def _comparison_subjects(question: str) -> tuple[str, ...]:
 
 
 def _visible_code(question: str, visible_context: str) -> tuple[str, str]:
-    matches = _CODE_FENCE.findall(question)
-    if matches:
-        return "\n".join(matches)[:12_000], "question"
-    matches = _CODE_FENCE.findall(visible_context)
-    if matches:
-        return "\n".join(matches)[:12_000], "visible_context"
-    return "", "question"
+    return extract_visible_code(question, visible_context)
 
 
-def _code_identifiers(code: str) -> tuple[str, ...]:
+def _code_identifiers(code: str, question: str = "") -> tuple[str, ...]:
     if not code:
         return ()
     identifiers: list[str] = []
@@ -228,9 +227,9 @@ def _code_identifiers(code: str) -> tuple[str, ...]:
 
     try:
         tree = ast.parse(code)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         candidates = re.findall(
-            r"\b[A-Z][A-Za-z0-9_]*\b|\b[a-zA-Z_]\w*(?:\.\w+)+",
+            r"\b[a-zA-Z_]\w*(?:\.\w+)*(?=\s*\()|\b[A-Z][A-Za-z0-9_]*\b|\b[a-zA-Z_]\w*(?:\.\w+)+",
             code,
         )
         for value in candidates:
@@ -248,21 +247,35 @@ def _code_identifiers(code: str) -> tuple[str, ...]:
             parts.append(node.id)
         return ".".join(reversed(parts))
 
-    for node in ast.walk(tree):
+    nodes = list(ast.walk(tree))
+    aliases: dict[str, str] = {}
+    imported: list[str] = []
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                add(alias.name)
+                aliases[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+                imported.append(alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            add(node.module)
             for alias in node.names:
-                add(f"{node.module}.{alias.name}")
-        elif isinstance(node, ast.Call):
-            add(dotted(node.func))
-        elif isinstance(node, ast.ClassDef):
+                if alias.name != "*":
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+                    imported.append(f"{node.module}.{alias.name}")
+    # Actual calls come before unrelated imports. A bounded visible question can
+    # then prioritize a named call without treating source text as instructions.
+    for node in nodes:
+        if isinstance(node, ast.Call):
+            name = dotted(node.func)
+            root, separator, rest = name.partition(".")
+            add(aliases.get(root, root) + (separator + rest if separator else ""))
+    for node in nodes:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             add(node.name)
-        if len(identifiers) >= 6:
-            break
-    return tuple(identifiers)
+    for name in imported:
+        add(name)
+    focus_lines = [line for line in question.splitlines() if re.search(r"解释|解读|分析|为什么|如何|explain|why|how", line, re.I)]
+    focus = " ".join(focus_lines)[:2000]
+    identifiers.sort(key=lambda value: 0 if re.search(r"(?<![\w])" + re.escape(value.split(".")[-1]) + r"(?![\w])", focus, re.I) else 1)
+    return tuple(identifiers[:6])
 
 
 def analyze_retrieval_question(
@@ -301,7 +314,7 @@ def analyze_retrieval_question(
                 else "visible_code_missing"
             )
             return RetrievalAnalysis((), focus, clarification_reason=reason)
-        identifiers = _code_identifiers(code)
+        identifiers = _code_identifiers(code, cleaned)
         if not identifiers:
             return RetrievalAnalysis(
                 (), focus, clarification_reason="code_identifiers_missing"
@@ -541,6 +554,7 @@ def execute_retrieval_plan(
     }
     expected_version: str | None = None
     search_count = 0
+    attempted_targets: list[str] = []
     budget_limited = "budget_limited" in plan.reason_code
 
     for step in plan.steps:
@@ -575,6 +589,7 @@ def execute_retrieval_plan(
             if search_count > 0:
                 state.followup_searches += 1
             search_count += 1
+            attempted_targets.extend(target for target in step.targets if target not in attempted_targets)
             output = search(step.query or "")
             returned = _chunk_ids(output, "results")
         else:
@@ -626,7 +641,21 @@ def execute_retrieval_plan(
         )
         for target in step.targets:
             hits = target_hits.setdefault(target, [])
-            hits.extend(chunk_id for chunk_id in returned if chunk_id not in hits)
+            for chunk_id in returned:
+                result = state.evidence.get(chunk_id)
+                if chunk_id in hits or result is None:
+                    continue
+                if target.startswith("object:"):
+                    subject = target.removeprefix("object:")
+                    visible_text = "\n".join((*result.chunk.heading_path, result.chunk.text))
+                    # Running a query for A/B is not evidence for both objects.
+                    # Conservative lexical coverage, never a semantic guarantee.
+                    pattern = re.escape(subject)
+                    if subject.isascii():
+                        pattern = r"(?<![A-Za-z0-9_])" + pattern + r"(?![A-Za-z0-9_])"
+                    if re.search(pattern, visible_text, re.I) is None:
+                        continue
+                hits.append(chunk_id)
 
     retained = _retained_ids(
         target_hits,
@@ -649,7 +678,7 @@ def execute_retrieval_plan(
         for result in step_results
     )
     missing_targets = tuple(
-        target for target in plan.coverage_targets if not target_hits.get(target)
+        target for target in plan.coverage_targets if not retained_set.intersection(target_hits.get(target, ()))
     )
     return SkillRetrievalOutcome(
         executed=sum(result.status == "executed" for result in finalized),
@@ -661,6 +690,30 @@ def execute_retrieval_plan(
         step_results=finalized,
         index_version=expected_version,
         retained_chunk_ids=retained,
+        target_chunk_ids=tuple((target, tuple(ids)) for target, ids in target_hits.items()),
+        query_attempted_targets=tuple(attempted_targets),
+    )
+
+
+def reconcile_retrieval_outcome(
+    outcome: SkillRetrievalOutcome, *, available_chunk_ids: Sequence[str],
+) -> SkillRetrievalOutcome:
+    """Use the exact final source map after serialized-context trimming.
+
+    A successful search and a retained candidate do not imply that the answering
+    model received that candidate. Keep this distinction for every target.
+    """
+    available = set(available_chunk_ids)
+    retained = tuple(chunk_id for chunk_id in outcome.retained_chunk_ids if chunk_id in available)
+    retained_set = set(retained)
+    return replace(
+        outcome,
+        retained_chunk_ids=retained,
+        missing_targets=tuple(target for target, ids in outcome.target_chunk_ids if not retained_set.intersection(ids)),
+        budget_limited=outcome.budget_limited or len(retained) < len(outcome.retained_chunk_ids),
+        step_results=tuple(replace(item, retained_chunk_ids=tuple(
+            chunk_id for chunk_id in item.retained_chunk_ids if chunk_id in retained_set
+        )) for item in outcome.step_results),
     )
 
 
@@ -727,6 +780,8 @@ def retrieval_summary(
         "skipped_reason": skipped_reason,
         "coverage_missing": list(outcome.missing_targets),
         "coverage_is_retrieval_only": True,
+        "query_attempted_targets": list(outcome.query_attempted_targets),
+        "coverage_basis": "provided_evidence_lexical" if plan.strategy_id == "comparison" else "provided_evidence_from_query",
         "budget_limited": outcome.budget_limited,
     }
 

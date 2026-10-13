@@ -13,7 +13,7 @@ description: "根据知识库资料，比较 Python、LangChain、RAG、Agent �
 
 ## 获取足够证据
 
-先检查应用提供的 `RETRIEVAL_STRATEGY_SUMMARY`，区分已分别检索的对象与受预算限制的联合检索。不要重复已完成的查询；只针对 `coverage_missing` 中会影响比较结论的对象或维度补查。
+先检查应用提供的 `RETRIEVAL_STRATEGY_SUMMARY`，区分已分别检索的对象与受预算限制的联合检索。`query_attempted_targets` 只说明执行过查询；`coverage_missing` 按实际交给模型的片段计算，不能用被裁剪掉的材料回答。对象文字出现在片段中也不代表相关维度已有充分证据。不要重复已完成的查询；只对实际阅读后仍影响结论的对象或维度缺口补查，缺口不限于程序的保守提示。
 
 1. 优先复用本轮已提供的资料，找出能支持各对象及共同维度的内容。资料足够时直接比较，不为遵循流程重复检索。
 2. 只有关键证据缺失时，使用 `search_knowledge(query)` 针对缺失对象、维度或关系检索；需要上下文时使用 `read_knowledge_section(chunk_id)`，其 `chunk_id` 必须已在本轮返回并登记。结合剩余调用预算选择最有价值的查询，不强制为每个对象分别调用工具。
