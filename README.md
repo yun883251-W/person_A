@@ -251,6 +251,8 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`knowledge
 
 ## 待统一验收
 
+自动 Skill 选择与技能检索策略目前仅有开发 TODO，尚未改变现有手动技能行为。开发顺序、模式兼容性和入口改动位置见 [AUTO_SKILL_TODO.md](AUTO_SKILL_TODO.md)；两个新模块只有说明与注释，验证留待实现完成后统一进行。
+
 `src/knowledge_agent/agent/prompts.py` 已与 Agent 统一为 `[S1]` 来源标记协议；最终文档名称、小节和行号由程序校验并生成，引用正确性仍需在真实问答中核对。
 
 `evaluation/questions.jsonl` 保留 5 条人工验收草案，覆盖概念比较、检索与生成质量、资料不足、跨章节检索及无答案场景。每行记录问题、期望来源、回答要点和验收标准，目前没有执行结果或通过率。

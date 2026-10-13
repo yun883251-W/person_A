@@ -1,12 +1,13 @@
-"""应用级 Skill 发现与加载模块（待开发）。
+"""应用级 Skill 发现与加载模块。
 
 模块功能：发现项目 skills/ 下的技能，读取元数据与说明，供 Agent 按需使用。
 输入：技能根目录、用户选择的 skill_id，以及应用允许的工具集合。
 输出：轻量技能目录、被选中技能的完整说明和对应工具限制。
 
 这里的技能服务于 Person_A 学习助手，不安装到 Codex，也不参与知识库向量化。
-当前仅包含 TODO，创建 SKILL.md 后不会自动改变现有 Agent 行为。
-第一版由用户手动选择技能；未选择时维持普通知识库问答。
+已实现发现、加载和提示准备；当前仍由用户手动选择，未选择时维持普通问答。
+自动选择及检索策略仅规划 TODO，见 AUTO_SKILL_TODO.md、
+agent/skill_selector.py 与 knowledge/skill_retrieval.py，尚未接入运行。
 """
 
 from __future__ import annotations
