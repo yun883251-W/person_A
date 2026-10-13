@@ -15,6 +15,8 @@ description: "依据知识库讲解 Python、LangChain、RAG、Agent 或 LangGra
 
 ## 按证据组织讲解
 
+先检查应用提供的 `RETRIEVAL_STRATEGY_SUMMARY`。其中已执行的查询不要重复调用；仅当 `coverage_missing` 显示的缺口确实影响当前回答时，才针对该缺口补查。
+
 1. 先阅读本轮已经提供的知识库证据，找出定义、要解决的问题、工作过程及适用条件。资料充分时直接回答，不为完成流程重复检索。
 2. 有关键缺口时，调用 `search_knowledge(query=...)`，查询包含概念名与缺失点，例如用途、执行过程或示例。后续查询针对具体缺口调整，避免重复相同问题。
 3. 片段缺少前提或示例被截断时，调用 `read_knowledge_section(chunk_id=...)`。只使用本轮检索返回并登记的片段 ID，不能传文件路径、历史轮次 ID 或猜测的 ID。

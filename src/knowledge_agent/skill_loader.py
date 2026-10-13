@@ -5,9 +5,8 @@
 输出：轻量技能目录、被选中技能的完整说明和对应工具限制。
 
 这里的技能服务于 Person_A 学习助手，不安装到 Codex，也不参与知识库向量化。
-已实现发现、加载和提示准备；当前仍由用户手动选择，未选择时维持普通问答。
-自动选择及检索策略仅规划 TODO，见 AUTO_SKILL_TODO.md、
-agent/skill_selector.py 与 knowledge/skill_retrieval.py，尚未接入运行。
+已实现发现、加载、提示准备及技能检索策略；当前仍由用户手动选择，未选择时
+维持普通检索。自动选择仍见 AUTO_SKILL_TODO.md 与 agent/skill_selector.py。
 """
 
 from __future__ import annotations

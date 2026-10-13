@@ -48,6 +48,13 @@ from ..models import (
 )
 from .prompts import SYSTEM_PROMPT
 from ..knowledge.retrieval import KnowledgeRetriever
+from ..knowledge.skill_retrieval import (
+    SkillRetrievalOutcome,
+    SkillRetrievalPlan,
+    build_retrieval_plan,
+    execute_retrieval_plan,
+    retrieval_summary,
+)
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult, RouteSummary
 from ..session_store import (
     SessionNotFoundError,
@@ -234,6 +241,7 @@ class KnowledgeAgent:
         self,
         question: str,
         *,
+        skill_id: str | None = None,
         retrieval_question: str | None = None,
         trace_recorder: TraceRecorder | None = None,
         context: Sequence[object] = (),
@@ -250,9 +258,12 @@ class KnowledgeAgent:
             context=context,
             model=self.model,
             max_model_calls=self.config.max_model_calls,
+            max_tool_calls=self.config.max_tool_calls,
+            max_followup_searches=self.config.max_followup_searches,
             max_history_turns=self.config.max_history_turns,
             intent_decision=intent_decision,
             intent_model_calls=intent_model_calls,
+            skill_id=skill_id,
         )
 
     def prepare_model_turn(
@@ -415,6 +426,9 @@ class KnowledgeAgent:
                     step.goal, retriever=self.retriever, max_context_chars=budget.context_chars,
                     trace_recorder=trace, intent_decision=decision,
                     max_model_calls=budget.model_calls,
+                    max_tool_calls=budget.tool_calls,
+                    max_followup_searches=budget.followup_searches,
+                    skill_id=skill_id,
                 )
                 state = prepared.state
                 if prepared.terminal_result is not None:
@@ -556,6 +570,7 @@ class KnowledgeAgent:
             return result
         prepared = self.prepare_question(
             question,
+            skill_id=skill_id,
             trace_recorder=trace_recorder,
             context=turns,
             intent_decision=route.intent,
@@ -745,6 +760,9 @@ class TurnState:
     status: AnswerStatus | None = None
     stop_reason: str | None = None
     retrieval_error_code: str | None = None
+    skill_retrieval_plan: SkillRetrievalPlan | None = None
+    skill_retrieval_outcome: SkillRetrievalOutcome | None = None
+    skill_retrieval_summary: dict[str, Any] | None = None
     trace_recorder: TraceRecorder | None = None
 
     def __post_init__(self) -> None:
@@ -957,7 +975,12 @@ def create_section_executor(
     return read_knowledge_section
 
 
-def prepare_evidence_context(state: TurnState, *, max_chars: int) -> str:
+def prepare_evidence_context(
+    state: TurnState,
+    *,
+    max_chars: int,
+    preferred_chunk_ids: Sequence[str] | None = None,
+) -> str:
     """Build bounded, source-preserving reference material for one turn.
 
     Results are deduplicated by their canonical chunk ID and considered in
@@ -994,10 +1017,15 @@ def prepare_evidence_context(state: TurnState, *, max_chars: int) -> str:
         next_source_number += 1
         return source_id
 
-    ranked: list[tuple[int, RetrievalResult]] = list(
-        enumerate(state.evidence.values())
-    )
-    ranked.sort(key=lambda item: (-item[1].fused_score, item[0]))
+    if preferred_chunk_ids is None:
+        ranked: list[tuple[int, RetrievalResult]] = list(enumerate(state.evidence.values()))
+        ranked.sort(key=lambda item: (-item[1].fused_score, item[0]))
+    else:
+        ranked = [
+            (index, state.evidence[chunk_id])
+            for index, chunk_id in enumerate(preferred_chunk_ids)
+            if chunk_id in state.evidence
+        ]
 
     seen_chunk_ids: set[str] = set()
     blocks: list[str] = []
@@ -1108,9 +1136,12 @@ def prepare_question(
     context: Sequence[object] = (),
     model: object | None = None,
     max_model_calls: int = 4,
+    max_tool_calls: int = 6,
+    max_followup_searches: int = 2,
     max_history_turns: int = 6,
     intent_decision: IntentDecision | None = None,
     intent_model_calls: int = 0,
+    skill_id: str | None = None,
 ) -> PreparedQuestion:
     """Prepare one question and enforce retrieval before knowledge answers.
 
@@ -1128,6 +1159,14 @@ def prepare_question(
         raise TypeError("max_model_calls must be an integer")
     if max_model_calls < 0:
         raise ValueError("max_model_calls must be non-negative")
+    if isinstance(max_tool_calls, bool) or not isinstance(max_tool_calls, int):
+        raise TypeError("max_tool_calls must be an integer")
+    if max_tool_calls < 1:
+        raise ValueError("max_tool_calls must be positive")
+    if isinstance(max_followup_searches, bool) or not isinstance(max_followup_searches, int):
+        raise TypeError("max_followup_searches must be an integer")
+    if max_followup_searches < 0:
+        raise ValueError("max_followup_searches must be non-negative")
     if not isinstance(intent_model_calls, int) or isinstance(intent_model_calls, bool):
         raise TypeError("intent_model_calls must be an integer")
     if intent_model_calls < 0 or intent_model_calls > max_model_calls:
@@ -1247,60 +1286,99 @@ def prepare_question(
             stop_reason="model_call_budget_exhausted",
         )
 
-    search = create_search_executor(retriever, state)
-    state.tool_calls += 1
-    retrieval_event = (
-        trace_recorder.start_event(
-            "initial_retrieval",
-            "program",
-            tool_name="search_knowledge",
-        )
-        if trace_recorder is not None
-        else None
+    visible_context = "\n".join(
+        str(getattr(item, "question", ""))
+        for item in context[-max_history_turns:]
+        if getattr(item, "question", None)
+    )[:max_context_chars]
+    remaining_searches = min(
+        max_tool_calls - state.tool_calls,
+        1 + max_followup_searches - state.followup_searches,
     )
-    search_result = search(cleaned_retrieval_question)
-    if trace_recorder is not None and retrieval_event is not None:
-        result_status = search_result.get("status")
-        raw_results = search_result.get("results")
-        result_count = len(raw_results) if isinstance(raw_results, list) else None
-        error = search_result.get("error")
-        error_code = error.get("code") if isinstance(error, Mapping) else None
-        trace_recorder.finish_event(
-            retrieval_event,
-            (
-                "error"
-                if result_status == "error"
-                else "empty"
-                if result_status == "empty"
-                else "success"
-            ),
-            result_count=result_count,
-            index_version=search_result.get("index_version"),
-            error_code=error_code,
+    plan = build_retrieval_plan(
+        cleaned_retrieval_question,
+        selected_skill_id=skill_id,
+        remaining_searches=max(0, remaining_searches),
+        visible_context=visible_context,
+    )
+    state.skill_retrieval_plan = plan
+    if not plan.steps:
+        clarification = (
+            "请提供需要解读的代码片段；仅有文件路径时，当前知识工具不会读取该文件。"
+            if plan.reason_code in {"code_path_without_visible_code", "visible_code_missing", "code_identifiers_missing"}
+            else "请明确要比较的两个对象，我再分别检索同一维度的资料。"
         )
-    if state.retrieval_status == "failed":
-        index_missing = state.retrieval_error_code == "index_not_built"
         return _terminal_preparation(
-            state,
-            kind,
-            answer=(
-                "知识库索引尚未建立，当前无法回答这个问题。"
-                if index_missing
-                else "当前无法取得知识库资料，请稍后重试。"
-            ),
-            status="service_error",
-            stop_reason=("index_not_built" if index_missing else "initial_retrieval_failed"),
-        )
-    if state.retrieval_status == "empty":
-        return _terminal_preparation(
-            state,
-            kind,
-            answer="当前知识库资料不足以回答这个问题。",
-            status="insufficient_evidence",
-            stop_reason="initial_retrieval_empty",
+            state, "needs_clarification", answer=clarification,
+            status="needs_clarification", stop_reason=plan.reason_code,
         )
 
-    evidence_context = prepare_evidence_context(state, max_chars=max_context_chars)
+    raw_search = create_search_executor(retriever, state)
+    raw_section = create_section_executor(retriever, state)
+    search_number = 0
+
+    def traced_search(query: str) -> Mapping[str, Any]:
+        nonlocal search_number
+        search_number += 1
+        handle = (
+            trace_recorder.start_event(
+                "initial_retrieval" if search_number == 1 else "tool",
+                "program", tool_name="search_knowledge",
+            )
+            if trace_recorder is not None else None
+        )
+        output = raw_search(query)
+        if trace_recorder is not None and handle is not None:
+            raw_results = output.get("results")
+            error = output.get("error")
+            code = error.get("code") if isinstance(error, Mapping) else None
+            output_status = output.get("status")
+            trace_recorder.finish_event(
+                handle,
+                "error" if output_status == "error" else "empty" if output_status == "empty" else "success",
+                result_count=len(raw_results) if isinstance(raw_results, list) else None,
+                index_version=output.get("index_version"),
+                error_code=code,
+            )
+        return output
+
+    outcome = execute_retrieval_plan(
+        plan,
+        state=state,
+        search=traced_search,
+        read_section=raw_section,
+        max_tool_calls=max_tool_calls,
+        max_followup_searches=max_followup_searches,
+        max_context_chars=max_context_chars,
+    )
+    state.skill_retrieval_outcome = outcome
+    state.skill_retrieval_summary = retrieval_summary(plan, outcome)
+
+    if not outcome.retained_chunk_ids:
+        if outcome.errors and outcome.executed == 0:
+            index_missing = any(item.stop_reason == "index_not_built" for item in outcome.step_results)
+            return _terminal_preparation(
+                state, kind,
+                answer=("知识库索引尚未建立，当前无法回答这个问题。" if index_missing else "当前无法取得知识库资料，请稍后重试。"),
+                status="service_error",
+                stop_reason="index_not_built" if index_missing else "initial_retrieval_failed",
+            )
+        if outcome.skipped and outcome.executed == 0:
+            return _terminal_preparation(
+                state, kind, answer="本轮工具调用预算不足，尚未取得可用资料。",
+                status="limit_reached", stop_reason="tool_budget_exhausted",
+            )
+        return _terminal_preparation(
+            state, kind, answer="当前知识库资料不足以回答这个问题。",
+            status="insufficient_evidence", stop_reason="initial_retrieval_empty",
+        )
+
+    state.retrieval_status = "results_found"
+    evidence_context = prepare_evidence_context(
+        state,
+        max_chars=max_context_chars,
+        preferred_chunk_ids=outcome.retained_chunk_ids,
+    )
     if not evidence_context:
         return _terminal_preparation(
             state,
@@ -1464,6 +1542,15 @@ def prepare_model_turn(
                 content=(
                     f"USER_QUESTION\n{state.original_question}\nEND_USER_QUESTION\n\n"
                     f"{prepared.evidence_context}"
+                    + (
+                        "\n\nRETRIEVAL_STRATEGY_SUMMARY\n"
+                        + json.dumps(state.skill_retrieval_summary, ensure_ascii=False)
+                        + "\nEND_RETRIEVAL_STRATEGY_SUMMARY\n"
+                        "The listed searches are already complete. Use further knowledge tools "
+                        "only for a material coverage gap and within the remaining budget."
+                        if state.skill_retrieval_summary is not None
+                        else ""
+                    )
                 )
             ),
         )

@@ -10,63 +10,17 @@
 接入映射见项目根目录 AUTO_SKILL_TODO.md；先完成 agent/skill_selector.py 的契约。
 """
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Literal
-
-
-RetrievalOperation = Literal["search", "read_section"]
-RetrievalStepStatus = Literal["executed", "skipped", "error"]
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalStep:
-    """One planned knowledge-tool operation."""
-
-    step_id: str
-    operation: RetrievalOperation
-    target: str
-    required: bool
-    query: str | None = None
-    anchor_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SkillRetrievalPlan:
-    """Immutable retrieval strategy selected for one knowledge step."""
-
-    strategy_id: str
-    selected_skill_id: str | None
-    steps: tuple[RetrievalStep, ...]
-    coverage_targets: tuple[str, ...]
-    reason_code: str
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalStepResult:
-    """Execution result for a single planned operation."""
-
-    step_id: str
-    status: RetrievalStepStatus
-    returned_chunk_ids: tuple[str, ...] = ()
-    retained_chunk_ids: tuple[str, ...] = ()
-    stop_reason: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SkillRetrievalOutcome:
-    """Aggregate execution and coverage result for a retrieval plan."""
-
-    step_results: tuple[RetrievalStepResult, ...]
-    executed: int
-    skipped: int
-    errors: int
-    missing_targets: tuple[str, ...] = ()
-    budget_limited: bool = False
-
 
 # 第一阶段：契约、策略注册与分析对象。
+
+# TODO 01：定义不可变策略计划与逐步结果契约。
+# SkillRetrievalPlan：strategy_id、selected_skill_id、steps、coverage_targets、reason_code。
+# RetrievalStep：step_id、operation=search/read_section、query 或已登记 anchor ID、
+# target 标签、required/optional 标记；一个步骤只代表一次实际工具操作。
+# RetrievalStepResult：status、returned_chunk_ids、retained_chunk_ids、stop_reason。
+# SkillRetrievalOutcome：executed/skipped/error 统计、缺失目标、是否发生预算裁剪。
+# 数据结构不保存新造的片段正文/行号；原始内容与出处继续来自 RetrievalResult。
+# 规划查询与实际执行分开，未执行的步骤不能显示“已检索”。
 
 # TODO 02：建立固定策略映射和普通模式。
 # None -> default；concept-explanation -> concept；concept-comparison -> comparison；
