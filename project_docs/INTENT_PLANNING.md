@@ -2,6 +2,8 @@
 
 本文说明本次两项开发：区分咨询问题与工具操作，以及在同一轮问答中执行有依赖关系的多个任务。**本次只开发，未运行测试、语法检查、服务、页面或模型联调，也未安装依赖；下文描述代码行为与使用方式，不代表已经验收通过。**
 
+本文件已从根目录归档至 `project_docs/`，代码职责和路径调整见 [目录迁移说明](README.md#本次目录迁移)。启动命令及知识库 `docs/` 位置不变，本次整理也未执行测试。
+
 ## 1. 区分咨询与操作
 
 意图识别先判断用户是否明确发出操作指令，再决定是否进入工具流程。提到工具名称、MBTI 或评分，不应单独成为执行工具的依据。
@@ -23,14 +25,14 @@
 
 相关文件：
 
-- [`agent/assessment.py`](src/knowledge_agent/agent/assessment.py)：完整控制指令与测试状态转换。
-- [`agent/intent.py`](src/knowledge_agent/agent/intent.py)：知识咨询、工具请求、追问与直接回复的意图边界。
-- [`agent/router.py`](src/knowledge_agent/agent/router.py)：根据有效意图和当前可用工具确定执行路线。
-- [`agent/runner.py`](src/knowledge_agent/agent/runner.py)：将会话状态与上述节点接入一次问答。
+- [`agent/assessment.py`](../src/knowledge_agent/agent/assessment.py)：完整控制指令与测试状态转换。
+- [`agent/intent.py`](../src/knowledge_agent/agent/intent.py)：知识咨询、工具请求、追问与直接回复的意图边界。
+- [`agent/router.py`](../src/knowledge_agent/agent/router.py)：根据有效意图和当前可用工具确定执行路线。
+- [`agent/runner.py`](../src/knowledge_agent/agent/runner.py)：将会话状态与上述节点接入一次问答。
 
 ## 2. 在一轮内执行多个步骤
 
-新增 [`agent/planner.py`](src/knowledge_agent/agent/planner.py)，把明确包含多个任务的问题转换为受约束的步骤列表，再由宿主程序执行。简单问题继续使用原有问答流程，不为每个问题额外调用规划模型。
+新增 [`agent/planner.py`](../src/knowledge_agent/agent/planner.py)，把明确包含多个任务的问题转换为受约束的步骤列表，再由宿主程序执行。简单问题继续使用原有问答流程，不为每个问题额外调用规划模型。
 
 ```mermaid
 flowchart TD
@@ -111,11 +113,11 @@ MBTI 的开始、逐题答题、暂停、恢复和评分继续由确定性流程
 
 ## 保存与页面展示
 
-[`schemas.py`](src/knowledge_agent/schemas.py) 的 `AnswerResult.plan` 记录公开摘要，包含版本、整体状态及步骤列表。每一步仅保存编号、目标、执行方式、依赖、结果状态、调用次数和停止原因，不包含模型内部推理或完整工具响应。
+[`schemas.py`](../src/knowledge_agent/schemas.py) 的 `AnswerResult.plan` 记录公开摘要，包含版本、整体状态及步骤列表。每一步仅保存编号、目标、执行方式、依赖、结果状态、调用次数和停止原因，不包含模型内部推理或完整工具响应。
 
-[`session_store.py`](src/knowledge_agent/session_store.py) 在原 `turns.result_json` 中保存可选的 `plan` 字段；读取旧记录时该字段为 `None`，无需新增数据库或升级表结构。摘要跟随可保存的完整问答轮一起提交，原有服务失败、达到调用上限、会话写入失败等未保存结果规则继续适用。
+[`session_store.py`](../src/knowledge_agent/session_store.py) 在原 `turns.result_json` 中保存可选的 `plan` 字段；读取旧记录时该字段为 `None`，无需新增数据库或升级表结构。摘要跟随可保存的完整问答轮一起提交，原有服务失败、达到调用上限、会话写入失败等未保存结果规则继续适用。
 
-[`api.py`](src/knowledge_agent/api.py) 的当前回答与历史接口均返回同一类型的 `plan`，无需新增 API 路径。路由仍为 `knowledge`、`mcp`、`direct` 三种；多步骤结果使用现有路由，并以 `multi_step_plan` 说明执行原因。
+[`http/`](../src/knowledge_agent/http/) 的当前回答与历史接口均返回同一类型的 `plan`，无需新增 API 路径；[`api.py`](../src/knowledge_agent/api.py) 保留兼容启动入口。路由仍为 `knowledge`、`mcp`、`direct` 三种；多步骤结果使用现有路由，并以 `multi_step_plan` 说明执行原因。
 
 网页回答下方的“任务执行步骤”展示各步骤目标、依赖、状态、调用次数，以及从带 `step_id` 的 trace 读取的技能模式、选择原因、检索策略和是否进入回答模型。顶层最近一次技能状态不代表全部步骤。技能信息作为 trace 的可选事件字段保存在原结果 JSON，旧记录无需补写。
 

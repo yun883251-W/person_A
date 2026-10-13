@@ -14,6 +14,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from knowledge_agent import api
+from knowledge_agent.http import app as http_app
 
 
 class _MissingSessionStore:
@@ -52,7 +53,7 @@ def web_client(
     (assets / "app.js").write_text('console.log("page loaded");', encoding="utf-8")
     (tmp_path / "web" / "private.txt").write_text("private-web-data", encoding="utf-8")
     (tmp_path / "private.txt").write_text("private-project-data", encoding="utf-8")
-    monkeypatch.setattr(api, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(http_app, "PROJECT_ROOT", tmp_path)
     runtime = _DummyRuntime()
     with TestClient(api.create_app(runtime_factory=lambda: runtime)) as client:
         assert runtime.initialized

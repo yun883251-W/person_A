@@ -16,7 +16,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .agent.runner import KnowledgeAgentApplication
+    from .application import KnowledgeAgentApplication
     from .knowledge.ingest import IngestRunResult
     from .schemas import AnswerResult
 

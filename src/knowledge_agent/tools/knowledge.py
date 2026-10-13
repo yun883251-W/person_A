@@ -1,11 +1,11 @@
-"""知识库工具封装模块（待开发）。
+"""知识库搜索和小节读取工具。
 
 模块功能：集中定义 search_knowledge 与 read_knowledge_section 两个已有工具。
 输入：KnowledgeRetriever，以及当前问答轮所需的检索和来源上下文。
 输出：供注册器使用的工具定义与执行函数，以及可追溯的检索结果。
 
-开发以迁移 agent/runner.py 中现有实现为主，不重新实现向量化、检索或索引构建。
-当前文件只有 TODO，原有工具仍在 agent/runner.py 中正常运行。
+复用已有向量化、检索和索引服务，不重新实现入库流程。
+agent/preparation.py 负责当前回合的工具组装与上下文准备。
 """
 
 from __future__ import annotations

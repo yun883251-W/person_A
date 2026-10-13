@@ -1126,7 +1126,8 @@ RetrievalService = KnowledgeRetriever
 # 第二阶段：开发全部完成后统一验证。以下 TODO 暂不执行。
 
 # TODO 15：集中编写并执行离线功能测试。
-# 在 tests/test_retrieval.py 使用少量人工片段、可控向量和假的 Embedding 适配器。
+# 后续在 tests/unit/knowledge/ 补充检索用例，使用人工片段、可控向量和假的 Embedding 适配器。
+# 原测试占位文件已清理，待验证事项集中记录在 tests/README.md。
 # 覆盖索引加载、已知余弦排序、关键词命中、两路融合、去重与稳定排序。
 # 覆盖 top_k、一条渠道为空、重复文本位于不同文件、来源与原文位置对应。
 # 离线测试不依赖 Ollama 服务，也不读写项目真实索引。

@@ -4,7 +4,7 @@
 
 文档入库、检索、模型适配、Agent、意图识别、MCP 接入、MBTI 答题、命令行、HTTP API 和本地网页已有实现。**本次只开发，没有运行测试、语法检查、服务或模型联调，也没有安装依赖；新增接入仍待统一验收，不能据此认为已验证可用。**
 
-本次进一步细化咨询与操作的意图边界，并加入本轮最多 3 步、共享调用预算的任务规划。执行结果随回答保存，页面可展开“任务执行步骤”查看完成和跳过情况；简单问题继续使用原流程。实现边界、示例与待验收事项见 [意图边界与多步骤任务规划](INTENT_PLANNING.md)。**这两项同样只完成开发，尚未测试。**
+本次进一步细化咨询与操作的意图边界，并加入本轮最多 3 步、共享调用预算的任务规划。执行结果随回答保存，页面可展开“任务执行步骤”查看完成和跳过情况；简单问题继续使用原流程。实现边界、示例与待验收事项见 [意图边界与多步骤任务规划](project_docs/INTENT_PLANNING.md)。**这两项同样只完成开发，尚未测试。**
 
 ## 快速开始
 
@@ -161,17 +161,24 @@ python -m pip install -e ".[api,mcp]"
 
 答题进度与问答轮一起保存在现有 SQLite 的 `turns.result_json.assessment_state`，没有新建数据库或答题表；恢复会话时单独读取最新状态，不受模型历史窗口长度限制。清空或删除会话也会删除其中的答题记录。普通 MBTI 答题、评分与类型描述由程序调用 MCP，不消耗 DeepSeek 模型次数；知识问答仍走原检索与 DeepSeek 流程。
 
-这是源自 MindCare 项目、现内置于 Person_A 的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](MBTI_MCP.md)。
+这是源自 MindCare 项目、现内置于 Person_A 的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](project_docs/MBTI_MCP.md)。
 
 ## 项目结构
 
 ```text
 Person_A/
 ├── docs/                         # 本地 Markdown 知识文档
+├── project_docs/                 # 项目设计、实现记录与待验收清单
+│   ├── README.md                # 开发文档导航及本次迁移说明
+│   ├── INTENT_PLANNING.md       # 意图边界与多步骤任务规划
+│   ├── INTENT_MCP_TODO.md       # 意图与 MCP 初始开发计划存档
+│   ├── AUTO_SKILL_TODO.md       # 自动 Skill 实现记录与待验收项
+│   └── MBTI_MCP.md              # 内置 MBTI 接入说明
 ├── src/knowledge_agent/
 │   ├── __init__.py
 │   ├── cli.py                    # 建库、更新、单次与多轮问答入口
-│   ├── api.py                    # 同源网页、HTTP API 与单工作线程运行时
+│   ├── api.py                    # HTTP 兼容启动入口
+│   ├── application.py            # 应用生命周期、持久化会话与资源管理
 │   ├── config.py                 # 配置读取与校验
 │   ├── models.py                 # 对话与 Embedding 模型适配
 │   ├── schemas.py                # 片段、检索结果与回答的数据结构
@@ -180,7 +187,11 @@ Person_A/
 │   ├── evaluation.py             # 效果评估 TODO
 │   ├── agent/                    # Agent 执行流程、提示词与执行记录
 │   │   ├── __init__.py
-│   │   ├── runner.py             # 工具调用、会话管理与回答引用
+│   │   ├── runner.py             # KnowledgeAgent 单轮与多步编排入口
+│   │   ├── state.py              # 单轮状态与准备结果结构
+│   │   ├── preparation.py        # 技能选择、检索与模型上下文准备
+│   │   ├── model_loop.py         # 模型 / 工具循环及预算控制
+│   │   ├── answers.py            # 回答整理、引用校验与结果摘要
 │   │   ├── intent.py             # 意图识别节点
 │   │   ├── router.py             # 知识 / MCP / 直接回复路由
 │   │   ├── skill_selector.py     # 自动技能选择及本步快照
@@ -189,6 +200,18 @@ Person_A/
 │   │   ├── assessment.py         # 会话内 MBTI 答题状态与工具编排
 │   │   ├── prompts.py            # 问答约束与来源标记规则
 │   │   └── trace.py              # 单轮执行事件、耗时与公开摘要
+│   ├── http/                     # HTTP 传输层，业务继续复用 Agent
+│   │   ├── app.py                # FastAPI 创建、生命周期与路由装配
+│   │   ├── schemas.py            # 请求与公开响应模型
+│   │   ├── serialization.py      # 领域结果转公开响应，统一来源及摘要字段
+│   │   ├── errors.py             # HTTP 错误映射与公开错误结构
+│   │   ├── runtime.py            # 单工作线程与 SQLite 线程归属
+│   │   ├── streaming.py          # 有界进度通道与 SSE 输出
+│   │   └── routes/
+│   │       ├── chat.py           # 提问、完整回答与实时阶段进度
+│   │       ├── sessions.py       # 会话 CRUD 与历史
+│   │       ├── knowledge.py      # 文档与索引管理
+│   │       └── system.py         # 健康检查、技能列表与页面入口
 │   ├── knowledge/                # 文档、索引、检索与知识库管理
 │   │   ├── __init__.py
 │   │   ├── ingest.py             # 文档读取、分块、索引构建与同步
@@ -234,16 +257,19 @@ Person_A/
 ├── data/index/                   # 建库后发布的索引与清单
 ├── data/sessions/                # 本地会话数据库（不提交）
 ├── evaluation/questions.jsonl    # 5 条人工验收问题草案
-├── tests/                        # 自动化验证目录
+├── tests/                        # 按验证层次整理；本次未执行
+│   ├── unit/agent/              # Agent 与执行记录验证
+│   ├── unit/storage/            # 会话存储验证
+│   └── integration/http/        # 静态资源及基础路由验证
 ├── .env                          # 本地配置，不提交真实凭据
 ├── .env.example                  # 配置模板
 ├── pyproject.toml                # 依赖声明与命令入口
-├── INTENT_MCP_TODO.md             # 意图识别与 MCP 接入开发顺序
-├── MBTI_MCP.md                   # MindCare MBTI 接入与待验收说明
 └── README.md
 ```
 
-Python 模块按功能分包：`agent/` 组织问答与答题执行，`knowledge/` 处理知识库，`tools/` 统一注册和校验工具，`mcp/` 管理外部工具接入，`images/` 预留图片提问。公共配置、数据结构、模型适配、会话存储和 Skill 加载仍放在包根目录；`cli.py`、`api.py` 保留入口位置，上面的启动命令不变。
+Python 模块按功能分包：`agent/` 组织问答与答题执行，`http/` 处理 HTTP 请求与实时阶段传输，`knowledge/` 处理知识库，`tools/` 统一注册和校验工具，`mcp/` 管理外部工具接入，`images/` 预留图片提问。公共配置、数据结构、模型适配、会话存储和 Skill 加载仍放在包根目录；`application.py` 负责应用及会话生命周期。
+
+本次目录整理把大文件按职责拆开，并将开发说明集中到 `project_docs/`。知识库教材仍在 `docs/`，不会把项目设计说明加入默认检索材料；索引、会话数据库、技能目录和运行配置路径保持不变。`cli.py`、`api.py` 保留原入口，`person-a`、`python -m knowledge_agent.cli` 和 `uvicorn knowledge_agent.api:create_app` 的命令不变。迁移对应关系见 [开发文档导航](project_docs/README.md)。**目录调整只完成开发，未运行测试、导入检查、编译或服务联调。**
 
 意图识别、路由、MCP 和 MBTI 已有实现，运行结果仍待统一验证；图片提问与效果评估继续保留 TODO。
 
@@ -262,7 +288,7 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`knowledge
 
 ## 待统一验收
 
-自动 Skill 选择、技能检索策略边界修正、API/CLI/页面接入及 SSE 阶段进度已完成代码开发，尚未运行测试、语法检查、模型或服务联调。开发说明与未执行的验收清单见 [AUTO_SKILL_TODO.md](AUTO_SKILL_TODO.md)。效果评估、请求标识与断线恢复继续暂缓。
+自动 Skill 选择、技能检索策略边界修正、API/CLI/页面接入及 SSE 阶段进度已完成代码开发，尚未运行测试、语法检查、模型或服务联调。开发说明与未执行的验收清单见 [AUTO_SKILL_TODO.md](project_docs/AUTO_SKILL_TODO.md)。效果评估、请求标识与断线恢复继续暂缓。
 
 `src/knowledge_agent/agent/prompts.py` 已与 Agent 统一为 `[S1]` 来源标记协议；最终文档名称、小节和行号由程序校验并生成，引用正确性仍需在真实问答中核对。
 
@@ -270,4 +296,4 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`knowledge
 
 开发完成后统一检查：首次建库与文档更新是否正确；检索是否命中对应章节；回答是否有原文支持；引用能否定位实际片段；多轮追问、清空会话和索引刷新是否符合预期；模型服务异常、参数错误与中断时是否正确退出。网页的会话切换、历史分页、清空与删除确认、请求异常提示也需纳入完整端到端联调。假运行时下的页面和路由检查不能代替真实模型与索引的验收。
 
-新增 MBTI 接入还需统一验证：三工具发现与调用、完整 48 题评分、分页和版本不一致处理、暂停恢复与重启续答、会话隔离、旧题目卡重复点击、存储失败及 MCP 退出清理。具体清单见 [MBTI_MCP.md](MBTI_MCP.md#待统一验收)。以上均为待执行项目，没有本次测试通过结论。
+新增 MBTI 接入还需统一验证：三工具发现与调用、完整 48 题评分、分页和版本不一致处理、暂停恢复与重启续答、会话隔离、旧题目卡重复点击、存储失败及 MCP 退出清理。具体清单见 [MBTI_MCP.md](project_docs/MBTI_MCP.md#待统一验收)。以上均为待执行项目，没有本次测试通过结论。

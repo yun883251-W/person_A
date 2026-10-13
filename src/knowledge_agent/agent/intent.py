@@ -9,7 +9,7 @@ agent/router.py 根据识别结果决定分支；agent/runner.py 负责实际执
 第一版保留现有知识问答和手动 Skill 选择，增加通用 MCP 工具请求识别。
 MBTI 操作由 assessment 模块结合会话状态确定；图片问答继续保留为后续扩展。
 开发实现已接入 runner；验证 TODO 仍留待统一执行。
-完整接入顺序和现有文件改动位置见项目根目录 INTENT_MCP_TODO.md。
+完整接入顺序和现有文件改动位置见 project_docs/INTENT_MCP_TODO.md。
 """
 
 from __future__ import annotations

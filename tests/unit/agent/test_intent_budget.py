@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from knowledge_agent import config
-from knowledge_agent.agent import runner
+from knowledge_agent.agent import model_loop, preparation, runner
 from knowledge_agent.agent.trace import TraceRecorder
 from knowledge_agent.config import AgentConfig, IntentSettings
 from knowledge_agent.schemas import DocumentChunk, RetrievalResult
@@ -64,6 +64,12 @@ def test_rules_greeting_uses_no_model_or_retrieval(monkeypatch) -> None:
     monkeypatch.setattr(
         runner, "invoke_chat_model", lambda *args, **kwargs: pytest.fail("unexpected model call")
     )
+    monkeypatch.setattr(
+        preparation, "invoke_chat_model", lambda *args, **kwargs: pytest.fail("unexpected model call")
+    )
+    monkeypatch.setattr(
+        model_loop, "invoke_chat_model", lambda *args, **kwargs: pytest.fail("unexpected model call")
+    )
     retriever = StubRetriever()
     result = runner.KnowledgeAgent(model=object(), retriever=retriever).ask("hello")
 
@@ -88,6 +94,8 @@ def test_intent_exhausting_budget_stops_before_retrieval(monkeypatch) -> None:
         return _knowledge_decision()
 
     monkeypatch.setattr(runner, "invoke_chat_model", invoke)
+    monkeypatch.setattr(preparation, "invoke_chat_model", invoke)
+    monkeypatch.setattr(model_loop, "invoke_chat_model", invoke)
     retriever = StubRetriever()
     agent = runner.KnowledgeAgent(
         AgentConfig(max_model_calls=1), model=model, retriever=retriever
@@ -119,7 +127,9 @@ def test_intent_and_answer_share_budget_and_classify_once(monkeypatch, session_i
         return AIMessage(content="Python lists preserve insertion order. [S1]")
 
     monkeypatch.setattr(runner, "invoke_chat_model", invoke)
-    monkeypatch.setattr(runner, "bind_chat_tools", lambda model, tools: bound_model)
+    monkeypatch.setattr(preparation, "invoke_chat_model", invoke)
+    monkeypatch.setattr(model_loop, "invoke_chat_model", invoke)
+    monkeypatch.setattr(preparation, "bind_chat_tools", lambda model, tools: bound_model)
     retriever = StubRetriever()
     agent = runner.KnowledgeAgent(
         AgentConfig(max_model_calls=2), model=model, retriever=retriever
@@ -143,6 +153,8 @@ def test_failed_intent_counts_once_and_records_only_safe_error_code(monkeypatch)
         raise RuntimeError("private-provider-detail api_key=secret")
 
     monkeypatch.setattr(runner, "invoke_chat_model", invoke)
+    monkeypatch.setattr(preparation, "invoke_chat_model", invoke)
+    monkeypatch.setattr(model_loop, "invoke_chat_model", invoke)
     retriever = StubRetriever()
     agent = runner.KnowledgeAgent(
         AgentConfig(max_model_calls=1), model=object(), retriever=retriever
@@ -165,11 +177,11 @@ def test_failed_intent_counts_once_and_records_only_safe_error_code(monkeypatch)
 def test_zero_budget_rejects_classifier_before_invocation(monkeypatch) -> None:
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
     monkeypatch.setattr(
-        runner, "invoke_chat_model", lambda *args, **kwargs: pytest.fail("unexpected model call")
+        preparation, "invoke_chat_model", lambda *args, **kwargs: pytest.fail("unexpected model call")
     )
     retriever = StubRetriever()
     recorder = TraceRecorder()
-    prepared = runner.prepare_question(
+    prepared = preparation.prepare_question(
         "Explain Python lists",
         retriever=retriever,
         max_context_chars=4000,
@@ -185,7 +197,7 @@ def test_zero_budget_rejects_classifier_before_invocation(monkeypatch) -> None:
     assert retriever.queries == []
 
 
-def test_classifier_transport_retry_counts_as_one_logical_call(monkeypatch) -> None:
+def test_classifier_disables_transport_retries_and_counts_failed_call(monkeypatch) -> None:
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
 
     class RetryingModel:
@@ -207,10 +219,12 @@ def test_classifier_transport_retry_counts_as_one_logical_call(monkeypatch) -> N
     )
     result = agent.ask("Explain Python lists")
 
-    assert model.attempts == 2
+    assert model.attempts == 1
     assert result.model_calls == 1
     assert result.status == "limit_reached"
     assert retriever.queries == []
     event = _intent_event(result)
-    assert event.decision_source == "model"
-    assert event.status == "success"
+    assert event.decision_source == "fallback"
+    assert event.status == "error"
+    assert event.reason_code == "intent_model_timeout"
+    assert event.error_code == "intent_model_timeout"

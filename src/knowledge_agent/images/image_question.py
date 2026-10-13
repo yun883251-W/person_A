@@ -8,7 +8,8 @@
 结合问题和识别内容检索 → 现有 Agent/Skill 生成回答 → 同时保存问答及图片上下文。
 
 本模块集中定义图片上下文准备和接入规则；底层 OCR 见 images/ocr.py，文件管理见 images/attachments.py。
-实际问答循环、来源校验和预算仍由 agent/runner.py 负责，不另建第二套模型执行器。
+由 agent/runner.py 编排问答，agent/model_loop.py 执行模型工具循环，
+agent/answers.py 校验来源；图片接入继续复用已有预算，不另建第二套模型执行器。
 第一版保留知识库 [S#] 引用规则：图片识别文字是用户提供的材料，不伪造成知识库来源。
 
 当前文件只有说明和 TODO，不包含业务实现。建议先开发 images/ocr.py 与 images/attachments.py，

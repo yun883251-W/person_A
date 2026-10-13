@@ -4,7 +4,9 @@
 
 ## 目标与现状
 
-`runner.prepare_question()` 在确认知识路线后、首次检索前选择技能，加载并冻结本步正文，再执行差异化检索。`prepare_model_turn()` 复用同一份技能材料，不在检索之后重新选择。普通问答仍使用默认检索。
+`agent/preparation.py` 的 `prepare_question()` 在确认知识路线后、首次检索前选择技能，加载并冻结本步正文，再执行差异化检索。`prepare_model_turn()` 复用同一份技能材料，不在检索之后重新选择。普通问答仍使用默认检索。
+
+本文件从根目录归档到 `project_docs/`，代码拆分后的对应关系见 [目录迁移说明](README.md#本次目录迁移)。文内代码路径相对项目源码包，链接则相对此文档；本次目录整理未执行测试或联调。
 
 当前代码流程如下，运行结果待统一验证：
 
@@ -29,8 +31,8 @@ flowchart TD
 
 | 顺序 | 文件 | 本次状态 | 下一步职责 |
 | --- | --- | --- | --- |
-| 1 | [`agent/skill_selector.py`](src/knowledge_agent/agent/skill_selector.py) | 已实现，未验证 | 请求模式、规则选择、可选模型分类、回退与预算 |
-| 2 | [`knowledge/skill_retrieval.py`](src/knowledge_agent/knowledge/skill_retrieval.py) | 已实现，未验证 | 三种技能的查询策略、执行、证据聚合与预算 |
+| 1 | [`agent/skill_selector.py`](../src/knowledge_agent/agent/skill_selector.py) | 已实现，未验证 | 请求模式、规则选择、可选模型分类、回退与预算 |
+| 2 | [`knowledge/skill_retrieval.py`](../src/knowledge_agent/knowledge/skill_retrieval.py) | 已实现，未验证 | 三种技能的查询策略、执行、证据聚合与预算 |
 | 3 | 本文的接入 A01—A12 | 已实现，未验证 | 运行器、多步计划、API、CLI、存储及页面 |
 | 4 | 本文及两个模块末尾的验证项 | 待统一执行 | 开发完成后验证，不边开发边调用真实模型 |
 

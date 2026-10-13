@@ -1,11 +1,11 @@
-"""工具注册与统一执行模块（开发中）。
+"""工具注册与统一执行模块。
 
 模块功能：管理提供给模型的工具定义，以及服务端实际执行的函数。
 输入：工具定义、执行函数、模型工具调用、当前问答轮状态与调用预算。
 输出：模型可见的工具列表，以及关联 tool_call_id 的结构化调用结果。
 
-当前接口不替换 agent/runner.py 现有注册和执行逻辑。
-第一版复用现有 LangChain StructuredTool 与参数校验方式。
+agent/model_loop.py 通过此注册器执行工具；Skill 与 MCP 复用同一能力边界。
+工具定义与参数校验复用 LangChain StructuredTool。
 """
 
 from __future__ import annotations

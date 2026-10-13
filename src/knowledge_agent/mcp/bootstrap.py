@@ -6,7 +6,7 @@ from typing import Any
 
 
 def create_configured_application(*, session_store: Any = None):
-    from ..agent.runner import create_agent_application
+    from ..application import create_agent_application
     from ..config import get_mcp_settings
     from .client import McpRuntime
 
