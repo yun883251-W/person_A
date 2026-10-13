@@ -15,8 +15,12 @@ REMOTE_SEARCH_TOOL = "search_bilibili"
 SEARCH_BILIBILI_TOOL = "mcp__browser__search_bilibili"
 BILIBILI_SEARCH_ENDPOINT = "https://search.bilibili.com/all"
 MAX_QUERY_LENGTH = 200
+# Python str 仍可能包含孤立代理字符；本地校验必须在 URL 编码前拒绝它们。
 _INVALID_QUERY_CHARS = r"[\u0000-\u001f\u007f-\u009f\ud800-\udfff]"
 _INVALID_QUERY_RE = re.compile(_INVALID_QUERY_CHARS)
+# DeepSeek 会拒绝工具 Schema 中的 UTF-16 代理区范围，即使实际 query 是正常文本。
+# 对外仅发布控制字符约束；代理字符仍由宿主和服务端的 Python 校验拦截。
+_PUBLISHED_INVALID_QUERY_CHARS = r"[\u0000-\u001f\u007f-\u009f]"
 
 
 class InvalidSearchArguments(ValueError):
@@ -50,7 +54,7 @@ def build_search_url(query: str) -> str:
 
 
 def search_input_schema() -> dict[str, Any]:
-    """返回新对象，避免调用方修改共享 Schema；约束与 Python 校验保持一致。"""
+    """返回模型兼容的 Schema 新对象；完整执行约束由 Python 校验保证。"""
     return {
         "type": "object",
         "properties": {
@@ -60,7 +64,7 @@ def search_input_schema() -> dict[str, Any]:
                 "maxLength": MAX_QUERY_LENGTH,
                 "allOf": [
                     {"pattern": r"\S"},
-                    {"not": {"pattern": _INVALID_QUERY_CHARS}},
+                    {"not": {"pattern": _PUBLISHED_INVALID_QUERY_CHARS}},
                 ],
                 "description": "用户明确要求在 B 站搜索的关键词，不包含控制字符。",
             },

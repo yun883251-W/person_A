@@ -17,7 +17,7 @@ from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 _SITE = r"(?<![A-Za-z0-9_])(?:bilibili|bilili|bili|b\s*站|哔哩哔哩)(?![A-Za-z0-9_])"
 _SITE_RE = re.compile(_SITE, re.I)
-_ACTION_RE = re.compile(r"打开|进入|访问|搜索|搜|查找|查询|学习|学一下|学", re.I)
+_ACTION_RE = re.compile(r"打开|进入|访问|搜索|搜|查找|查询|学习|学一下|学|观看|看", re.I)
 _PREFIX = (
     r"(?:(?:请你|请|麻烦你|麻烦|帮我|帮忙|替我|为我|给我|"
     r"我想要|我想|我要|我需要|能不能|能否|可不可以|可以|现在|先)\s*)*"
@@ -30,7 +30,7 @@ _DESTINATION = rf"(?:(?:在|到|去|上|进入|访问|打开)\s*)?{_SITE}\s*(?:�
 _SEARCH_RE = re.compile(
     rf"^(?P<prefix>{_PREFIX})(?P<browser>{_BROWSER}){_DESTINATION}"
     r"(?:[，,]\s*)?(?:(?:并|然后|再)\s*)?(?:(?:帮我|给我|为我)\s*)?"
-    r"(?P<action>搜索|搜一下|搜一搜|搜|查找|查询|查一下|学习|学一下|学)"
+    r"(?P<action>搜索|搜一下|搜一搜|搜|查找|查询|查一下|学习|学一下|学|观看|看一下|看看|看)"
     r"\s*(?:一下\s*)?(?P<topic>[\s\S]*)$",
     re.I,
 )
@@ -92,18 +92,26 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
         if _OPEN_RE.fullmatch(text):
             return BrowserActionDecision(
                 "needs_clarification", "browser_bilibili_missing_topic",
-                "你想在 B 站搜索或学习什么主题？",
+                "你想在 B 站搜索什么内容？请写出主题或作品名称。",
             )
         return discussion
 
     raw_topic = match.group("topic")
-    # Do not treat a learning-method question or a discussion of the sentence as
+    # Do not treat learning/viewing questions or a discussion of the sentence as
     # an instruction to navigate. Search topics may legitimately contain words
     # such as 教程、实现、代码、工具, so those are not global execution blockers.
     unquoted_topic = _QUOTED_RE.sub(" ", raw_topic).strip().rstrip("。.!！?？")
     if _META_REFERENCE_RE.search(unquoted_topic):
         return discussion
-    if match.group("action").startswith("学"):
+    action = match.group("action")
+    if action.startswith("看") or action == "观看":
+        # 看不了/看不到 describes a problem, and question wording may omit
+        # punctuation. Quoted work titles remain ordinary search topics.
+        if re.search(r"^不(?:了|到|见|成)|怎么|如何|是否", unquoted_topic):
+            return discussion
+    if action.startswith(("学", "看")) or action == "观看":
+        # Viewing intent means searching for the named content, not selecting
+        # or playing a video. Keep the same explicit-request boundary as 学习.
         if not match.group("browser") and not _CURRENT_REQUEST_RE.search(match.group("prefix")):
             return discussion
         ending = raw_topic.rstrip("。.!！")
@@ -120,7 +128,7 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
     if not topic or _EMPTY_TOPIC_RE.fullmatch(topic) or _REFERENTIAL_TOPIC_RE.search(topic):
         return BrowserActionDecision(
             "needs_clarification", "browser_bilibili_missing_topic",
-            "你想在 B 站搜索或学习什么主题？请在本条消息中写出主题。",
+            "你想在 B 站搜索什么内容？请在本条消息中写出主题或作品名称。",
         )
     return BrowserActionDecision("search", "browser_bilibili_search")
 

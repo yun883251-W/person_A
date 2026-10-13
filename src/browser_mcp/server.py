@@ -67,7 +67,7 @@ def create_server(service: BrowserService | None = None) -> Any:
             isError=True,
         )
 
-    # 发布的 Schema 供宿主严格校验；服务独立使用同一 Python 契约再次检查。
+    # 发布的 Schema 用于参数预检；宿主与服务端用同一 Python 契约执行完整校验。
     # 不使用 SDK 的默认校验错误文本，因为其错误可能包含完整原始参数。
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> Any:

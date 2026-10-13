@@ -704,7 +704,9 @@ Use native tool calling to call mcp__browser__search_bilibili exactly once.
 Arguments must be a JSON object with only query (a required nonblank string,
 1-200 characters, no control characters). Extract the topic from the current
 user request. B站, 哔哩哔哩, bili, bilili and bilibili all name the same site.
-For example, 我想在bili学习数据结构 supplies query 数据结构. Keep meaningful
+For example, 我想在bili学习数据结构 supplies query 数据结构, and
+我想在B站看火影忍者 supplies query 火影忍者. Requests to 看/观看 mean searching
+for that content here, not selecting an episode or starting playback. Keep meaningful
 topic qualifiers such as Python入门教程, but omit the request to open a browser.
 Never put a URL, executable, shell command or browser settings in another field.
 Do not emit a JSON code block as your answer; use the provided tool definition.

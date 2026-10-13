@@ -167,7 +167,7 @@ python -m pip install -e ".[api,mcp]"
 
 ## B 站搜索与本机浏览器
 
-在网页会话、`person-a ask` 或 `person-a chat` 中提出“我想在 bili 学习数据结构”或“帮我在 B 站搜索 Python 装饰器教程”，Agent 可路由到 `mcp__browser__search_bilibili`。意图规则只选择路线，模型根据本次问题生成 `{"query":"数据结构"}` 形式的参数，宿主和 MCP 服务分别校验后调用浏览器。
+在网页会话、`person-a ask` 或 `person-a chat` 中提出“我想在 bili 学习数据结构”“帮我在 B 站搜索 Python 装饰器教程”或“我想在 B站看火影忍者”，Agent 可路由到 `mcp__browser__search_bilibili`。意图规则只选择路线，模型根据本次问题生成 `{"query":"数据结构"}` 或 `{"query":"火影忍者"}` 形式的参数，宿主和 MCP 服务分别校验后调用浏览器。观看表达也只打开相应搜索结果页，不自动选集或播放。
 
 默认运行配置 `config/mcp_servers.json` 已在保留 MBTI 的基础上启用 `browser`，白名单只有 `search_bilibili`；独立模板 `config/mcp_servers.browser.example.json` 默认禁用。本功能复用现有 `.[api,mcp]` 依赖与 Python 标准库，不增加新依赖。若 `MCP_CONFIG_PATH` 显式为空，浏览器工具和其他 MCP 服务都会保持关闭；仅关闭浏览器工具可将 `browser.enabled` 设为 `false`，配置调整后重启原服务。
 
