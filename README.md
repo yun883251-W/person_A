@@ -2,6 +2,8 @@
 
 本项目使用本地 `docs/` 中的 Markdown 教材，通过 Ollama 生成向量，结合向量与关键词检索，再由 DeepSeek 回答 Python / LangChain 学习问题并给出来源引用。另通过本地 MCP 服务提供 MBTI 问卷与评分，支持在同一会话中答题、暂停、恢复和查看结果。MBTI 核心代码源自 MindCare，已复制并适配到本项目，可独立运行。
 
+浏览器 MCP 工具支持“我想在 bili 学习数据结构”这类请求：模型提取搜索主题，程序向后端电脑的默认浏览器发出 B 站搜索页打开请求，并返回请求状态与链接。工具不读取页面或视频，也不确认搜索结果。
+
 文档入库、检索、模型适配、Agent、意图识别、MCP 接入、MBTI 答题、命令行、HTTP API 和本地网页已有实现。**本次只开发，没有运行测试、语法检查、服务或模型联调，也没有安装依赖；新增接入仍待统一验收，不能据此认为已验证可用。**
 
 本次进一步细化咨询与操作的意图边界，并加入本轮最多 3 步、共享调用预算的任务规划。执行结果随回答保存，页面可展开“任务执行步骤”查看完成和跳过情况；简单问题继续使用原流程。实现边界、示例与待验收事项见 [意图边界与多步骤任务规划](project_docs/INTENT_PLANNING.md)。**这两项同样只完成开发，尚未测试。**
@@ -163,6 +165,16 @@ python -m pip install -e ".[api,mcp]"
 
 这是源自 MindCare 项目、现内置于 Person_A 的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](project_docs/MBTI_MCP.md)。
 
+## B 站搜索与本机浏览器
+
+在网页会话、`person-a ask` 或 `person-a chat` 中提出“我想在 bili 学习数据结构”或“帮我在 B 站搜索 Python 装饰器教程”，Agent 可路由到 `mcp__browser__search_bilibili`。意图规则只选择路线，模型根据本次问题生成 `{"query":"数据结构"}` 形式的参数，宿主和 MCP 服务分别校验后调用浏览器。
+
+默认运行配置 `config/mcp_servers.json` 已在保留 MBTI 的基础上启用 `browser`，白名单只有 `search_bilibili`；独立模板 `config/mcp_servers.browser.example.json` 默认禁用。本功能复用现有 `.[api,mcp]` 依赖与 Python 标准库，不增加新依赖。若 `MCP_CONFIG_PATH` 显式为空，浏览器工具和其他 MCP 服务都会保持关闭；仅关闭浏览器工具可将 `browser.enabled` 设为 `false`，配置调整后重启原服务。
+
+工具只能打开固定的 B 站搜索地址，参数不接受其他 URL、命令或额外字段。宿主和服务端保证仅合法参数可执行，不承诺模型首次生成的 JSON 一定正确。浏览器分支关闭模型传输重试，至多发送两次模型请求：首次生成参数，必要时再修正一次；实际调用发生后本轮不重复打开。**最终状态和链接由程序根据工具返回结果生成，不再交给模型改写。** 普通知识问答不打开浏览器；手动知识 Skill 与 MCP 操作冲突时沿用现有提示。
+
+浏览器位于运行后端的电脑，远程网页不会直接控制访问者的浏览器。返回“已发出打开请求”不表示网页已加载或已找到视频；工具不读取搜索结果。本次没有启动浏览器或运行联调，完整边界及待验收项见 [BROWSER_MCP.md](project_docs/BROWSER_MCP.md)。
+
 ## 项目结构
 
 ```text
@@ -173,7 +185,8 @@ Person_A/
 │   ├── INTENT_PLANNING.md       # 意图边界与多步骤任务规划
 │   ├── INTENT_MCP_TODO.md       # 意图与 MCP 初始开发计划存档
 │   ├── AUTO_SKILL_TODO.md       # 自动 Skill 实现记录与待验收项
-│   └── MBTI_MCP.md              # 内置 MBTI 接入说明
+│   ├── MBTI_MCP.md              # 内置 MBTI 接入说明
+│   └── BROWSER_MCP.md           # B 站搜索与浏览器 MCP 接入说明
 ├── src/knowledge_agent/
 │   ├── __init__.py
 │   ├── cli.py                    # 建库、更新、单次与多轮问答入口
@@ -191,6 +204,8 @@ Person_A/
 │   │   ├── state.py              # 单轮状态与准备结果结构
 │   │   ├── preparation.py        # 技能选择、检索与模型上下文准备
 │   │   ├── model_loop.py         # 模型 / 工具循环及预算控制
+│   │   ├── browser_actions.py    # B 站搜索意图与操作边界
+│   │   ├── browser_execution.py  # 浏览器单动作执行、有限修正与结果生成
 │   │   ├── answers.py            # 回答整理、引用校验与结果摘要
 │   │   ├── intent.py             # 意图识别节点
 │   │   ├── router.py             # 知识 / MCP / 直接回复路由
@@ -243,13 +258,16 @@ Person_A/
 │       ├── questions.py          # 48 题题库与作答选项
 │       ├── scoring.py            # 确定性计分与类型判定
 │       └── descriptions.py       # 类型名称与说明
+├── src/browser_mcp/              # 固定 B 站搜索链接与本机浏览器 MCP 工具
 ├── skills/                       # 概念讲解、概念比较、代码解读的 Skill
 ├── config/
-│   ├── mcp_servers.json          # 运行配置，启用本项目内置 MBTI
+│   ├── mcp_servers.json          # 运行配置，启用内置 MBTI 与 browser
 │   ├── mcp_servers.mbti.example.json # MBTI 模板，默认禁用
+│   ├── mcp_servers.browser.example.json # 浏览器工具模板，默认禁用
 │   └── mcp_servers.example.json  # 演示服务模板，默认禁用
 ├── examples/
 │   ├── mbti_mcp_server.py        # 确保源码包可导入的 MBTI 启动入口
+│   ├── browser_mcp_server.py     # 本地浏览器 MCP 启动入口
 │   └── mcp_demo_server.py        # 无副作用演示 MCP 服务 TODO
 ├── web/
 │   ├── index.html                # 本地问答页面
@@ -297,3 +315,5 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`http/` �
 开发完成后统一检查：首次建库与文档更新是否正确；检索是否命中对应章节；回答是否有原文支持；引用能否定位实际片段；多轮追问、清空会话和索引刷新是否符合预期；模型服务异常、参数错误与中断时是否正确退出。网页的会话切换、历史分页、清空与删除确认、请求异常提示也需纳入完整端到端联调。假运行时下的页面和路由检查不能代替真实模型与索引的验收。
 
 新增 MBTI 接入还需统一验证：三工具发现与调用、完整 48 题评分、分页和版本不一致处理、暂停恢复与重启续答、会话隔离、旧题目卡重复点击、存储失败及 MCP 退出清理。具体清单见 [MBTI_MCP.md](project_docs/MBTI_MCP.md#待统一验收)。以上均为待执行项目，没有本次测试通过结论。
+
+B 站搜索 MCP 的自然语言路由、参数双端校验、一次修正与防重复打开、真实浏览器唤起及旧流程兼容也尚未验证，清单见 [BROWSER_MCP.md](project_docs/BROWSER_MCP.md#待统一验收)。没有运行测试、导入检查、编译、安装或服务启动。

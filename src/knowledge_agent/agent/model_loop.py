@@ -19,6 +19,7 @@ from ..models import (
 )
 from ..schemas import AnswerSource
 from ..tools.registry import create_tool_registry
+from .browser_execution import is_browser_search_turn, run_browser_search
 from .router import RouteKind
 from .state import KnowledgeTools, ModelTurnResult, PreparedModelTurn, ToolCallResult, TurnState
 
@@ -361,6 +362,15 @@ def run_model_loop(
             state.status = "limit_reached"
             state.stop_reason = "model_call_budget_exhausted"
             return None
+        if is_browser_search_turn(turn):
+            return run_browser_search(
+                turn, state,
+                invoke_model=invoke_model_turn,
+                execute_tools=execute_tool_calls,
+                max_model_calls=max_model_calls,
+                max_tool_calls=max_tool_calls,
+                max_context_chars=max_context_chars,
+            )
         result = invoke_model_turn(turn, state)
         return continue_model_loop(
             turn,

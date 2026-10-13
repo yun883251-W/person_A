@@ -389,6 +389,36 @@ def _identify_intent_with_rules(
 
     cleaned = question.strip()
     normalized = _normalized_intent_text(cleaned)
+    from .browser_actions import SEARCH_BILIBILI_TOOL, classify_bilibili_request
+
+    browser = classify_bilibili_request(cleaned)
+    if browser is not None:
+        if browser.kind == "search":
+            if SEARCH_BILIBILI_TOOL not in {item.name for item in capabilities}:
+                return IntentDecision(
+                    kind=IntentKind.NEEDS_CLARIFICATION,
+                    clarification_question=(
+                        "B 站浏览器搜索工具当前未启用或不可用。"
+                        "请启用 browser MCP 服务后重试，或明确改为知识问题。"
+                    ),
+                    reason_code="browser_bilibili_unavailable",
+                )
+            return IntentDecision(
+                kind=IntentKind.MCP_TOOL,
+                allowed_tool_names=(SEARCH_BILIBILI_TOOL,),
+                reason_code=browser.reason_code,
+            )
+        if browser.kind == "needs_clarification":
+            return IntentDecision(
+                kind=IntentKind.NEEDS_CLARIFICATION,
+                clarification_question=browser.clarification_question,
+                reason_code=browser.reason_code,
+            )
+        return IntentDecision(
+            kind=IntentKind.KNOWLEDGE,
+            retrieval_query=cleaned,
+            reason_code=browser.reason_code,
+        )
     requested_tools = _requested_mcp_tools(cleaned, capabilities)
     if requested_tools:
         return IntentDecision(
@@ -653,6 +683,11 @@ def identify_intent(
         max_history_turns=max_history_turns,
         max_context_chars=max_context_chars,
     )
+    if rules_decision.reason_code.startswith("browser_bilibili_"):
+        # This dedicated boundary also accepts topics such as MCP 工具教程.
+        # The assessment module's broader teaching guard must not turn an
+        # explicit browser search into a knowledge answer or an MBTI action.
+        return rules_decision
     from .assessment import (
         TOOLS, is_tool_instruction_question, request_action, request_clarification,
     )

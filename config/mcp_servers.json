@@ -11,6 +11,17 @@
       "startup_timeout_seconds": 15,
       "call_timeout_seconds": 30,
       "max_output_chars": 24000
+    },
+    "browser": {
+      "enabled": true,
+      "command": "$PYTHON",
+      "args": ["-u", "examples/browser_mcp_server.py"],
+      "cwd": "..",
+      "env_from": {},
+      "allowed_tools": ["search_bilibili"],
+      "startup_timeout_seconds": 15,
+      "call_timeout_seconds": 15,
+      "max_output_chars": 4000
     }
   }
 }

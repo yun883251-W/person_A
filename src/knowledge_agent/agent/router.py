@@ -19,6 +19,8 @@ from enum import Enum
 
 from collections.abc import Sequence
 
+from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+
 from .intent import IntentDecision, IntentKind, snapshot_mcp_capabilities
 
 
@@ -68,6 +70,18 @@ def resolve_route(
                 "或保留 Skill 并将问题改为知识问答。"
             ),
             reason_code="manual_skill_mcp_conflict",
+        )
+
+    if (
+        intent.kind is IntentKind.MCP_TOOL
+        and SEARCH_BILIBILI_TOOL in intent.allowed_tool_names
+        and intent.allowed_tool_names != (SEARCH_BILIBILI_TOOL,)
+    ):
+        intent = IntentDecision(
+            kind=IntentKind.NEEDS_CLARIFICATION,
+            decision_source=intent.decision_source,
+            clarification_question="请将 B 站搜索单独发送，并明确本次搜索主题。",
+            reason_code="browser_bilibili_single_action_only",
         )
 
     route = _ROUTE_BY_INTENT[intent.kind]

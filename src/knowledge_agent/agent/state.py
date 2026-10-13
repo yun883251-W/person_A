@@ -148,6 +148,8 @@ class TurnState:
     selected_skill: SelectedSkillSnapshot | None = None
     step_id: str | None = None
     trace_recorder: TraceRecorder | None = None
+    # Browser actions have a program-authored receipt, not an LLM page summary.
+    browser_action_result: AnswerResult | None = None
 
     def __post_init__(self) -> None:
         if self.retrieval_question is None:

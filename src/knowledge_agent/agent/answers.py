@@ -104,6 +104,8 @@ def finalize_mcp_answer(
     state: TurnState,
 ) -> AnswerResult:
     """Build the public result for an MCP turn without knowledge citations."""
+    if state.browser_action_result is not None:
+        return state.browser_action_result
     if state.status in {"service_error", "limit_reached"}:
         status = state.status
         return AnswerResult(
