@@ -26,6 +26,26 @@ _ANSWER_RE = re.compile(r"^MBTI答题 ([a-f0-9]{32}) ([0-9]{1,2}) ([1-5])$", re.
 _SCORE_RE = re.compile(r"^(?:我选|选择|选)?\s*([1-5])(?:分)?[。.!！]?$", re.I)
 _LABELS = {"完全不符合": 1, "不太符合": 2, "中立": 3, "中立/不确定": 3,
            "不确定": 3, "比较符合": 4, "完全符合": 5}
+_TARGET = r"(?:mbti(?:人格|性格)?(?:测试|自评|问卷)?|(?:人格|性格)(?:测试|自评|问卷))"
+_TOOL_TOPIC_RE = re.compile(r"mbti|人格测试|性格测试|\bmcp\b|工具|mcp__|(?:score_mbti_answers|get_mbti_\w+)", re.I)
+_TEACHING_RE = re.compile(
+    r"怎么|如何|怎样|为什么|是什么|什么是|教我|原理|算法|代码|源码|编程|实现|开发|设计|"
+    r"功能|按钮|接口|函数|教程|示例|例子|样例|\b(?:how|why|what|tutorial|example|implement|code)\b", re.I,
+)
+_NEGATED_CONTROL_RE = re.compile(
+    r"(?:不要|别|不用|不想|不需要|无需|不许|先不|暂不|没有要求|不是要).{0,20}"
+    r"(?:开始|做|测|重做|重测|继续|恢复|暂停|退出|取消|查看|调用|执行|运行)|"
+    r"\b(?:do\s+not|don't|never)\s+(?:start|run|call|execute|resume|cancel)\b", re.I,
+)
+_QUOTED_RE = re.compile(r"```[\s\S]*?```|`[^`]*`|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|\"[^\"]*\"")
+_CLAUSE_RE = re.compile(
+    r"[，,；;。\n]+|然后|之后|随后|接着|同时|另外|并且|"
+    r"(?:并|和|后|再)(?=(?:帮我|请|给我|解释|介绍|比较|开始))"
+)
+_SELF_DESCRIPTION_RE = re.compile(
+    r"(?:介绍|解释|解读|描述|说说|了解)(?:一下|下)?(?:我的|我这次的|本次的?)"
+    r"(?:mbti)?(?:测试)?(?:人格|性格)?(?:类型|结果)(?:的特点)?", re.I,
+)
 NOTICE = "这是 MindCare 的人格偏好自评问卷；结果用于自我了解，维度得分比例不是置信度。"
 
 
@@ -43,38 +63,146 @@ class AssessmentReply:
     stop_reason: str = "mbti_progress"
 
 
-def request_action(question: str, state: Mapping[str, Any] | None) -> str | None:
-    """Recognize explicit test controls and answers without guessing personality."""
-    text = question.strip()
-    folded = text.casefold()
-    has_mbti = "mbti" in folded or "人格测试" in text or "性格测试" in text
-    ongoing = state is not None and state.get("status") in {"active", "paused", "ready"}
-    if folded.startswith("mbti答题 "):
-        return "answer"
-    if has_mbti and any(word in text for word in ("重新", "重做", "重测")):
+def _command_text(question: str) -> str:
+    text = re.sub(r"\s+", "", question.strip()).casefold().strip("。.!！?？")
+    text = re.sub(r"^(?:(?:请|麻烦|帮我|给我|我想要|我想|我要|能不能|可以|先|再))*", "", text)
+    return re.sub(r"(?:吧|好吗|可以吗|行吗|吗)$", "", text)
+
+
+def _control_action(question: str, has_state: bool) -> str | None:
+    """Match a complete command, never an arbitrary action word in a sentence."""
+    text = _command_text(question)
+    if re.fullmatch(rf"(?:重新(?:开始|做|测)?|重做|重测)(?:一次|一个|一份)?{_TARGET}", text):
         return "restart"
-    if has_mbti or ongoing:
-        if any(word in folded for word in ("退出测试", "退出 mbti", "退出mbti", "结束测试", "取消测试")):
-            return "cancel"
-        if "暂停" in text and (has_mbti or text in {"暂停", "暂停测试"}):
-            return "pause"
-        if any(word in text for word in ("继续", "恢复")) and (
-            has_mbti or text in {"继续", "继续测试", "继续答题", "恢复测试", "下一题"}
+    if re.fullmatch(rf"(?:(?:开始(?:做|进行)?|开启|做(?:个|一下|一个)?|测(?:一下)?|进行)(?:一次|一个|一份)?)?{_TARGET}", text):
+        return "start"
+    for action, verbs in (("cancel", r"退出|结束|取消"), ("pause", r"暂停|先停一下"),
+                          ("resume", r"继续|恢复")):
+        if re.fullmatch(rf"(?:{verbs}){_TARGET}", text):
+            return action
+        if has_state and re.fullmatch(rf"(?:{verbs})(?:测试|答题)?", text):
+            return action
+    if has_state and text == "下一题":
+        return "resume"
+    if re.fullmatch(rf"(?:查看|看看|查询|显示)?(?:我的|本次)?{_TARGET}(?:结果|得分|评分)", text):
+        return "result"
+    if has_state and re.fullmatch(r"(?:查看|看看|查询|显示)?(?:我的|本次)?(?:测试)?(?:结果|得分|评分)", text):
+        return "result"
+    return None
+
+
+def _is_description_request(question: str) -> bool:
+    text = _command_text(question)
+    if _SELF_DESCRIPTION_RE.fullmatch(text):
+        return True
+    code = r"[ei][sn][tf][jp]"
+    return re.fullmatch(
+        rf"(?:(?:介绍|解释|了解|描述|解读|说说)(?:一下|下)?(?:mbti)?{code}"
+        r"(?:的)?(?:人格|类型)?(?:的)?(?:特点|特征|性格|结果|优势|优缺点|含义)?|"
+        rf"{code}(?:是什么(?:类型)?|有什么特点|有哪些特点|有什么优缺点|的特点|的含义))",
+        text,
+    ) is not None
+
+
+def is_tool_instruction_question(question: str) -> bool:
+    """Whether this asks about implementing/using tools instead of running them.
+
+    The planner can reuse this guard. A separate explicit MBTI command in another
+    clause makes the request mixed; request_clarification handles that boundary.
+    Quoted command examples cannot become executable clauses.
+    """
+    for quoted in _QUOTED_RE.finditer(question):
+        fragment = quoted.group(0)
+        inner = fragment[1:-1].strip()
+        # A quoted parameter ("INTJ") or formatted tool identifier is not an
+        # instructional example. A quoted whole command must never execute.
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", inner):
+            continue
+        if (
+            _control_action(inner, False) is not None
+            or re.search(r"调用|执行|运行|\b(?:run|call|execute|invoke)\b", inner, re.I)
+            or fragment.startswith("```") and _TOOL_TOPIC_RE.search(question)
         ):
-            return "resume"
-        if has_mbti and any(word in text for word in ("结果", "得分", "评分")):
-            return "result"
-    if has_mbti and not any(word in text for word in ("是什么", "怎么实现", "如何实现", "原理", "代码")):
-        if any(word in text for word in ("开始", "想做", "想测", "做个", "做一下", "测一下", "帮我测", "我要测", "我要做")):
-            return "start"
-        if folded in {"mbti", "mbti测试", "mbti 测试", "人格测试", "性格测试"}:
-            return "start"
-    if _TYPE_RE.search(text) and any(word in text for word in ("介绍", "解释", "了解", "特点", "是什么", "描述")):
+            return True
+    has_tool_topic = _TOOL_TOPIC_RE.search(question) or re.search(
+        r"调用|执行|运行|\b(?:run|call|execute|invoke)\b", question, re.I,
+    )
+    if not has_tool_topic or not _TEACHING_RE.search(question):
+        return False
+    unquoted = _QUOTED_RE.sub("", question)
+    for part in _CLAUSE_RE.split(unquoted):
+        if not part.strip():
+            continue
+        if _control_action(part, False) is not None:
+            return False
+        if not _TEACHING_RE.search(part) and re.match(
+            r"^(?:(?:请|麻烦|帮我|先|再)\s*)*(?:调用|执行|运行|(?:call|run|execute|invoke)\b)",
+            part.strip(), re.I,
+        ):
+            return False
+    return True
+
+
+def request_clarification(question: str, state: Mapping[str, Any] | None) -> str | None:
+    """Return a fixed clarification for requests that must not advance the test."""
+    text = question.strip()
+    has_state = state is not None
+    if is_tool_instruction_question(text):
+        return None
+    if _NEGATED_CONTROL_RE.search(text) and (
+        _TOOL_TOPIC_RE.search(text) or has_state or re.search(r"调用|执行|运行|\b(?:run|call|execute)\b", text, re.I)
+    ):
+        return "本轮没有执行测试或工具操作。请直接说明你想了解的内容，或单独发送需要执行的操作。"
+    unquoted = _QUOTED_RE.sub("", text)
+    parts = tuple(part.strip() for part in _CLAUSE_RE.split(unquoted) if part.strip())
+    # An interactive questionnaire cannot finish as one step of a compound turn.
+    # Ask explicitly instead of silently dropping the user's remaining objectives.
+    if len(parts) > 1 and any(
+        _control_action(part, has_state) is not None or _is_description_request(part)
+        for part in parts
+    ):
+        return "这条消息同时包含 MBTI 操作和其他要求。请将测试操作单独发送；知识问题可以另发，已有测试进度会保留。"
+    if (state is None or state.get("status") not in {"active", "paused", "ready"}) and (
+        _SCORE_RE.fullmatch(text) or text in _LABELS
+    ):
+        return "当前会话没有可作答的 MBTI 测试。请先发送“开始 MBTI 测试”，或补充这个数字所指的问题。"
+    return None
+
+
+def _description_type(question: str, state: Mapping[str, Any] | None) -> str | None:
+    match = _TYPE_RE.search(question)
+    if match is not None:
+        return match.group(1).upper()
+    if state is not None and state.get("status") == "completed":
+        result = state.get("result")
+        code = result.get("type") if isinstance(result, Mapping) else None
+        if isinstance(code, str) and _TYPE_RE.fullmatch(code):
+            return code.upper()
+    return None
+
+
+def request_action(question: str, state: Mapping[str, Any] | None) -> str | None:
+    """Recognize complete controls without advancing state or guessing personality.
+
+    A knowledge-topic switch returns None and leaves the snapshot untouched.
+    Numeric replies in paused/ready states reach handle_request's explicit guard;
+    they never implicitly resume a test or overwrite a completed result.
+    """
+    text = question.strip()
+    ongoing = state is not None and state.get("status") in {"active", "paused", "ready"}
+    if text.casefold().startswith("mbti答题 "):
+        return "answer"
+    if request_clarification(text, state) is not None or is_tool_instruction_question(text):
+        return None
+    if _QUOTED_RE.search(text):
+        return None
+    if _is_description_request(text):
         return "describe"
+    action = _control_action(text, state is not None)
+    if action is not None:
+        return action
     if ongoing and (_SCORE_RE.fullmatch(text) or text in _LABELS):
         return "answer"
-    if ongoing and text in {"下一题", "继续答题"}:
-        return "resume"
     return None
 
 
@@ -203,14 +331,17 @@ def handle_request(
     """Advance one host-managed step; call only the three fixed MBTI tools."""
     state = validate_snapshot(previous) if previous is not None else None
     if action == "describe":
-        match = _TYPE_RE.search(question)
-        if match is None:
-            return AssessmentReply("请提供要了解的四字母类型，例如 INTJ。", state, "needs_clarification")
-        response = call(DESCRIPTION_TOOL, {"type_code": match.group(1).upper()})
+        type_code = _description_type(question, state)
+        if type_code is None:
+            return AssessmentReply(
+                "当前会话还没有已完成的测试结果。请先完成测试，或提供要了解的四字母类型，例如 INTJ。",
+                state, "needs_clarification", "mbti_description_without_result",
+            )
+        response = call(DESCRIPTION_TOOL, {"type_code": type_code})
         description = response.get("description")
         if not isinstance(description, dict):
             raise AssessmentToolError("mbti_invalid_description")
-        lines = [str(description.get("name") or match.group(1).upper())]
+        lines = [str(description.get("name") or type_code)]
         for key, title in (("traits", "特点"), ("strengths", "优势"), ("growth_areas", "可探索的成长方向")):
             values = description.get(key)
             if isinstance(values, list):

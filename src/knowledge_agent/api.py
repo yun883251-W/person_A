@@ -286,6 +286,30 @@ class AssessmentResponse(_PublicModel):
     result: dict[str, Any] | None = None
 
 
+class PlanStepResponse(_PublicModel):
+    """Observable work and outcome for one bounded task step."""
+
+    step_id: str
+    goal: str
+    kind: Literal["knowledge", "mcp"]
+    depends_on: list[str]
+    status: Literal[
+        "pending", "success", "insufficient_evidence", "needs_clarification",
+        "service_error", "limit_reached", "out_of_scope", "skipped",
+    ]
+    model_calls: int = Field(ge=0, strict=True)
+    tool_calls: int = Field(ge=0, strict=True)
+    stop_reason: str | None = None
+
+
+class PlanSummaryResponse(_PublicModel):
+    """Final task summary; excludes internal prompts and model reasoning."""
+
+    version: Literal[1]
+    status: Literal["completed", "partial", "failed", "needs_clarification"]
+    steps: list[PlanStepResponse]
+
+
 class AnswerResponse(_PublicModel):
     session_id: SessionId
     question: str
@@ -304,6 +328,10 @@ class AnswerResponse(_PublicModel):
     assessment: AssessmentResponse | None = Field(
         default=None,
         description="本轮测试进度、当前题目和结果；不包含已提交答案或内部问卷缓存",
+    )
+    plan: PlanSummaryResponse | None = Field(
+        default=None,
+        description="本轮多步骤任务的执行摘要；只包含目标、依赖、状态和调用统计",
     )
 
 
@@ -334,6 +362,10 @@ class TurnResponse(_PublicModel):
     assessment: AssessmentResponse | None = Field(
         default=None,
         description="该历史轮次保存的测试进度；旧记录或非测试轮次为 null",
+    )
+    plan: PlanSummaryResponse | None = Field(
+        default=None,
+        description="随回答保存的多步骤任务摘要；旧记录或普通单步问答为 null",
     )
 
 
@@ -1512,6 +1544,15 @@ def _assessment_response(
     return AssessmentResponse.model_validate(public)
 
 
+def _plan_response(snapshot: dict[str, Any] | None) -> PlanSummaryResponse | None:
+    """Validate and expose the plan's public fields for answers and history."""
+    if snapshot is None:
+        return None
+    from .agent.planner import validate_plan_summary
+
+    return PlanSummaryResponse.model_validate(validate_plan_summary(snapshot))
+
+
 def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
     """Convert an answer without serializing any Agent or model state."""
     return AnswerResponse(
@@ -1531,6 +1572,7 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
             else None
         ),
         assessment=_assessment_response(result.assessment_state),
+        plan=_plan_response(result.plan),
     )
 
 
@@ -1555,6 +1597,7 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
             else None
         ),
         assessment=_assessment_response(result.assessment_state),
+        plan=_plan_response(result.plan),
     )
 
 

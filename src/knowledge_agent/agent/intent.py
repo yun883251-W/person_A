@@ -653,14 +653,31 @@ def identify_intent(
         max_history_turns=max_history_turns,
         max_context_chars=max_context_chars,
     )
-    from .assessment import TOOLS, request_action
+    from .assessment import (
+        TOOLS, is_tool_instruction_question, request_action, request_clarification,
+    )
 
+    clarification = request_clarification(question, assessment_state)
+    if clarification is not None:
+        return IntentDecision(
+            kind=IntentKind.NEEDS_CLARIFICATION,
+            clarification_question=clarification,
+            reason_code="assessment_request_boundary",
+        )
     action = request_action(question, assessment_state)
     if action is not None:
         return IntentDecision(
             kind=IntentKind.MCP_TOOL,
             allowed_tool_names=TOOLS,
             reason_code=f"mbti_{action}",
+        )
+    if is_tool_instruction_question(question):
+        # A tutorial or quoted example is never escalated back to execution by
+        # the optional classifier. Retain resolved knowledge-follow-up context.
+        return IntentDecision(
+            kind=IntentKind.KNOWLEDGE,
+            retrieval_query=rules_decision.retrieval_query or question.strip(),
+            reason_code="tool_instruction_question",
         )
     if settings.mode == "rules" or rules_decision.reason_code not in {
         "default_knowledge",
@@ -733,10 +750,12 @@ def _validate_manual_skill_selection(skill_id: str | None) -> None:
 # TODO 10：用假模型和固定能力快照验证识别边界。
 # 覆盖问候、范围、普通知识、MCP 教学、明确调用、同名工具歧义、不可用能力和混合任务。
 # 覆盖错误 JSON、额外字段、伪造工具名、提示注入、超长输入与模型超时。
-# 确认识别过程不会执行工具，不会把暂未实现的 MBTI/图片能力识别成可执行路由。
+# 覆盖 MBTI 教学问题、否定指令、引用示例、混合目标与无状态数字答题。
+# 确认识别过程不执行工具；图片能力仍不可执行，MBTI 操作只由会话状态机推进。
 
 # TODO 11：验证会话与计数兼容性。
 # 覆盖知识追问、工具追问、主动转题、跨会话隔离、历史裁剪、无历史的“继续”。
+# 覆盖测试途中切换知识话题后继续，暂停时数字不提交，以及已完成后的“介绍我的类型”。
 # 检查 rules 模式新增模型调用数为 0；hybrid 调用计入同轮预算，耗尽后不进入回答模型。
 # 检查手动 Skill/普通问答语义与旧历史读取保持兼容，旧入口不会重复运行意图模型。
 

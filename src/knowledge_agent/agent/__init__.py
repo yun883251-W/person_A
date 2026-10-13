@@ -1,5 +1,5 @@
 """Agent 执行流程、意图识别、路由、提示词和执行记录。
 
-运行入口位于 runner.py；agent/intent.py 和 agent/router.py 当前仍为待开发 TODO。
+运行入口位于 runner.py；intent/router 选择单步分支，planner/plan_executor 处理多步骤任务。
 本包不在导入时创建模型、检索器或会话服务。
 """

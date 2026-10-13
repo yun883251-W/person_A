@@ -221,6 +221,19 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
 .trace-alert { margin: 12px 0 0; padding: 9px 11px; border: 1px solid #e4dbbd; border-radius: 6px; background: #faf5e6; color: #8e7642; font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
 .trace-alert[data-kind="error"] { border-color: #e8cfc4; background: #fbf0e9; color: #995e49; }
 
+/* Saved task summaries use the same component for current answers and history. */
+.plan-details { border-color: #d1ddc3; background: #f5f8ef; }
+.plan-steps { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.plan-step { min-width: 0; padding: 12px; border: 1px solid #dfe6d5; border-radius: 7px; background: #fffefa; }
+.plan-step-id { font-family: var(--mono); }
+.plan-step-goal { margin: 0 0 12px; color: #465d3c; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-step-status { display: inline-block; flex: 0 0 auto; max-width: 100%; padding: 1px 7px; border: 1px solid #dbe4ce; border-radius: 4px; background: #eff4e7; color: #627d48; font-size: 10px; }
+.plan-step-status[data-status="pending"], .plan-step-status[data-status="skipped"] { border-color: #dedfd6; background: #f0f1ea; color: #78806d; }
+.plan-step-status[data-status="insufficient_evidence"], .plan-step-status[data-status="needs_clarification"], .plan-step-status[data-status="limit_reached"] { border-color: #e4ddc1; background: #f8f4e7; color: #8e7946; }
+.plan-step-status[data-status="service_error"], .plan-step-status[data-status="out_of_scope"] { border-color: #e8cfc4; background: #faf0e9; color: #a05f48; }
+.plan-step-fields { gap: 8px 13px; }
+.plan-note { margin-bottom: 0; }
+
 /* Questionnaire cards are snapshots; only the latest saved turn can submit. */
 .assessment-card { min-width: 0; margin-top: 18px; padding: 20px; border: 1px solid #d8e2cc; border-radius: 13px; background: #f7f9f1; overflow-wrap: anywhere; }
 .assessment-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

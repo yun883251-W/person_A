@@ -227,11 +227,13 @@ def _run_ingest(command: str, *, json_output: bool) -> int:
 def _public_answer_payload(result: AnswerResult) -> dict[str, Any]:
     """Serialize CLI answers with the same public assessment boundary as HTTP."""
     from .agent.assessment import public_assessment
+    from .agent.planner import validate_plan_summary
     from .agent.trace import trace_to_dict
 
     payload = asdict(result)
     payload.pop("assessment_state", None)
     payload["assessment"] = public_assessment(result.assessment_state)
+    payload["plan"] = validate_plan_summary(result.plan) if result.plan is not None else None
     payload["trace"] = trace_to_dict(result.trace) if result.trace is not None else None
     return payload
 

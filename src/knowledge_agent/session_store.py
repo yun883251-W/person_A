@@ -998,7 +998,7 @@ def _messages_from_json(value: str) -> tuple[BaseMessage, ...]:
 
 
 def _result_to_json(result: AnswerResult) -> str:
-    """Serialize an answer and its validated, private assessment snapshot."""
+    """Serialize an answer and validated optional execution snapshots."""
     sources = [
         {
             "chunk_id": source.chunk_id,
@@ -1036,6 +1036,10 @@ def _result_to_json(result: AnswerResult) -> str:
         from .agent.assessment import validate_snapshot
 
         payload["assessment_state"] = validate_snapshot(result.assessment_state)
+    if result.plan is not None:
+        from .agent.planner import validate_plan_summary
+
+        payload["plan"] = validate_plan_summary(result.plan)
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -1059,7 +1063,7 @@ def _result_from_json(value: str) -> AnswerResult:
         "stop_reason",
     }
     _require_fields(
-        root, fields, {"trace", "routing", "assessment_state"}, "result_json"
+        root, fields, {"trace", "routing", "assessment_state", "plan"}, "result_json"
     )
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
         raise ValueError(f"Unsupported result serialization version: {root['version']!r}")
@@ -1168,6 +1172,11 @@ def _result_from_json(value: str) -> AnswerResult:
         from .agent.assessment import validate_snapshot
 
         assessment_state = validate_snapshot(root["assessment_state"])
+    plan = None
+    if root.get("plan") is not None:
+        from .agent.planner import validate_plan_summary
+
+        plan = validate_plan_summary(root["plan"])
     return AnswerResult(
         question=question,
         answer=answer,
@@ -1180,6 +1189,7 @@ def _result_from_json(value: str) -> AnswerResult:
         trace=trace,
         routing=routing,
         assessment_state=assessment_state,
+        plan=plan,
     )
 
 

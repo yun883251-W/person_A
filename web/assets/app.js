@@ -619,6 +619,7 @@
   const traceStageLabels = {
     classify: "理解问题", intent: "识别意图", route: "选择执行路线", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
     model: "模型调用", tool: "工具调用", finalize: "整理回答与核验引用",
+    planning: "任务规划", plan_step: "执行计划步骤",
   };
   const traceStatusLabels = { success: "完成", empty: "无结果", error: "失败", skipped: "已跳过" };
   const traceOutcomeLabels = { completed: "流程完成", failed: "执行失败", interrupted: "执行中断" };
@@ -668,6 +669,7 @@
     intent_identification_failed: "意图识别失败", route_resolution_failed: "路由选择失败",
     manual_skill_mcp_conflict: "所选 Skill 与 MCP 工具请求冲突",
     mcp_capability_unavailable: "请求的 MCP 工具能力不可用",
+    multi_step_plan: "按多步骤任务执行",
   };
 
   function traceText(value, fallback = "未提供") {
@@ -831,6 +833,57 @@
       const warning = element("p", "trace-alert", "阶段记录已达到数量上限，部分步骤未保留；以上仅展示已记录的步骤，调用总数仍以本轮统计为准。");
       warning.dataset.kind = "warning"; body.append(warning);
     }
+    details.append(body);
+    return details;
+  }
+
+  const planStatusLabels = {
+    completed: "全部完成", partial: "部分完成", failed: "未能完成", needs_clarification: "需要补充信息",
+  };
+  const planStepStatusLabels = {
+    pending: "尚未执行", success: "已完成", insufficient_evidence: "资料不足",
+    needs_clarification: "需要补充信息", service_error: "执行异常", limit_reached: "达到调用上限",
+    out_of_scope: "超出范围", skipped: "已跳过",
+  };
+
+  function renderPlan(result) {
+    const plan = result.plan;
+    if (!plan || typeof plan !== "object" || Array.isArray(plan) || plan.version !== 1
+      || !Array.isArray(plan.steps)) return null;
+    const steps = plan.steps.filter((step) => step && typeof step === "object" && !Array.isArray(step));
+    if (!steps.length) return null;
+
+    const details = element("details", "execution-details plan-details");
+    const summary = element("summary", "execution-summary");
+    summary.append(element("span", "execution-summary-title", "任务执行步骤"));
+    summary.append(element("span", "execution-summary-meta",
+      `${steps.length} 步 · ${traceLabel(planStatusLabels, plan.status, "状态未记录")}`));
+    details.append(summary);
+    const body = element("div", "execution-body");
+    const list = element("ol", "plan-steps");
+    for (const step of steps) {
+      const item = element("li", "plan-step");
+      const heading = element("div", "trace-event-heading");
+      heading.append(element("strong", "plan-step-id", traceText(step.step_id, "步骤")));
+      const badge = element("span", "plan-step-status", traceLabel(planStepStatusLabels, step.status, "状态未记录"));
+      badge.dataset.status = traceText(step.status, "unknown");
+      heading.append(badge); item.append(heading);
+      item.append(element("p", "plan-step-goal", traceText(step.goal, "未记录任务目标")));
+      const dependencies = Array.isArray(step.depends_on)
+        ? step.depends_on.filter((value) => typeof value === "string" && value.trim()) : [];
+      const fields = [
+        ["执行方式", traceLabel({ knowledge: "知识问答", mcp: "MCP 工具" }, step.kind)],
+        ["依赖步骤", dependencies.length ? dependencies.join("、") : "无"],
+        ["模型调用", traceNumber(step.model_calls, " 次")],
+        ["工具调用", traceNumber(step.tool_calls, " 次")],
+      ];
+      if (traceText(step.stop_reason, "")) fields.push(["结束原因", traceReason(step.stop_reason)]);
+      item.append(traceFields(fields, "trace-fields plan-step-fields"));
+      list.append(item);
+    }
+    body.append(list);
+    body.append(element("p", "trace-note plan-note",
+      "这里展示本轮完成后的任务记录。各步骤共享本轮调用预算；规划产生的模型调用计入下方执行详情中的总数。"));
     details.append(body);
     return details;
   }
@@ -1017,6 +1070,8 @@
       const copy = element("button", "copy-answer", "复制回答"); copy.type = "button";
       copy.addEventListener("click", () => copyText(text, copy)); meta.append(copy);
       content.append(meta);
+      const plan = renderPlan(result);
+      if (plan) content.append(plan);
       content.append(renderExecutionDetails(result));
     }
     article.append(content); return article;

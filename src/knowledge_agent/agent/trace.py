@@ -40,6 +40,8 @@ _TURN_INTERRUPTED = "turn_interrupted"
 # 第一阶段：数据协议与收集器。
 
 TraceStage = Literal[
+    "planning",
+    "plan_step",
     "classify",
     "intent",
     "route",
@@ -330,7 +332,7 @@ _EVENT_FIELDS = {
     "error_code",
 }
 _OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code"}
-_TRACE_STAGES = frozenset(("classify", "intent", "route", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
+_TRACE_STAGES = frozenset(("planning", "plan_step", "classify", "intent", "route", "initial_retrieval", "skill_prepare", "model", "tool", "finalize"))
 _TRACE_INITIATORS = frozenset(("program", "model"))
 _TRACE_STATUSES = frozenset(("success", "empty", "error", "skipped"))
 _TRACE_OUTCOMES = frozenset(("completed", "failed", "interrupted"))

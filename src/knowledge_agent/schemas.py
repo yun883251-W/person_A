@@ -138,3 +138,6 @@ class AnswerResult:
     trace: TurnTrace | None = None
     routing: RouteSummary | None = None
     assessment_state: dict[str, Any] | None = None
+    # Public execution summary only: goals, dependencies, outcomes and counts.
+    # Never store model reasoning or raw tool responses in this field.
+    plan: dict[str, Any] | None = None
