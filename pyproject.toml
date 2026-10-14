@@ -24,3 +24,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "live: 会把工具 Schema 发给真实提供方的在线探测；默认跳过，需设置 PERSON_A_LIVE_SCHEMA_PROBE=1",
+]
