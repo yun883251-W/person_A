@@ -84,7 +84,14 @@ def test_rules_greeting_uses_no_model_or_retrieval(monkeypatch) -> None:
     assert event.error_code is None
 
 
-def test_intent_exhausting_budget_stops_before_retrieval(monkeypatch) -> None:
+def test_single_call_budget_skips_classifier_and_stops_before_retrieval(monkeypatch) -> None:
+    """预算只够一次调用时不为分类消耗它：分类不发起，直接以预算耗尽结束。
+
+    分类需要为自己之外再留一次调用（`max_model_calls - 1`）。预算为 1 时这个条件
+    永远不成立，因此既没有分类调用，也不会检索 —— 一次注定无法完成的轮次不再
+    白花一次提供方调用。预算为 2 时分类正常发起，见
+    `test_intent_and_answer_share_budget_and_classify_once`。
+    """
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
     model = object()
     calls = []
@@ -104,13 +111,15 @@ def test_intent_exhausting_budget_stops_before_retrieval(monkeypatch) -> None:
 
     assert result.status == "limit_reached"
     assert result.stop_reason == "model_call_budget_exhausted"
-    assert result.model_calls == 1
-    assert calls == [model]
+    assert result.model_calls == 0
+    assert calls == []
     assert retriever.queries == []
     event = _intent_event(result)
     assert (event.decision_source, event.intent_kind, event.reason_code) == (
-        "model", "knowledge", "hybrid_knowledge"
+        "fallback", "knowledge", "model_call_budget_exhausted"
     )
+    assert event.status == "error"
+    assert event.error_code == "model_call_budget_exhausted"
 
 
 @pytest.mark.parametrize("session_id", [None, "test-session"])
@@ -145,26 +154,34 @@ def test_intent_and_answer_share_budget_and_classify_once(monkeypatch, session_i
 
 
 def test_failed_intent_counts_once_and_records_only_safe_error_code(monkeypatch) -> None:
+    """分类失败只计一次调用、降级为 fallback，且提供方细节不进入公开追踪。
+
+    分类失败不终止本轮：判定降级后仍照常检索和回答，所以预算要够分类加回答两次。
+    """
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
+    model, bound_model = object(), object()
     calls = []
 
-    def invoke(model, messages, **kwargs):
-        calls.append(model)
+    def invoke(actual_model, messages, **kwargs):
+        calls.append(actual_model)
+        if actual_model is bound_model:
+            return AIMessage(content="Python lists preserve insertion order. [S1]")
         raise RuntimeError("private-provider-detail api_key=secret")
 
     monkeypatch.setattr(runner, "invoke_chat_model", invoke)
     monkeypatch.setattr(preparation, "invoke_chat_model", invoke)
     monkeypatch.setattr(model_loop, "invoke_chat_model", invoke)
+    monkeypatch.setattr(preparation, "bind_chat_tools", lambda model, tools: bound_model)
     retriever = StubRetriever()
     agent = runner.KnowledgeAgent(
-        AgentConfig(max_model_calls=1), model=object(), retriever=retriever
+        AgentConfig(max_model_calls=2), model=model, retriever=retriever
     )
     result = agent.ask("Explain Python lists")
 
-    assert result.model_calls == 1
-    assert len(calls) == 1
-    assert result.status == "limit_reached"
-    assert retriever.queries == []
+    assert result.status == "success"
+    assert result.model_calls == 2
+    assert calls == [model, bound_model]
+    assert retriever.queries == ["Explain Python lists"]
     event = _intent_event(result)
     assert event.status == "error"
     assert event.decision_source == "fallback"
@@ -198,9 +215,14 @@ def test_zero_budget_rejects_classifier_before_invocation(monkeypatch) -> None:
 
 
 def test_classifier_disables_transport_retries_and_counts_failed_call(monkeypatch) -> None:
+    """分类关闭传输重试：配置允许多次尝试，分类仍只发起一次并计入预算。
+
+    这里不替换 invoke_chat_model，走真实的调用与错误归一化；模型自身允许两次
+    传输尝试，如果分类没有关闭重试，attempts 会是 2。
+    """
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
 
-    class RetryingModel:
+    class TimeoutModel:
         _knowledge_agent_max_retries = 1
 
         def __init__(self) -> None:
@@ -208,21 +230,26 @@ def test_classifier_disables_transport_retries_and_counts_failed_call(monkeypatc
 
         def invoke(self, messages):
             self.attempts += 1
-            if self.attempts == 1:
-                raise TimeoutError("temporary timeout")
-            return _knowledge_decision()
+            raise TimeoutError("temporary timeout")
 
-    model = RetryingModel()
+    class BoundAnswerModel:
+        def invoke(self, messages):
+            return AIMessage(content="Python lists preserve insertion order. [S1]")
+
+    model = TimeoutModel()
+    monkeypatch.setattr(
+        preparation, "bind_chat_tools", lambda bound, tools: BoundAnswerModel()
+    )
     retriever = StubRetriever()
     agent = runner.KnowledgeAgent(
-        AgentConfig(max_model_calls=1), model=model, retriever=retriever
+        AgentConfig(max_model_calls=2), model=model, retriever=retriever
     )
     result = agent.ask("Explain Python lists")
 
     assert model.attempts == 1
-    assert result.model_calls == 1
-    assert result.status == "limit_reached"
-    assert retriever.queries == []
+    assert result.model_calls == 2
+    assert result.status == "success"
+    assert retriever.queries == ["Explain Python lists"]
     event = _intent_event(result)
     assert event.decision_source == "fallback"
     assert event.status == "error"
