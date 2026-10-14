@@ -87,6 +87,18 @@ python -m pip install -e ".[api,mcp]"
 python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
 ```
 
+安装只需在准备运行项目的 Python 环境中执行一次；以后修改现有 Python 源码无需重新安装。增加依赖、修改入口或迁移项目位置后，需要重新执行安装。`-e` 使用可编辑安装，把当前 `src/` 下的包接入该环境的模块搜索路径，因此无需每次设置 `$env:PYTHONPATH="src"`。
+
+如果 `uvicorn` 和安装时的 `python` 属于同一个环境，之后可直接运行：
+
+```powershell
+uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
+```
+
+使用虚拟环境时，每次打开新终端仍需先激活该环境，或让 IDE 自动激活。可通过 `Get-Command python, uvicorn | Select-Object Name, Source` 查看两个命令的位置；如果来自不同环境，先切换到日常运行项目的环境，再执行安装。上面的 `python -m uvicorn` 写法可明确使用当前 `python` 所属环境，避免误用 PATH 中其他环境或已失效的 `uvicorn.exe`。
+
+`PYTHONUTF8=1` 是 Python 的 UTF-8 模式开关，解决默认文本编码兼容问题，不负责查找模块。本项目读取配置、文档和索引时已明确指定 UTF-8，目前没有发现必须设置该变量才能启动 API 的代码路径；若省略后出现编码异常，应根据具体异常定位。PowerShell 的 `$env:...` 赋值只作用于当前终端进程及之后启动的子进程，不会自动保存到新终端；把这两个变量写进项目 `.env` 也不能替代解释器启动前的环境设置。
+
 在浏览器打开 [本地问答页面](http://127.0.0.1:8000/)，新建会话后输入问题并发送。左侧可以选择已有会话、继续追问，或在确认后清空历史、删除会话。回答完成后可查看引用中的文档名称、小节和行号；历史记录保存在本地 SQLite 中，刷新页面或重启服务后可以重新读取。
 
 如果只使用知识问答，可安装 `.[api]`，并将 `MCP_CONFIG_PATH` 显式设为空字符串关闭 MCP。
