@@ -1,4 +1,4 @@
-"""SQLite 会话存储模块（待开发）。
+"""SQLite 会话存储模块。
 
 模块功能：
 1. 在本地保存会话信息和完整问答轮，程序退出后仍可保留聊天记录。
@@ -8,15 +8,15 @@
 
 存储方案：Python sqlite3 + SQLite，默认数据库位置为：
 PROJECT_ROOT / "data/sessions/chat.db"。
-规划 sessions（会话信息）和 turns（完整问答轮）两张表。
+使用 sessions（会话信息）、turns（完整问答轮）和 session_summaries（背景摘要）。
 数据库由后续显式初始化操作创建；导入模块时不连接数据库或创建目录。
 
 职责边界：本模块只管理会话数据，模型调用、检索及来源校验仍由 Agent 负责。
 知识库向量索引继续存放在 data/index；会话数据库单独放在 data/sessions。
 数据库保留已提交的完整历史，送入模型的最近轮数由 AgentConfig.max_history_turns 控制。
 
-当前仅包含功能说明和 TODO，没有数据库操作、业务实现或测试结果。
-由用户按 TODO 01—15 开发，再集中执行 TODO 16—19 的验证。
+摘要与问答分别提交；摘要维护失败不撤销已保存问答，完整历史始终保留。
+摘要使用 turn_id 与 turn_no 水位，清空或删除会话时同步清理。
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from .agent.trace import trace_from_dict, trace_to_dict
 
 # 第一阶段：存储层及应用接入开发。
 
-DATABASE_SCHEMA_VERSION = 1
+DATABASE_SCHEMA_VERSION = 2
 MESSAGE_SERIALIZATION_VERSION = 1
 
 
@@ -94,6 +94,12 @@ class DuplicateSessionError(SessionStoreError):
 
 class DuplicateTurnError(SessionStoreError):
     operation = "write"
+
+
+class SessionSummaryConflictError(SessionStoreError):
+    """A summary was superseded or its source turns no longer exist."""
+
+    operation = "summary"
 
 
 def _storage_error(
@@ -154,6 +160,28 @@ class StoredTurn:
     result: AnswerResult
 
 
+@dataclass(frozen=True, slots=True)
+class SessionSummary:
+    """Lossy background memory with a watermark over immutable saved turns."""
+
+    session_id: str
+    summary: str
+    covered_turn_id: str
+    covered_turn_no: int
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryTurn:
+    """Visible content only; raw messages and assessment snapshots are excluded."""
+
+    turn_id: str
+    turn_no: int
+    question: str
+    answer: str
+    is_knowledge: bool
+
+
 @runtime_checkable
 class SessionStore(Protocol):
     """Persistence boundary shared by the Agent and CLI.
@@ -204,6 +232,25 @@ class SessionStore(Protocol):
 
     def load_latest_assessment(self, session_id: str) -> dict[str, Any] | None:
         """Restore the latest assessment snapshot, independent of chat limits."""
+        ...
+
+    def load_session_summary(self, session_id: str) -> SessionSummary | None:
+        """Load a summary only when its saved source watermark is still valid."""
+        ...
+
+    def load_summary_batch(
+        self, session_id: str, *, after_turn_no: int, max_history_turns: int,
+        limit: int,
+    ) -> Sequence[SummaryTurn]:
+        """Load old committed turns outside the retained recent-history window."""
+        ...
+
+    def save_session_summary(
+        self, session_id: str, *, summary: str, covered_turn_id: str,
+        covered_turn_no: int, expected_previous: SessionSummary | None,
+        max_history_turns: int,
+    ) -> SessionSummary:
+        """Compare and replace a summary atomically without modifying turns."""
         ...
 
     def clear_session(self, session_id: str) -> bool:
@@ -293,11 +340,29 @@ class SQLiteSessionStore:
                 connection.execute(
                     f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}"
                 )
-            elif schema_version != DATABASE_SCHEMA_VERSION:
+            elif schema_version not in (1, DATABASE_SCHEMA_VERSION):
                 raise SessionStoreSchemaError(
                     "Unsupported session database schema version: "
                     f"expected {DATABASE_SCHEMA_VERSION}, got {schema_version}"
                 )
+            if schema_version in (0, 1):
+                connection.execute(
+                    """
+                    CREATE TABLE session_summaries (
+                        session_id TEXT PRIMARY KEY,
+                        summary TEXT NOT NULL,
+                        covered_turn_id TEXT NOT NULL,
+                        covered_turn_no INTEGER NOT NULL CHECK (covered_turn_no > 0),
+                        summary_version INTEGER NOT NULL CHECK (summary_version = 1),
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                            ON DELETE CASCADE,
+                        FOREIGN KEY (covered_turn_id) REFERENCES turns(turn_id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+                connection.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             connection.commit()
         except BaseException as exc:
             if connection.in_transaction:
@@ -696,6 +761,163 @@ class SQLiteSessionStore:
             ) from exc
         return None
 
+    def load_session_summary(self, session_id: str) -> SessionSummary | None:
+        """Restore bounded summary text after checking its exact source turn."""
+        connection = self._require_connection()
+        try:
+            self._require_session(connection, session_id)
+            row = connection.execute(
+                """
+                SELECT s.*, t.session_id AS source_session, t.turn_no AS source_turn_no
+                FROM session_summaries AS s
+                LEFT JOIN turns AS t ON t.turn_id = s.covered_turn_id
+                WHERE s.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if (row["summary_version"] != 1 or row["source_session"] != session_id
+                    or row["source_turn_no"] != row["covered_turn_no"]):
+                raise SessionStoreCorruptionError("Stored summary watermark is invalid")
+            self._validate_summary_text(row["summary"])
+            return self._restore_summary(row)
+        except SessionStoreError:
+            raise
+        except sqlite3.Error as exc:
+            raise _storage_error(exc, operation="load summary") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SessionStoreCorruptionError("Stored summary data is corrupt") from exc
+
+    def load_summary_batch(
+        self, session_id: str, *, after_turn_no: int, max_history_turns: int,
+        limit: int,
+    ) -> Sequence[SummaryTurn]:
+        """Read bounded visible records, never model/tool message payloads."""
+        self._validate_load_arguments(session_id, limit=limit, offset=after_turn_no)
+        self._validate_history_limit(max_history_turns)
+        connection = self._require_connection()
+        try:
+            self._require_session(connection, session_id)
+            rows = connection.execute(
+                """
+                SELECT turn_id, turn_no, question, result_json, serialization_version
+                FROM turns
+                WHERE session_id = ? AND turn_no > ? AND turn_no < (
+                    SELECT MIN(turn_no) FROM (
+                        SELECT turn_no FROM turns WHERE session_id = ?
+                        ORDER BY turn_no DESC LIMIT ?
+                    )
+                )
+                ORDER BY turn_no ASC LIMIT ?
+                """,
+                (session_id, after_turn_no, session_id, max_history_turns, limit),
+            ).fetchall()
+            result: list[SummaryTurn] = []
+            for row in rows:
+                if row["serialization_version"] != MESSAGE_SERIALIZATION_VERSION:
+                    raise SessionStoreCorruptionError("Stored summary source version is invalid")
+                answer = _deserialize_result(row["result_json"])
+                route = answer.routing.route if answer.routing is not None else None
+                eligible = (
+                    answer.status in {"success", "insufficient_evidence"}
+                    and (route == "knowledge" or route is None and bool(answer.sources))
+                    and answer.assessment_state is None and answer.plan is None
+                )
+                result.append(SummaryTurn(
+                    turn_id=row["turn_id"], turn_no=row["turn_no"],
+                    question=row["question"] if eligible else "",
+                    answer=answer.answer if eligible else "", is_knowledge=eligible,
+                ))
+            return tuple(result)
+        except SessionStoreError:
+            raise
+        except sqlite3.Error as exc:
+            raise _storage_error(exc, operation="load summary sources") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SessionStoreCorruptionError("Stored summary source is corrupt") from exc
+
+    def save_session_summary(
+        self, session_id: str, *, summary: str, covered_turn_id: str,
+        covered_turn_no: int, expected_previous: SessionSummary | None,
+        max_history_turns: int,
+    ) -> SessionSummary:
+        """Commit only if the prior summary and exact source watermark survive."""
+        self._validate_summary_text(summary)
+        self._validate_history_limit(max_history_turns)
+        if not isinstance(covered_turn_id, str) or not covered_turn_id.strip():
+            raise ValueError("covered_turn_id must be a non-empty string")
+        if type(covered_turn_no) is not int or covered_turn_no < 1:
+            raise ValueError("covered_turn_no must be a positive integer")
+        if expected_previous is not None and (
+            not isinstance(expected_previous, SessionSummary)
+            or expected_previous.session_id != session_id
+        ):
+            raise ValueError("expected_previous must belong to this session")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self._transaction(write=True, operation="save summary") as connection:
+            self._require_session(connection, session_id)
+            row = connection.execute(
+                "SELECT * FROM session_summaries WHERE session_id = ?", (session_id,),
+            ).fetchone()
+            current = self._restore_summary(row) if row is not None else None
+            if current != expected_previous:
+                raise SessionSummaryConflictError("Session summary changed during maintenance")
+            if current is not None and covered_turn_no <= current.covered_turn_no:
+                raise SessionSummaryConflictError("Session summary watermark did not advance")
+            source = connection.execute(
+                """
+                SELECT 1 FROM turns WHERE session_id = ? AND turn_id = ? AND turn_no = ?
+                AND turn_no < (
+                    SELECT MIN(turn_no) FROM (
+                        SELECT turn_no FROM turns WHERE session_id = ?
+                        ORDER BY turn_no DESC LIMIT ?
+                    )
+                )
+                """,
+                (session_id, covered_turn_id, covered_turn_no, session_id, max_history_turns),
+            ).fetchone()
+            if source is None:
+                raise SessionSummaryConflictError("Session summary source changed during maintenance")
+            connection.execute(
+                """
+                INSERT INTO session_summaries
+                    (session_id, summary, covered_turn_id, covered_turn_no, summary_version, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    covered_turn_id = excluded.covered_turn_id,
+                    covered_turn_no = excluded.covered_turn_no,
+                    summary_version = excluded.summary_version,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, summary, covered_turn_id, covered_turn_no, timestamp),
+            )
+        return SessionSummary(session_id, summary, covered_turn_id, covered_turn_no, timestamp)
+
+    @staticmethod
+    def _validate_summary_text(summary: object) -> None:
+        if not isinstance(summary, str) or len(summary) > 20000:
+            raise ValueError("summary must be a bounded string")
+        if any(
+            ord(char) < 32 and char not in "\n\t"
+            or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF
+            for char in summary
+        ):
+            raise ValueError("summary contains control characters")
+
+    @staticmethod
+    def _validate_history_limit(value: int) -> None:
+        if type(value) is not int or value < 1:
+            raise ValueError("max_history_turns must be a positive integer")
+
+    @staticmethod
+    def _restore_summary(row: sqlite3.Row) -> SessionSummary:
+        return SessionSummary(
+            row["session_id"], row["summary"], row["covered_turn_id"],
+            row["covered_turn_no"], row["updated_at"],
+        )
+
     def clear_session(self, session_id: str) -> bool:
         """Delete all turns for a session while retaining its metadata."""
         if not isinstance(session_id, str) or not session_id.strip():
@@ -708,6 +930,7 @@ class SQLiteSessionStore:
             )
             if updated.rowcount == 0:
                 return False
+            connection.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
             connection.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
         return True
 

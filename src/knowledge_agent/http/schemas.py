@@ -307,6 +307,13 @@ class TurnListResponse(_PublicModel):
     offset: PageOffset
 
 
+class SessionSummaryResponse(_PublicModel):
+    session_id: str
+    summary: str = ""
+    covered_turn_no: int = Field(default=0, ge=0)
+    updated_at: str | None = None
+
+
 class ValidationIssueResponse(_PublicModel):
     loc: list[str | int]
     msg: str

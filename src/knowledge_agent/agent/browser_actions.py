@@ -17,7 +17,6 @@ from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 _SITE = r"(?<![A-Za-z0-9_])(?:bilibili|bilili|bili|b\s*站|哔哩哔哩)(?![A-Za-z0-9_])"
 _SITE_RE = re.compile(_SITE, re.I)
-_ACTION_RE = re.compile(r"打开|进入|访问|搜索|搜|查找|查询|学习|学一下|学|观看|看", re.I)
 _PREFIX = (
     r"(?:(?:请你|请|麻烦你|麻烦|帮我|帮忙|替我|为我|给我|"
     r"我想要|我想|我要|我需要|能不能|能否|可不可以|可以|现在|先)\s*)*"
@@ -54,13 +53,35 @@ _CURRENT_REQUEST_RE = re.compile(r"我想|我要|我需要|请|麻烦|帮我|帮
 _REFERENTIAL_TOPIC_RE = re.compile(r"^(?:它|这个|那个|这些|那些|上述|上面|前面|刚才)")
 _EMPTY_TOPIC_RE = re.compile(r"(?:一下|下|一搜|点|一些)?")
 _POLITE_END_RE = re.compile(r"(?:好吗|好不好|可以吗|行吗|吧|吗)$")
+_NON_REQUEST_RE = re.compile(
+    r"不要|不用|不需要|不想|别(?:去|帮|找|打开|搜|看|执行)|"
+    r"如果|假如|假设|要是|除非|比如|例如|举例|示例|"
+    r"(?:昨天|之前|曾经|当时|上次)|"
+    r"(?:怎么|如何|怎样|为什么|是否)|"
+    r"(?:这句|这段|这条|该指令|提示词|意图识别)|"
+    r"\b(?:if|unless|do\s+not|don't|example|how\s+to)\b",
+    re.I,
+)
+_REQUEST_START_RE = re.compile(
+    rf"^(?:(?:请你|请|麻烦你|麻烦|帮我|帮忙|替我|为我|给我|"
+    rf"我想要|我想|我要|我需要|能不能|能否|可不可以|可以|现在|先)|{_DESTINATION})",
+    re.I,
+)
+_CONSULTATION_RE = re.compile(
+    r"^(?:(?:我想要|我想|我要|我需要|请你|请|帮我|可以|能否|能不能|可不可以)\s*)*"
+    r"(?:知道|了解|解释|介绍|说明|分析|讨论|评价|请教|讲讲|讲解|告诉我)"
+)
+_GENERIC_TOPIC_RE = re.compile(
+    r"^(?:(?:一些|一点|点|些|几个|一部|相关|好看|好看的|随便|任意|推荐|的)\s*)*"
+    r"(?:视频|影片|电影|电视剧|番剧|教程|内容|东西|东西看看|看看)?$"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class BrowserActionDecision:
     """A routing result, deliberately without executable arguments."""
 
-    kind: Literal["search", "needs_clarification", "knowledge"]
+    kind: Literal["search", "needs_clarification", "knowledge", "semantic_candidate"]
     reason_code: str
     clarification_question: str = ""
 
@@ -71,18 +92,56 @@ def _topic_text(value: str) -> str:
     return text.strip(" \t\r\n:：,，。.!！?？;；\"'“”‘’「」『』`")
 
 
+def is_explicit_bilibili_topic(topic: str) -> bool:
+    """Require a named topic from this input, not history or generic video words."""
+    value = _topic_text(topic)
+    return bool(
+        value
+        and _EMPTY_TOPIC_RE.fullmatch(value) is None
+        and _REFERENTIAL_TOPIC_RE.search(value) is None
+        and _GENERIC_TOPIC_RE.fullmatch(value) is None
+        and _SITE_RE.fullmatch(value) is None
+    )
+
+
+def _unknown_bilibili_request(text: str) -> BrowserActionDecision:
+    """Separate genuinely unknown wording from blocked quotes and discussions.
+
+    This gate never authorizes a tool. It admits only one current, explicit
+    request to a pure classifier, which must still establish a named topic.
+    Quoted titles can be data, but the destination and request must be unquoted.
+    """
+    discussion = BrowserActionDecision("knowledge", "browser_bilibili_discussion")
+    unquoted = _QUOTED_RE.sub(" ", text).strip().rstrip("。.!！?？")
+    if (
+        _SITE_RE.search(unquoted) is None
+        or _CURRENT_REQUEST_RE.search(unquoted) is None
+        or _REQUEST_START_RE.search(unquoted) is None
+        or _CONSULTATION_RE.search(unquoted) is not None
+        or _NON_REQUEST_RE.search(unquoted) is not None
+        or _META_REFERENCE_RE.search(unquoted) is not None
+    ):
+        return discussion
+    if _EXTRA_OPERATION_RE.search(unquoted):
+        return BrowserActionDecision(
+            "needs_clarification", "browser_bilibili_single_action_only",
+            "请明确本次 B 站搜索的主题；组合任务中也需要分别写明每一步。",
+        )
+    return BrowserActionDecision("semantic_candidate", "browser_bilibili_semantic_candidate")
+
+
 def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
     """Recognize only a complete site-specific command in the current turn.
 
-    None leaves unrelated requests to existing intent handling. Mentions of a
-    browser action that fail this command grammar remain knowledge requests;
-    they cannot be promoted to execution by the optional intent classifier.
+    None leaves unrelated requests to existing intent handling. Unknown wording
+    with an explicit current request can be classified once in hybrid mode.
+    Definite discussions, negations and quoted commands never enter that path.
     Topic inspection checks completeness only and never supplies tool arguments.
     """
     if not isinstance(question, str) or not question.strip():
         return None
     text = question.strip()
-    if _SITE_RE.search(text) is None or _ACTION_RE.search(text) is None:
+    if _SITE_RE.search(text) is None:
         return None
     discussion = BrowserActionDecision("knowledge", "browser_bilibili_discussion")
     if "```" in text or "~~~" in text:
@@ -94,7 +153,7 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
                 "needs_clarification", "browser_bilibili_missing_topic",
                 "你想在 B 站搜索什么内容？请写出主题或作品名称。",
             )
-        return discussion
+        return _unknown_bilibili_request(text)
 
     raw_topic = match.group("topic")
     # Do not treat learning/viewing questions or a discussion of the sentence as
@@ -125,7 +184,7 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
             "请将 B 站搜索单独发送，并明确本次要搜索的主题。",
         )
     topic = _topic_text(raw_topic)
-    if not topic or _EMPTY_TOPIC_RE.fullmatch(topic) or _REFERENTIAL_TOPIC_RE.search(topic):
+    if not is_explicit_bilibili_topic(topic):
         return BrowserActionDecision(
             "needs_clarification", "browser_bilibili_missing_topic",
             "你想在 B 站搜索什么内容？请在本条消息中写出主题或作品名称。",

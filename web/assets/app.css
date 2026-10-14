@@ -542,6 +542,13 @@ button, a { transition: background-color 160ms ease, border-color 160ms ease, co
   .confirm-dialog { padding: 23px; }
 }
 
+.session-summary { max-width: 850px; margin: 0 auto 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font-size: 12px; }
+.session-summary > summary { padding: 12px 16px; cursor: pointer; color: var(--green); }
+.session-summary-body { padding: 0 16px 14px; }
+#session-summary-meta { color: var(--muted); line-height: 1.7; }
+#session-summary-content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+#session-summary-refresh { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

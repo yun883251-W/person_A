@@ -86,6 +86,7 @@ class IntentSettings:
     """Select deterministic intent rules or optional model assistance."""
 
     mode: Literal["rules", "hybrid"] = "rules"
+    browser_mode: Literal["rules", "hybrid"] = "hybrid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +174,33 @@ def get_intent_settings() -> IntentSettings:
     normalized_mode = mode.strip().lower()
     if normalized_mode not in {"rules", "hybrid"}:
         raise ValueError("INTENT_MODE 必须是 rules 或 hybrid")
-    return IntentSettings(mode=normalized_mode)  # type: ignore[arg-type]
+    browser_mode = os.environ.get(
+        "BROWSER_INTENT_MODE", dotenv.get("BROWSER_INTENT_MODE", "hybrid")
+    ).strip().lower()
+    if browser_mode not in {"rules", "hybrid"}:
+        raise ValueError("BROWSER_INTENT_MODE 必须是 rules 或 hybrid")
+    return IntentSettings(mode=normalized_mode, browser_mode=browser_mode)  # type: ignore[arg-type]
+
+
+def get_memory_settings():
+    """Read optional conversation-summary limits without loading a model."""
+    from .agent.memory import MemorySettings
+
+    dotenv = _dotenv_values(PROJECT_ROOT / ".env")
+
+    def value(name: str, default: str) -> str:
+        return os.environ.get(name, dotenv.get(name, default)).strip()
+
+    enabled = value("MEMORY_SUMMARY_ENABLED", "true").lower()
+    if enabled not in {"true", "false", "1", "0"}:
+        raise ValueError("MEMORY_SUMMARY_ENABLED 必须是 true 或 false")
+    return MemorySettings(
+        enabled=enabled in {"true", "1"},
+        max_chars=int(value("MEMORY_SUMMARY_MAX_CHARS", "2000")),
+        max_input_chars=int(value("MEMORY_SUMMARY_MAX_INPUT_CHARS", "16000")),
+        batch_turns=int(value("MEMORY_SUMMARY_BATCH_TURNS", "12")),
+        max_turn_chars=int(value("MEMORY_SUMMARY_MAX_TURN_CHARS", "3000")),
+    )
 
 
 def get_skill_selection_settings():

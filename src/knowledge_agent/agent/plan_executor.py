@@ -10,6 +10,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+
 from ..config import AgentConfig
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
 from .planner import PlanStep, TaskPlan, validate_plan_summary
@@ -67,16 +69,20 @@ def execute_plan(
         skip_reason = None
         if any(result is None or result.status != "success" for result in dependencies):
             skip_reason = "plan_dependency_unfinished"
-        # A generic MCP action requires one call to request tools and a second
-        # to report their result. Do not begin it without both calls available.
-        minimum_calls = 2 if step.kind == "mcp" else 1
+        # Browser search has a program-authored receipt and can finish with a
+        # single valid proposal. Its optional repair still uses remaining budget.
+        # Generic MCP tools need a second model call to report their result.
+        browser_search = step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
+        minimum_calls = 2 if step.kind == "mcp" and not browser_search else 1
         if skip_reason is None and config.max_model_calls - model_calls < minimum_calls:
             skip_reason = "plan_model_budget_exhausted"
         if skip_reason is None and tool_calls >= config.max_tool_calls:
             skip_reason = "plan_tool_budget_exhausted"
 
         dependency_context = ""
-        if dependencies:
+        # Dependencies gate every step, but only knowledge steps receive prior
+        # answers. An MCP argument must come from its original user clause.
+        if dependencies and step.kind == "knowledge":
             dependency_context = json.dumps(
                 {"completed_steps": [
                     {"step_id": key, "answer": results[key].answer}

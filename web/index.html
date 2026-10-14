@@ -95,6 +95,14 @@
         </div>
 
         <main id="conversation-scroll" class="conversation-scroll" tabindex="-1" aria-label="对话内容">
+          <details id="session-summary" class="session-summary" hidden>
+            <summary>早期对话摘要</summary>
+            <div class="session-summary-body">
+              <p id="session-summary-meta">展开后读取当前会话已保存的摘要。</p>
+              <p id="session-summary-content" role="status" aria-live="polite"></p>
+              <button id="session-summary-refresh" type="button">刷新摘要</button>
+            </div>
+          </details>
           <section id="welcome" class="welcome" aria-labelledby="welcome-title">
             <div class="welcome-illustration" aria-hidden="true">
               <svg class="welcome-art" viewBox="0 0 244 158" xmlns="http://www.w3.org/2000/svg" fill="none">

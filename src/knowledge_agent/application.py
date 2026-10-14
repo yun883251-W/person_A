@@ -10,10 +10,12 @@ from threading import Lock
 from typing import Any
 
 from .agent import assessment
+from .agent.memory import MemorySettings, MemoryUpdate, safe_summary_text, update_session_summary
 from .agent.runner import KnowledgeAgent
 from .agent.state import ConversationHistory, ConversationTurn, TurnPersistenceError, TurnState
-from .config import AgentConfig
+from .config import AgentConfig, get_memory_settings
 from .knowledge.retrieval import KnowledgeRetriever
+from .models import invoke_chat_model
 from .schemas import AnswerResult
 from .session_store import SessionNotFoundError, SessionStore
 from .tools.registry import InMemoryToolRegistry
@@ -50,6 +52,7 @@ class KnowledgeAgentApplication:
         session_store: SessionStore | None = None,
         mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
         owned_mcp_runtime: Any | None = None,
+        memory_settings: MemorySettings | None = None,
     ) -> None:
         self.agent = KnowledgeAgent(
             config,
@@ -63,6 +66,10 @@ class KnowledgeAgentApplication:
         self._operation: str | None = None
         self._operation_lock = Lock()
         self._closed = False
+        self.memory_settings = memory_settings if memory_settings is not None else get_memory_settings()
+        # Summary work is auxiliary: it never increments the completed answer's
+        # model_calls/tool_calls or rewrites a successfully committed result.
+        self.last_memory_update = MemoryUpdate("not_run")
 
     @property
     def config(self) -> AgentConfig:
@@ -94,6 +101,56 @@ class KnowledgeAgentApplication:
             raise SessionNotStartedError("start_session() must be called first")
         return self._session_id
 
+    def _release_session_memory(self, session_id: str) -> None:
+        self.agent.session_summaries.pop(session_id, None)
+        self.last_memory_update = MemoryUpdate("not_run")
+
+    def _restore_session_memory(self, session_id: str) -> None:
+        """Optional memory failures must not prevent restoring saved answers."""
+        self._release_session_memory(session_id)
+        if not self.memory_settings.enabled:
+            self.last_memory_update = MemoryUpdate("disabled")
+            return
+        loader = getattr(self.agent.session_store, "load_session_summary", None)
+        if not callable(loader):
+            self.last_memory_update = MemoryUpdate("unavailable", reason_code="memory_store_unavailable")
+            return
+        try:
+            record = loader(session_id)
+            if record is not None:
+                summary = safe_summary_text(record.summary, max_chars=self.memory_settings.max_chars)
+                if summary:
+                    self.agent.session_summaries[session_id] = summary
+            self.last_memory_update = MemoryUpdate("unchanged", record=record)
+        except Exception:
+            self.last_memory_update = MemoryUpdate("failed", reason_code="memory_restore_failed")
+
+    def _maintain_session_memory(self, session_id: str) -> None:
+        update = MemoryUpdate("not_run")
+        try:
+            update = update_session_summary(
+                self.agent.session_store, session_id, settings=self.memory_settings,
+                max_history_turns=self.config.max_history_turns,
+                # One attempt per batch; provider retries must not multiply it.
+                model_invoker=lambda messages: invoke_chat_model(self.agent.model, messages, max_retries=0),
+            )
+            self.last_memory_update = update
+            if update.status in {"updated", "unchanged", "conflict"}:
+                summary = (
+                    safe_summary_text(update.record.summary, max_chars=self.memory_settings.max_chars)
+                    if update.record is not None else ""
+                )
+                if summary:
+                    self.agent.session_summaries[session_id] = summary
+                else:
+                    self.agent.session_summaries.pop(session_id, None)
+        except Exception:
+            # Even a custom store's unexpected memory failure must not turn a
+            # durable answer into an application failure. Interrupts propagate.
+            self.last_memory_update = MemoryUpdate(
+                "failed", update.model_calls, "memory_maintenance_failed",
+            )
+
     def start_session(self, session_id: str | None = None) -> str:
         """Create and activate a new, empty session."""
         self._begin_operation("start_session")
@@ -116,6 +173,7 @@ class KnowledgeAgentApplication:
                     else uuid.uuid4().hex
                 )
             self.agent.clear_session(key)
+            self._restore_session_memory(key)
             self._session_id = key
             return key
         finally:
@@ -162,6 +220,7 @@ class KnowledgeAgentApplication:
                 )
             if restored_assessment is not None:
                 self.agent.assessment_states[key] = restored_assessment
+            self._restore_session_memory(key)
             self._session_id = key
             return key
         finally:
@@ -181,12 +240,18 @@ class KnowledgeAgentApplication:
                     self.agent.mcp_registry = create_mcp_tool_registry(self._owned_mcp_runtime)
                 else:
                     self.agent.mcp_registry = InMemoryToolRegistry()
-            return self.agent.ask(
+            session_id = self._require_session()
+            result = self.agent.ask(
                 question,
-                session_id=self._require_session(),
+                session_id=session_id,
                 skill_id=skill_id,
                 skill_mode=skill_mode,
             )
+            if result.status not in {"service_error", "limit_reached"}:
+                self._maintain_session_memory(session_id)
+            else:
+                self.last_memory_update = MemoryUpdate("not_run")
+            return result
         finally:
             self._finish_operation()
 
@@ -201,6 +266,7 @@ class KnowledgeAgentApplication:
                 if not store.clear_session(session_id):
                     raise SessionNotFoundError("Session does not exist")
             self.agent.clear_session(session_id)
+            self._release_session_memory(session_id)
         finally:
             self._finish_operation()
 
@@ -210,6 +276,7 @@ class KnowledgeAgentApplication:
         try:
             session_id = self._require_session()
             self.agent.clear_session(session_id)
+            self._release_session_memory(session_id)
             self._session_id = None
         finally:
             self._finish_operation()
@@ -224,8 +291,11 @@ class KnowledgeAgentApplication:
                 raise AgentApplicationError("session persistence is not configured")
             store.initialize()
             deleted = store.delete_session(key)
+            if deleted:
+                self.agent.session_summaries.pop(key, None)
             if deleted and self._session_id == key:
                 self.agent.clear_session(key)
+                self._release_session_memory(key)
                 self._session_id = None
             return deleted
         finally:
@@ -240,6 +310,7 @@ class KnowledgeAgentApplication:
             try:
                 if self._session_id is not None:
                     self.agent.clear_session(self._session_id)
+                    self._release_session_memory(self._session_id)
                     self._session_id = None
             finally:
                 try:
@@ -285,6 +356,7 @@ def create_agent_application(
     session_store: SessionStore | None = None,
     mcp_registry: InMemoryToolRegistry[TurnState] | None = None,
     owned_mcp_runtime: Any | None = None,
+    memory_settings: MemorySettings | None = None,
 ) -> KnowledgeAgentApplication:
     """Create the shared CLI/API boundary with an already prepared tool registry.
 
@@ -298,4 +370,5 @@ def create_agent_application(
         session_store=session_store,
         mcp_registry=mcp_registry,
         owned_mcp_runtime=owned_mcp_runtime,
+        memory_settings=memory_settings,
     )

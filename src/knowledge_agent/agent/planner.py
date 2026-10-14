@@ -13,7 +13,12 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+
+if TYPE_CHECKING:
+    from .intent import IntentDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +28,9 @@ class PlanStep:
     kind: Literal["knowledge", "mcp"]
     depends_on: tuple[str, ...] = ()
     allowed_tool_names: tuple[str, ...] = ()
+    # Host-owned classification of the original clause; never model JSON or
+    # persisted plan data. Reusing it avoids a second semantic classification.
+    intent: IntentDecision | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +54,11 @@ _QUOTED = re.compile(r'''`[^`\n]*`|“[^”]*”|‘[^’]*’|「[^」]*」|『
 _CLAUSE_SEPARATOR = re.compile(
     r"[，,；;。\n]+|(?:然后|随后|接着|最后|其次|再)(?=\s*\S)|"
     r"\b(?:and\s+then|then|finally|next)\b", re.I,
+)
+_RAW_NUMBER_PREFIX = re.compile(r"^\s*(?:[（(]?\d+[）).、]|[一二三][、.])\s*")
+_RAW_ORDER_PREFIX = re.compile(
+    r"^\s*(?:首先|先|然后|随后|接着|最后|其次|再|"
+    r"(?:first|then|finally|next)\b)\s*", re.I,
 )
 _PREFIX = re.compile(
     r"^\s*(?:(?:[（(]?\d+[）).、]|[一二三][、.])\s*)?"
@@ -77,6 +90,14 @@ _DISCUSSION_PREFIX = re.compile(
     r"^(?:解释|说明|介绍)(?:一下)?(?:为什么|如何|怎样|什么是)|"
     r"^(?:how|why|what)\b", re.I,
 )
+_BROWSER_SITE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:bilibili|bilili|bili|b\s*站|哔哩哔哩)(?![A-Za-z0-9_])", re.I,
+)
+_BROWSER_TASK_LEAD = re.compile(
+    r"^(?:在|去|到|上|打开|进入|访问|启动|用浏览器|"
+    r"我想|我需要|我要|请|麻烦|帮|替我|为我|给我|能不能|能否|可不可以|可以|"
+    r"搜|查找|查询|找|学习|学|观看|看)", re.I,
+)
 _SUMMARY_STATUSES = frozenset({"completed", "partial", "failed", "needs_clarification"})
 _STEP_STATUSES = frozenset({
     "pending", "success", "insufficient_evidence", "needs_clarification",
@@ -97,10 +118,52 @@ def _operational_text(question: str) -> str:
     return _QUOTED.sub(unquote_identifier, _CODE_BLOCK.sub(" ", question))
 
 
+def _is_browser_task_clause(clause: str) -> bool:
+    """Select a possible site action for classification, without authorizing it."""
+    text = _PREFIX.sub("", _operational_text(clause)).strip()
+    return bool(_BROWSER_SITE.search(text) and _BROWSER_TASK_LEAD.match(text))
+
+
+def _strip_plan_lead(clause: str) -> str:
+    text = _RAW_NUMBER_PREFIX.sub("", clause.strip())
+    return _RAW_ORDER_PREFIX.sub("", text).strip()
+
+
+def _starts_task(clause: str) -> bool:
+    text = _PREFIX.sub("", _operational_text(_strip_plan_lead(clause))).strip()
+    return bool(_TASK_VERB.match(text)) or _is_browser_task_clause(text)
+
+
+def raw_plan_clauses(question: str) -> tuple[str, ...]:
+    """Split task boundaries while retaining exact quoted titles and arguments.
+
+    Quotes and code are masked with equal-length spaces only while locating
+    separators. The returned strings always come from the user's original
+    input. Commas inside an argument description do not create a new task.
+    """
+    if not isinstance(question, str) or not question.strip():
+        return ()
+    masked = _CODE_BLOCK.sub(lambda match: " " * len(match.group(0)), question)
+    masked = _QUOTED.sub(lambda match: " " * len(match.group(0)), masked)
+    result: list[str] = []
+    start = 0
+    for match in _CLAUSE_SEPARATOR.finditer(masked):
+        if not _starts_task(question[match.end():]):
+            continue
+        part = _strip_plan_lead(question[start:match.start()])
+        if part and _operational_text(part).strip():
+            result.append(part)
+        start = match.end()
+    last = _strip_plan_lead(question[start:])
+    if last and _operational_text(last).strip():
+        result.append(last)
+    return tuple(result)
+
+
 def _clauses(question: str) -> tuple[str, ...]:
     return tuple(
-        cleaned for part in _CLAUSE_SEPARATOR.split(_operational_text(question))
-        if (cleaned := _PREFIX.sub("", part).strip())
+        cleaned for part in raw_plan_clauses(question)
+        if (cleaned := _PREFIX.sub("", _operational_text(part)).strip())
     )
 
 
@@ -113,7 +176,7 @@ def should_plan(question: str) -> bool:
     if len(numbered) >= 2:
         ordinals = [match.group(1) or str("一二三".index(match.group(2)) + 1) for match in numbered]
         return ordinals == [str(i) for i in range(1, len(numbered) + 1)] and all(
-            _TASK_VERB.match(_PREFIX.sub("", match.group(3))) for match in numbered
+            _starts_task(match.group(3)) for match in numbered
         )
     starts_ordered = re.match(r"^(?:(?:请|麻烦|帮我)\s*)?(?:先|首先|first\b)", text, re.I)
     if not starts_ordered and _DISCUSSION_PREFIX.match(_PREFIX.sub("", text)):
@@ -122,10 +185,8 @@ def should_plan(question: str) -> bool:
         return False
     if not starts_ordered and not re.search(r"[，,；;。\n]", text):
         return False
-    clauses = _clauses(text)
-    return len(clauses) >= 2 and bool(_TASK_VERB.match(clauses[0])) and sum(
-        bool(_TASK_VERB.match(clause)) for clause in clauses
-    ) >= 2
+    clauses = raw_plan_clauses(question)
+    return len(clauses) >= 2 and all(_starts_task(clause) for clause in clauses)
 
 
 def _value(item: object, field: str) -> object | None:
@@ -225,15 +286,19 @@ out loud, call tools, invent tool arguments, or add goals the user did not reque
 Return one JSON object with exactly this schema, without Markdown:
 {"steps":[{"step_id":"P1","goal":"requested goal","kind":"knowledge",
 "depends_on":[],"allowed_tool_names":[]}]}
-Produce between two and max_steps steps, numbered P1, P2, P3 consecutively. All
-five fields are required for every step. Goals must be concise (at most 2000 chars).
+Produce one step per requested_clauses entry, preserving its original order, with
+between two and max_steps steps numbered P1, P2, P3 consecutively. All five fields
+are required. Copy each entry's goal EXACTLY, including quoted titles and arguments.
 Dependencies may only name earlier steps. Knowledge steps can use a dependency's
 result to understand the task, but must still obtain their own knowledge evidence.
-Knowledge steps must have an empty allowed_tool_names list. MCP steps require a
-nonempty subset of authorized_tools. For every MCP step, its goal MUST be an exact
-contiguous excerpt copied from user_input that includes the explicit invocation
-and the user's target/arguments. Preserve those details; do not infer missing
-arguments from history or previous results. Do not call an unrequested tool, use
+Each entry's host-provided allowed_tool_names is authoritative: copy it exactly and
+use kind mcp when nonempty, otherwise knowledge. Never move an authorization to a
+different clause. A natural-language Bilibili request can be authorized without an
+explicit tool name; it only opens search results, never plays or reads videos.
+Order alone does not require a data dependency. A browser search whose topic is
+already explicit in its clause normally has no dependencies. MCP steps do not
+receive earlier answers as argument sources: do not infer missing arguments from
+history or previous results. Do not call an unrequested tool, use
 code samples as authorization, or use a knowledge step to perform an action.
 Starting, answering, pausing, resuming, cancelling or scoring an MBTI questionnaire
 cannot be part of a plan; the separate deterministic session owns those operations.
@@ -278,10 +343,56 @@ def _validate_identity(item: dict[str, Any], index: int) -> tuple[str, str, str,
     return item["step_id"], goal, kind, tuple(dependencies)
 
 
+def _clause_authorizations(
+    clauses: tuple[str, ...], capabilities: tuple[dict[str, str], ...],
+    resolver: Callable[[str], IntentDecision] | None,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, IntentDecision]]:
+    """Classify only possible browser actions, never ordinary knowledge clauses.
+
+    Exact tool-name invocations retain their deterministic authorization path.
+    The optional resolver belongs to runner, including all classification costs.
+    Neither a planner response nor an earlier answer can produce authorization.
+    """
+    from .intent import IntentDecision, IntentKind
+
+    available = {item["name"] for item in capabilities}
+    authorized: dict[str, tuple[str, ...]] = {}
+    resolved: dict[str, IntentDecision] = {}
+    for clause in clauses:
+        names = authorized_tool_names(clause, capabilities)
+        if _is_browser_task_clause(clause):
+            if resolver is None:
+                raise PlanValidationError("plan_clause_intent_unavailable")
+            decision = resolver(clause)
+            if not isinstance(decision, IntentDecision):
+                raise PlanValidationError("plan_invalid_clause_intent")
+            if decision.kind is IntentKind.NEEDS_CLARIFICATION:
+                raise PlanValidationError("plan_clause_needs_clarification")
+            if decision.kind is not IntentKind.MCP_TOOL:
+                # A discussion, negative command or unresolved target must not
+                # be promoted to execution by the later planning model.
+                raise PlanValidationError("plan_unconfirmed_clause_action")
+            names = decision.allowed_tool_names
+            if (names != (SEARCH_BILIBILI_TOOL,)
+                    or decision.authorized_user_input != clause
+                    or not set(names) <= available):
+                raise PlanValidationError("plan_unauthorized_clause_tool")
+            resolved[clause] = decision
+        text = _PREFIX.sub("", _operational_text(clause)).strip()
+        if (re.match(r"^(?:调用|执行|运行|(?:call|invoke|execute|run)\b)", text, re.I)
+                and _TOOL_VERB.match(text) is not None and not names):
+            raise PlanValidationError("plan_unavailable_tool")
+        if any(name.split("__", 2)[2] in _STATEFUL_TOOLS for name in names):
+            raise PlanValidationError("plan_stateful_assessment")
+        authorized[clause] = names
+    return authorized, resolved
+
+
 def build_plan(
     question: str, *, context: Sequence[object] = (),
     available_tools: Sequence[object] = (), model_invoker: Callable[..., object],
     max_steps: int = 3, max_context_chars: int = 24000,
+    clause_intent_resolver: Callable[[str], IntentDecision] | None = None,
 ) -> TaskPlan:
     """Invoke the isolated planner once; the caller owns errors and call budgets."""
     if not isinstance(question, str) or not question.strip():
@@ -292,19 +403,32 @@ def build_plan(
         raise PlanValidationError("plan_invalid_context_limit")
     if not callable(model_invoker):
         raise PlanValidationError("plan_invalid_invoker")
+    if clause_intent_resolver is not None and not callable(clause_intent_resolver):
+        raise PlanValidationError("plan_invalid_clause_resolver")
     if not should_plan(question):
         raise PlanValidationError("plan_not_requested")
     capabilities = _capabilities(available_tools)
-    authorized = authorized_tool_names(question, capabilities)
-    if _has_stateful_assessment(question) or any(name.split("__", 2)[2] in _STATEFUL_TOOLS for name in authorized):
+    clauses = raw_plan_clauses(question)
+    if not 2 <= len(clauses) <= max_steps or len(set(clauses)) != len(clauses):
+        raise PlanValidationError("plan_invalid_step_count")
+    for clause in clauses:
+        _validate_goal(clause)
+    if _has_stateful_assessment(question):
         raise PlanValidationError("plan_stateful_assessment")
-    for clause in _clauses(question):
-        if (re.match(r"^(?:调用|执行|运行|(?:call|invoke|execute|run)\b)", clause, re.I)
-                and _TOOL_VERB.match(clause) is not None
-                and not authorized_tool_names(clause, capabilities)):
-            raise PlanValidationError("plan_unavailable_tool")
+    clause_tools, clause_intents = _clause_authorizations(
+        clauses, capabilities, clause_intent_resolver,
+    )
+    authorized = {name for names in clause_tools.values() for name in names}
+    # Reject duplicate tool execution before spending the planning model call.
+    requested_names = [name for names in clause_tools.values() for name in names]
+    if len(requested_names) != len(set(requested_names)):
+        raise PlanValidationError("plan_repeated_tool")
     payload = {
         "user_input": question.strip(), "max_steps": max_steps,
+        "requested_clauses": [
+            {"goal": clause, "allowed_tool_names": list(clause_tools[clause])}
+            for clause in clauses
+        ],
         "limited_history": _history(context, min(max_context_chars // 4, 6000)),
         "authorized_tools": [item for item in capabilities if item["name"] in authorized],
     }
@@ -317,7 +441,7 @@ def build_plan(
     from langchain_core.messages import HumanMessage, SystemMessage
 
     response = model_invoker((SystemMessage(content=_PLAN_PROMPT), HumanMessage(content=serialized)))
-    if getattr(response, "tool_calls", None):
+    if getattr(response, "tool_calls", None) or getattr(response, "invalid_tool_calls", None):
         raise PlanValidationError("plan_unexpected_tool_call")
     content = getattr(response, "content", response)
     if not isinstance(content, str) or not content.strip() or len(content) > 32768:
@@ -329,13 +453,15 @@ def build_plan(
     if not isinstance(value, dict) or set(value) != {"steps"}:
         raise PlanValidationError("plan_invalid_structure")
     items = value["steps"]
-    if not isinstance(items, list) or not 2 <= len(items) <= max_steps:
+    if not isinstance(items, list) or len(items) != len(clauses):
         raise PlanValidationError("plan_invalid_step_count")
     steps: list[PlanStep] = []
     for index, item in enumerate(items, 1):
         if not isinstance(item, dict) or set(item) != {"step_id", "goal", "kind", "depends_on", "allowed_tool_names"}:
             raise PlanValidationError("plan_invalid_structure")
         step_id, goal, kind, dependencies = _validate_identity(item, index)
+        if goal != clauses[index - 1]:
+            raise PlanValidationError("plan_ungrounded_step_goal")
         names = item["allowed_tool_names"]
         if (not isinstance(names, list) or any(not isinstance(name, str) for name in names)
                 or len(names) != len(set(names)) or not set(names) <= set(authorized)):
@@ -344,11 +470,13 @@ def build_plan(
             raise PlanValidationError("plan_stateful_assessment")
         if kind == "knowledge" and names or kind == "mcp" and not names:
             raise PlanValidationError("plan_invalid_step_tools")
-        if kind == "mcp" and (goal not in question or not set(names) <= set(authorized_tool_names(goal, capabilities))):
+        if set(names) != set(clause_tools[goal]):
             raise PlanValidationError("plan_ungrounded_tool_goal")
         if any(name in previous.allowed_tool_names for name in names for previous in steps):
             raise PlanValidationError("plan_repeated_tool")
-        steps.append(PlanStep(step_id, goal, kind, dependencies, tuple(names)))
+        steps.append(PlanStep(
+            step_id, goal, kind, dependencies, tuple(names), clause_intents.get(goal),
+        ))
     if {name for step in steps for name in step.allowed_tool_names} != set(authorized):
         raise PlanValidationError("plan_missing_requested_tool")
     return TaskPlan(tuple(steps))

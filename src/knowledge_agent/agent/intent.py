@@ -50,6 +50,9 @@ class IntentDecision:
     decision_source: Literal["rules", "model", "fallback"] = "rules"
     clarification_question: str = ""
     reason_code: str = ""
+    # Runtime-only provenance: copied by program from the exact current input
+    # after browser intent validation, never supplied by classifier JSON.
+    authorized_user_input: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,11 +410,18 @@ def _identify_intent_with_rules(
                 kind=IntentKind.MCP_TOOL,
                 allowed_tool_names=(SEARCH_BILIBILI_TOOL,),
                 reason_code=browser.reason_code,
+                authorized_user_input=cleaned,
             )
         if browser.kind == "needs_clarification":
             return IntentDecision(
                 kind=IntentKind.NEEDS_CLARIFICATION,
                 clarification_question=browser.clarification_question,
+                reason_code=browser.reason_code,
+            )
+        if browser.kind == "semantic_candidate":
+            return IntentDecision(
+                kind=IntentKind.NEEDS_CLARIFICATION,
+                clarification_question="请明确要在 B 站搜索的主题，例如：请在 B 站搜索 Python 装饰器。",
                 reason_code=browser.reason_code,
             )
         return IntentDecision(
@@ -654,6 +664,76 @@ def _hybrid_model_decision(
     raise _IntentModelValidationError("intent_model_invalid_fields")
 
 
+def _identify_browser_semantics(
+    question: str,
+    *,
+    available_tools: Sequence[object],
+    model: BaseChatModel | None,
+    model_invoker: Callable[[Sequence[BaseMessage]], object] | None,
+) -> IntentDecision:
+    """Resolve an admitted browser candidate once; errors never grant tools."""
+    from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+
+    from ..models import ChatModelTimeoutError
+    from .semantic_intent import (
+        BrowserSemanticValidationError, classify_bilibili_semantics,
+    )
+
+    if SEARCH_BILIBILI_TOOL not in {
+        item.name for item in snapshot_mcp_capabilities(available_tools)
+    }:
+        return IntentDecision(
+            kind=IntentKind.NEEDS_CLARIFICATION,
+            clarification_question=(
+                "B 站浏览器搜索工具当前未启用或不可用。"
+                "请启用 browser MCP 服务后重试，或明确改为知识问题。"
+            ),
+            reason_code="browser_bilibili_unavailable",
+        )
+    try:
+        decision = classify_bilibili_semantics(
+            question, model=model, model_invoker=model_invoker,
+        )
+        if decision.kind == "search":
+            return IntentDecision(
+                kind=IntentKind.MCP_TOOL,
+                allowed_tool_names=(SEARCH_BILIBILI_TOOL,),
+                decision_source="model",
+                reason_code=decision.reason_code,
+                authorized_user_input=question,
+            )
+        if decision.kind == "knowledge":
+            return IntentDecision(
+                kind=IntentKind.KNOWLEDGE,
+                retrieval_query=question,
+                decision_source="model",
+                reason_code=decision.reason_code,
+            )
+        return IntentDecision(
+            kind=IntentKind.NEEDS_CLARIFICATION,
+            decision_source="model",
+            clarification_question=decision.clarification_question,
+            reason_code=decision.reason_code,
+        )
+    except BrowserSemanticValidationError as exc:
+        code = exc.reason_code
+    except IntentModelBudgetError:
+        code = "browser_bilibili_semantic_budget_exhausted"
+    except (ChatModelTimeoutError, TimeoutError):
+        code = "browser_bilibili_semantic_timeout"
+    except Exception:
+        code = "browser_bilibili_semantic_error"
+    return IntentDecision(
+        kind=IntentKind.NEEDS_CLARIFICATION,
+        decision_source="fallback",
+        clarification_question=(
+            "本次未能确认你的 B 站搜索意图。请在当前消息中明确搜索主题，"
+            "例如：请在 B 站搜索 Python 装饰器。"
+        ),
+        reason_code=code,
+    )
+
+
 def identify_intent(
     question: str,
     *,
@@ -687,6 +767,14 @@ def identify_intent(
         # This dedicated boundary also accepts topics such as MCP 工具教程.
         # The assessment module's broader teaching guard must not turn an
         # explicit browser search into a knowledge answer or an MBTI action.
+        if (
+            rules_decision.reason_code == "browser_bilibili_semantic_candidate"
+            and settings.browser_mode == "hybrid"
+        ):
+            return _identify_browser_semantics(
+                question.strip(), available_tools=available_tools,
+                model=model, model_invoker=model_invoker,
+            )
         return rules_decision
     from .assessment import (
         TOOLS, is_tool_instruction_question, request_action, request_clarification,

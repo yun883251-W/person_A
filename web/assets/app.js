@@ -19,6 +19,7 @@
     "knowledge-preview-warning", "knowledge-preview-prev", "knowledge-preview-next",
     "knowledge-preview-page", "knowledge-preview-jump-form", "knowledge-preview-line",
     "knowledge-preview-jump-button", "knowledge-preview-reload",
+    "session-summary", "session-summary-meta", "session-summary-content", "session-summary-refresh",
   ].map((id) => [id, byId(id)]));
   const PAGE_SIZE = 100;
   const PREVIEW_PAGE_SIZE = 200;
@@ -32,6 +33,7 @@
     knowledgeStatus: null, knowledgeStatusStale: true,
     knowledgePreviewPath: null, knowledgePreview: null, knowledgePreviewRequest: null,
     knowledgePreviewReferenceHash: null, knowledgePreviewChanged: false,
+    summaryRequestVersion: 0,
   };
   const statusLabels = {
     success: "基于知识库回答", insufficient_evidence: "资料不足",
@@ -1238,6 +1240,34 @@
     return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(date);
   }
 
+  function resetSummaryPanel() {
+    state.summaryRequestVersion += 1;
+    ui["session-summary"].open = false;
+    ui["session-summary-meta"].textContent = "展开后读取当前会话已保存的摘要。";
+    ui["session-summary-content"].textContent = "";
+  }
+
+  async function refreshSummary() {
+    const id = state.current?.session_id;
+    if (!id || chatControlsLocked()) return;
+    const version = ++state.summaryRequestVersion;
+    setOperation("summary");
+    ui["session-summary-meta"].textContent = "正在读取摘要…";
+    try {
+      const result = await request(`/sessions/${encodeURIComponent(id)}/summary`);
+      if (state.current?.session_id !== id || version !== state.summaryRequestVersion) return;
+      ui["session-summary-content"].textContent = result.summary || "尚未生成知识对话摘要。";
+      ui["session-summary-meta"].textContent = result.covered_turn_no
+        ? `已整理至第 ${result.covered_turn_no} 轮；仅归纳知识问答，完整历史仍保留。`
+        : "较早的知识问答会在超出最近历史窗口后归纳；也可能尚未启用或更新未完成。";
+    } catch (error) {
+      if (state.current?.session_id !== id || version !== state.summaryRequestVersion) return;
+      ui["session-summary-meta"].textContent = `摘要暂未刷新：${error.message}`;
+    } finally {
+      setOperation(null);
+    }
+  }
+
   function renderSessions() {
     const search = ui["session-search"].value.trim().toLocaleLowerCase();
     const sessions = state.sessions.filter((session) => (session.title || "未命名会话").toLocaleLowerCase().includes(search));
@@ -1262,6 +1292,8 @@
 
   function updateControls() {
     const busy = chatControlsLocked();
+    ui["session-summary"].hidden = !state.current;
+    ui["session-summary-refresh"].disabled = busy || !state.current;
     for (const id of ["new-session", "refresh-sessions", "load-more-sessions"]) ui[id].disabled = busy;
     for (const id of ["refresh-history", "clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
     ui.question.disabled = busy;
@@ -1315,6 +1347,7 @@
   }
 
   function resetConversation() {
+    resetSummaryPanel();
     state.current = null; state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; state.assessmentModeHint = false;
     rememberSession(null); ui.question.value = ""; fitInput();
     renderConversation(); updateControls();
@@ -1327,6 +1360,7 @@
       const record = await request(`/sessions/${encodeURIComponent(id)}`);
       const turns = await loadHistory(id);
       state.current = record; state.turns = turns; state.pendingQuestion = ""; state.needsRefresh = false;
+      resetSummaryPanel();
       state.assessmentModeHint = false;
       rememberSession(id); ui.question.value = ""; fitInput(); renderConversation();
     } catch (error) {
@@ -1396,6 +1430,7 @@
     } finally {
       state.liveProgress = [];
       setOperation(null); renderConversation(); fitInput(); ui.question.focus();
+      if (!state.needsRefresh && ui["session-summary"].open) void refreshSummary();
     }
   }
 
@@ -1426,6 +1461,7 @@
         state.sessions = state.sessions.filter((item) => item.session_id !== id);
         resetConversation();
       } else {
+        resetSummaryPanel();
         state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; renderConversation();
       }
       notice(kind === "delete" ? "会话已删除。" : "历史已清空，可以开始新的提问。", "info");
@@ -1474,6 +1510,10 @@
   ui["load-more-sessions"].addEventListener("click", () => refreshSessions(true));
   ui["refresh-sessions"].addEventListener("click", () => refreshSessions());
   ui["refresh-history"].addEventListener("click", refreshHistory);
+  ui["session-summary-refresh"].addEventListener("click", refreshSummary);
+  ui["session-summary"].addEventListener("toggle", () => {
+    if (ui["session-summary"].open) void refreshSummary();
+  });
   ui["clear-session"].addEventListener("click", () => manageSession("clear"));
   ui["delete-session"].addEventListener("click", () => manageSession("delete"));
   ui["notice-dismiss"].addEventListener("click", () => notice(""));

@@ -13,6 +13,7 @@ from ..schemas import (
     SessionId,
     SessionListResponse,
     SessionResponse,
+    SessionSummaryResponse,
     TurnListResponse,
 )
 from ..serialization import _session_response, _turn_response
@@ -90,6 +91,32 @@ def register_routes(application: FastAPI) -> None:
                 detail="Session not found",
             )
         return _session_response(record)
+
+    @application.get(
+        "/sessions/{session_id}/summary",
+        response_model=SessionSummaryResponse,
+        summary="读取早期知识对话摘要",
+        description="只读取已保存的摘要与处理进度，不生成摘要、不调用模型；完整问答历史仍可单独读取。",
+        responses={404: {"model": ErrorResponse, "description": "会话不存在"}},
+    )
+    async def get_summary(session_id: SessionId) -> SessionSummaryResponse:
+        runtime: ServiceRuntime = application.state.runtime
+
+        def read_summary(store):
+            if store.get_session(session_id) is None:
+                return None
+            record = store.load_session_summary(session_id)
+            return SessionSummaryResponse(
+                session_id=session_id,
+                summary=record.summary if record is not None else "",
+                covered_turn_no=record.covered_turn_no if record is not None else 0,
+                updated_at=record.updated_at if record is not None else None,
+            )
+
+        result = await runtime.run_store(read_summary)
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        return result
 
     @application.get(
         "/sessions/{session_id}/messages",
