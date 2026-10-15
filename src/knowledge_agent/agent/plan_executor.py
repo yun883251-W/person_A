@@ -6,16 +6,16 @@ models, discover tools, change assessment state, or persist intermediate turns.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 from ..config import AgentConfig
-from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
+from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult, RouteSummary, StepAnswerDiagnostics
 from .answer_contract import ANSWER_VALIDATION_REASONS
-from .citations import historical_answer_text
+from .answer_diagnostics import answer_diagnostics_trace_fields, public_answer_diagnostics
+from .dependencies import DependencyContext, dependency_step, is_dependency_transform
 from .planner import PlanStep, TaskPlan, validate_plan_summary
 from .trace import TraceRecorder, finish_trace_safely
 
@@ -33,6 +33,9 @@ class StepOutcome:
     result: AnswerResult
     followup_searches: int = 0
     context_chars: int = 0
+    # Runtime-only original material, never serialized into the public plan or
+    # restored from a previous chat. Downstream leaves register new source IDs.
+    evidence: tuple[RetrievalResult, ...] = ()
 
 
 _SKIPPED_MESSAGES = {
@@ -55,7 +58,9 @@ def _outcome_kind(result: AnswerResult) -> str:
 
 
 def minimum_step_budget(step: PlanStep) -> tuple[int, int]:
-    """Reserve one initial retrieval for knowledge, or the requested MCP calls."""
+    """Reuse-only transformations need an answer but no fresh search call."""
+    if step.kind == "knowledge" and is_dependency_transform(step.goal, bool(step.depends_on)):
+        return 1, 0
     browser = step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
     model_calls = 2 if step.kind == "mcp" and not browser else 1
     return model_calls, max(1, len(step.allowed_tool_names))
@@ -68,7 +73,7 @@ def execute_plan(
     config: AgentConfig,
     initial_model_calls: int,
     trace: TraceRecorder,
-    run_step: Callable[[PlanStep, StepBudget, str, TraceRecorder], StepOutcome],
+    run_step: Callable[[PlanStep, StepBudget, DependencyContext, TraceRecorder], StepOutcome],
 ) -> AnswerResult:
     """Run independent steps when possible, skipping failed dependencies.
 
@@ -77,6 +82,8 @@ def execute_plan(
     """
     results: dict[str, AnswerResult] = {}
     goals = {step.step_id: step.goal for step in plan.steps}
+    kinds = {step.step_id: step.kind for step in plan.steps}
+    evidence_by_step: dict[str, tuple[RetrievalResult, ...]] = {}
     summaries: list[dict] = []
     sections: list[str] = []
     sources: dict[tuple[str, str], AnswerSource] = {}
@@ -100,20 +107,6 @@ def execute_plan(
         if skip_reason is None and config.max_tool_calls - tool_calls < minimum_tools:
             skip_reason = "plan_tool_budget_exhausted"
 
-        dependency_context = ""
-        # Dependencies gate every step, but only knowledge steps receive prior
-        # answers. An MCP argument must come from its original user clause.
-        if dependencies and step.kind == "knowledge":
-            dependency_context = json.dumps(
-                {"completed_steps": [
-                    {
-                        "step_id": key, "goal": goals[key],
-                        "answer": historical_answer_text(results[key].answer, results[key].sources),
-                    }
-                    for key in step.depends_on if key in results
-                ]},
-                ensure_ascii=False,
-            )
         if skip_reason is not None:
             unavailable.add(step.step_id)
             limit_hit |= skip_reason != "plan_dependency_unfinished"
@@ -128,6 +121,14 @@ def execute_plan(
                 error_code=skip_reason if skip_reason != "plan_dependency_unfinished" else None,
             )
             continue
+
+        # Transport completed knowledge answers with their actual cited source
+        # snapshots. Tool results can gate a step, but are never KB evidence.
+        dependency_context = DependencyContext(tuple(
+            dependency_step(key, goals[key], results[key], evidence_by_step.get(key, ()))
+            for key in step.depends_on
+            if step.kind == "knowledge" and kinds[key] == "knowledge"
+        ))
 
         # Leave a first answer/retrieval for every later viable step. Extra
         # selection calls, supplemental reads and repairs may use only surplus.
@@ -153,6 +154,8 @@ def execute_plan(
         outcome = run_step(step, remaining, dependency_context, trace)
         result = outcome.result
         results[step.step_id] = result
+        if step.kind == "knowledge":
+            evidence_by_step[step.step_id] = outcome.evidence
         model_calls += result.model_calls
         tool_calls += result.tool_calls
         followup_searches += outcome.followup_searches
@@ -160,13 +163,17 @@ def execute_plan(
         if outcome_kind != "completed":
             unavailable.add(step.step_id)
         limit_hit |= result.status == "limit_reached"
-        summaries.append({
+        step_summary = {
             "step_id": step.step_id, "goal": step.goal, "kind": step.kind,
             "depends_on": list(step.depends_on),
             "status": "service_error" if result.stop_reason == "partial_tool_failure" else result.status,
             "model_calls": result.model_calls, "tool_calls": result.tool_calls,
             "stop_reason": result.stop_reason,
-        })
+        }
+        diagnostic = public_answer_diagnostics(result.answer_diagnostics)
+        if diagnostic is not None:
+            step_summary["answer_diagnostics"] = diagnostic
+        summaries.append(step_summary)
         label = {
             "success": "", "insufficient_evidence": "资料覆盖不足：",
             "needs_clarification": "需要补充信息：", "service_error": "执行失败：",
@@ -188,6 +195,7 @@ def execute_plan(
             reason_code=result.stop_reason, route_kind=step.kind,
             result_count=len(result.sources),
             error_code=result.stop_reason if outcome_kind in {"validation", "execution"} else None,
+            **answer_diagnostics_trace_fields(result.answer_diagnostics),
         )
 
     completed = sum(item["status"] == "success" for item in summaries)
@@ -241,6 +249,13 @@ def execute_plan(
         details.append(f"未执行 {skipped} 步")
     if details:
         heading += "\n" + "；".join(details) + "。"
+    format_warnings = sum(
+        result.answer_diagnostics is not None
+        and result.answer_diagnostics.validation_status == "warning"
+        for result in results.values()
+    )
+    if format_warnings:
+        heading += f"\n其中 {format_warnings} 步的模型回复格式异常，已保留其声明状态并使用程序说明。"
     summary = validate_plan_summary({"version": 1, "status": plan_status, "steps": summaries})
     versions = {source.index_version for source in sources.values()}
     mixed_tools = any(step.kind == "mcp" for step in plan.steps)
@@ -248,6 +263,10 @@ def execute_plan(
         question=question, answer=heading + "\n\n" + "\n\n".join(sections), status=status,
         sources=tuple(sources.values()), index_version=next(iter(versions)) if len(versions) == 1 else None,
         model_calls=model_calls, tool_calls=tool_calls, stop_reason=stop_reason, plan=summary,
+        step_answer_diagnostics=tuple(
+            StepAnswerDiagnostics(step_id, result.answer_diagnostics)
+            for step_id, result in results.items() if result.answer_diagnostics is not None
+        ),
         routing=RouteSummary(
             route="mcp" if mixed_tools else "knowledge",
             intent="mcp_tool" if mixed_tools else "knowledge",

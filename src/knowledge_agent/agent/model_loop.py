@@ -22,6 +22,7 @@ from ..models import (
 from ..schemas import AnswerSource
 from ..tools.registry import create_tool_registry
 from .browser_execution import is_browser_search_turn, run_browser_search
+from .dependencies import evidence_identity
 from .router import RouteKind
 from .state import KnowledgeTools, ModelTurnResult, PreparedModelTurn, ToolCallResult, TurnState
 
@@ -145,8 +146,9 @@ def _register_new_sources(
     tool_results: Sequence[ToolCallResult],
 ) -> dict[str, str]:
     """Register newly retrieved chunks and return their source IDs by chunk ID."""
-    source_ids = {
-        source.chunk_id: source_id for source_id, source in state.source_map.items()
+    source_ids: dict[str, str] = {}
+    registered_ids = {
+        evidence_identity(item): source_id for source_id, item in state.supplied_evidence.items()
     }
     returned_chunk_ids: list[str] = []
     seen_chunk_ids: set[str] = set()
@@ -155,8 +157,18 @@ def _register_new_sources(
         if isinstance(value, Mapping):
             chunk_id = value.get("chunk_id")
             if isinstance(chunk_id, str) and chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk_id)
-                returned_chunk_ids.append(chunk_id)
+                item = state.evidence.get(chunk_id)
+                if item is not None and (
+                    value.get("text") == item.chunk.text
+                    and value.get("index_version") == item.index_version
+                    and value.get("content_hash") == item.chunk.content_hash
+                    and value.get("source_path") == item.chunk.source_path
+                    and value.get("start_line") == item.chunk.start_line
+                    and value.get("end_line") == item.chunk.end_line
+                    and value.get("heading_path") == list(item.chunk.heading_path)
+                ):
+                    seen_chunk_ids.add(chunk_id)
+                    returned_chunk_ids.append(chunk_id)
             for child in value.values():
                 collect_chunk_ids(child)
         elif isinstance(value, (list, tuple)):
@@ -175,15 +187,19 @@ def _register_new_sources(
     next_number = 1
 
     for chunk_id in returned_chunk_ids:
-        if chunk_id in source_ids:
-            continue
         result = state.evidence.get(chunk_id)
         if result is None:
+            continue
+        key = evidence_identity(result)
+        if key in registered_ids:
+            source_ids[chunk_id] = registered_ids[key]
             continue
         while next_number in used_numbers:
             next_number += 1
         source_id = f"S{next_number}"
         state.source_map[source_id] = AnswerSource.from_retrieval_result(result)
+        state.supplied_evidence[source_id] = result
+        registered_ids[key] = source_id
         source_ids[chunk_id] = source_id
         used_numbers.add(next_number)
         next_number += 1
@@ -195,7 +211,7 @@ def _tool_message_output(output: Any, source_ids: Mapping[str, str]) -> Any:
     if isinstance(output, Mapping):
         copied = {key: _tool_message_output(value, source_ids) for key, value in output.items()}
         chunk_id = copied.get("chunk_id")
-        if isinstance(chunk_id, str) and chunk_id in source_ids:
+        if isinstance(chunk_id, str) and chunk_id in source_ids and "content_hash" in copied:
             copied["source_id"] = source_ids[chunk_id]
         return copied
     if isinstance(output, list):
@@ -222,8 +238,8 @@ def continue_model_loop(
         raise ValueError("max_model_calls must be greater than 0")
     if isinstance(max_tool_calls, bool) or not isinstance(max_tool_calls, int):
         raise TypeError("max_tool_calls must be an integer")
-    if max_tool_calls < 1:
-        raise ValueError("max_tool_calls must be greater than 0")
+    if max_tool_calls < 0:
+        raise ValueError("max_tool_calls must be non-negative")
     if isinstance(max_followup_searches, bool) or not isinstance(
         max_followup_searches, int
     ):
@@ -236,6 +252,10 @@ def continue_model_loop(
         raise ValueError("max_context_chars must be greater than 0")
 
     while result.kind == "tool_requests":
+        if state.tool_calls >= max_tool_calls:
+            state.status = "limit_reached"
+            state.stop_reason = "tool_budget_exhausted"
+            return result
         # A tool result requires another model call to turn it into an answer.
         # Stop before executing more tools when that final call cannot be made.
         if state.model_calls >= max_model_calls:
@@ -278,6 +298,7 @@ def continue_model_loop(
                 if state.context_chars + len(serialized) > max_context_chars:
                     for source_id in set(state.source_map) - previous_source_ids:
                         del state.source_map[source_id]
+                        state.supplied_evidence.pop(source_id, None)
                     output = _tool_call_error(
                         "context_budget_exhausted",
                         "The evidence context budget for this turn has been exhausted.",
@@ -386,7 +407,7 @@ def run_model_loop(
             raise TypeError
         if (
             max_model_calls < 1
-            or max_tool_calls < 1
+            or max_tool_calls < 0
             or max_followup_searches < 0
             or max_context_chars < 1
         ):

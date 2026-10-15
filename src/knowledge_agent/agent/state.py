@@ -145,6 +145,12 @@ class TurnState:
     messages: list[object] = field(default_factory=list)
     evidence: dict[str, RetrievalResult] = field(default_factory=dict)
     source_map: dict[str, AnswerSource] = field(default_factory=dict)
+    # Prior-step snapshots are citation material only, not current tool read
+    # permissions. Keep them out of the retriever's chunk-ID namespace.
+    dependency_evidence: tuple[RetrievalResult, ...] = ()
+    dependency_transform: bool = False
+    # Exactly the full source text sent under each currently registered ID.
+    supplied_evidence: dict[str, RetrievalResult] = field(default_factory=dict)
     retrieval_status: RetrievalStatus = "not_started"
     model_calls: int = 0
     tool_calls: int = 0

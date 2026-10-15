@@ -121,7 +121,7 @@ def parse_answer_contract(text: str) -> ParsedAnswer:
     if header is not None:
         body = remainder.strip()
         if not body or _HEADER_START.search(body):
-            return ParsedAnswer(body=body, error_code="answer_contract_invalid")
+            return ParsedAnswer(body=body, kind=header.group(1), error_code="answer_contract_invalid")
         return ParsedAnswer(body=body, kind=header.group(1))
     if _HEADER_START.search(cleaned):
         return ParsedAnswer(body="", error_code="answer_contract_invalid")

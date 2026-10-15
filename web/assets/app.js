@@ -713,6 +713,7 @@
     model_reported_insufficient_evidence: "模型报告资料不足", partial_answer: "资料只能支持部分回答",
     model_reported_out_of_scope: "模型明确说明问题超出服务范围",
     answer_contract_invalid: "回答状态格式不符合约定", answer_status_conflict: "回答状态与正文不一致",
+    refusal_format_nonconforming: "模型声明资料不足，回复格式异常；已用程序说明替代正文",
     model_authentication_failed: "模型鉴权失败", model_timeout: "模型调用超时",
     model_not_found: "模型不存在", model_request_invalid: "模型请求无效",
     model_output_invalid: "模型返回的内容或工具参数格式无效",
@@ -848,6 +849,36 @@
     return list;
   }
 
+  const declaredAnswerLabels = {
+    supported: "资料支持回答", partial: "资料仅支持部分回答",
+    insufficient_evidence: "模型报告资料不足", needs_clarification: "模型请求澄清",
+    out_of_scope: "模型报告超出范围",
+  };
+  const validationLabels = {
+    passed: "通过", warning: "回复格式异常，已使用程序说明", rejected: "未通过，原正文未发布",
+  };
+
+  function answerDiagnosticFields(diagnostic) {
+    if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) return [];
+    const fields = [];
+    if (traceText(diagnostic.declared_status, "")) {
+      fields.push(["模型声明", traceLabel(declaredAnswerLabels, diagnostic.declared_status)]);
+    }
+    if (traceText(diagnostic.validation_status, "")) {
+      fields.push(["正文校验", traceLabel(validationLabels, diagnostic.validation_status)]);
+    }
+    if (Number.isInteger(diagnostic.supplied_source_count)) {
+      fields.push(["提供给模型的来源", traceNumber(diagnostic.supplied_source_count, " 个")]);
+    }
+    if (Number.isInteger(diagnostic.accepted_source_count)) {
+      fields.push(["最终接受的引用", traceNumber(diagnostic.accepted_source_count, " 个")]);
+    }
+    if (traceText(diagnostic.validation_reason, "")) {
+      fields.push(["校验说明", traceReason(diagnostic.validation_reason)]);
+    }
+    return fields;
+  }
+
   function renderTraceEvent(event) {
     const item = element("li", "trace-event");
     if (Number.isInteger(event.sequence) && event.sequence >= 0) item.value = event.sequence + 1;
@@ -869,7 +900,7 @@
     if (traceText(event.selected_skill_id, "")) fields.push(["选中技能", traceSkill(event.selected_skill_id, "普通问答")]);
     if (traceText(event.strategy_id, "")) fields.push(["检索策略", traceLabel(strategyLabels, event.strategy_id)]);
     if (Number.isInteger(event.result_count) && event.result_count >= 0) {
-      const label = event.stage === "finalize" ? "引用来源数量" : "返回结果数量";
+      const label = ["finalize", "plan_step"].includes(event.stage) ? "最终接受的引用数量" : "返回结果数量";
       fields.push([label, traceNumber(event.result_count, " 个")]);
     }
     if (traceText(event.index_version, "")) fields.push(["阶段索引版本", event.index_version]);
@@ -883,6 +914,7 @@
       fields.push(["决策原因", traceReason(event.reason_code)]);
     }
     if (traceText(event.error_code, "")) fields.push(["原因 / 错误码", traceReason(event.error_code)]);
+    fields.push(...answerDiagnosticFields(event));
     item.append(traceFields(fields, "trace-fields trace-event-fields"));
     return item;
   }
@@ -905,6 +937,7 @@
       ["工具调用", traceNumber(result.tool_calls, " 次")],
       ["结束原因", traceReason(result.stop_reason)],
       ["回答引用的索引版本", traceText(result.index_version)],
+      ...answerDiagnosticFields(result.answer_diagnostics),
     ]));
     body.append(element("p", "trace-note", "工具次数包含程序发起的初始检索；被拒绝的请求可能留有阶段记录，但不计为已执行工具。模型次数按 Agent 调用轮数统计。"));
     if (!trace) {
@@ -979,6 +1012,8 @@
   ]);
 
   function planStepLabel(step) {
+    if (step.answer_diagnostics?.declared_status === "insufficient_evidence"
+      && step.answer_diagnostics?.validation_status === "warning") return "模型报告资料不足（回复格式异常）";
     if (answerValidationReasons.has(step.stop_reason)) return "回答校验未通过";
     if (step.stop_reason === "partial_tool_failure") return "部分工具执行失败";
     if (step.status === "insufficient_evidence") return "资料覆盖不足";
@@ -1031,6 +1066,7 @@
         ["依赖步骤", dependencies.length ? dependencies.join("、") : "无"],
         ["模型调用", traceNumber(step.model_calls, " 次")],
         ["工具调用", traceNumber(step.tool_calls, " 次")],
+        ...answerDiagnosticFields(step.answer_diagnostics),
       ];
       const stepEvents = Array.isArray(result.trace?.events)
         ? result.trace.events.filter((event) => event?.step_id === step.step_id) : [];

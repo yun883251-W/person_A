@@ -30,6 +30,7 @@ from ..skill_loader import load_skill
 from ..tools.registry import InMemoryToolRegistry
 from . import assessment, planner
 from .answers import _attach_completed_trace, _attach_routing, finalize_answer, finalize_mcp_answer
+from .dependencies import DependencyContext, cited_evidence, is_dependency_transform
 from .intent import IntentDecision, IntentKind, IntentModelBudgetError, identify_intent
 from .model_loop import (
     _model_error_code,
@@ -435,7 +436,7 @@ class KnowledgeAgent:
         return result
 
     def _run_planned_step(
-        self, step: planner.PlanStep, budget: StepBudget, dependency_context: str,
+        self, step: planner.PlanStep, budget: StepBudget, dependency_context: DependencyContext,
         trace: TraceRecorder, *, original_question: str, skill_id: str | None,
         skill_mode: str | None = None,
         conversation_summary: str = "",
@@ -451,15 +452,15 @@ class KnowledgeAgent:
                 summary_text = conversation_summary[:background_limit]
                 context_data: dict[str, Any] = {}
                 clause_history = list(knowledge_history[-self.config.max_history_turns:])
-                if dependency_context:
-                    completed = json.loads(dependency_context).get("completed_steps", [])
+                dependency_transform = is_dependency_transform(step.goal, bool(step.depends_on))
+                if dependency_context.steps:
                     bounded_dependencies = []
-                    for dependency in completed:
-                        goal = str(dependency.get("goal", ""))[:1000]
+                    for dependency in dependency_context.steps:
+                        goal = dependency.goal[:1000]
                         bounded_dependencies.append({
-                            "step_id": dependency["step_id"], "goal": goal,
-                            "answer": str(dependency["answer"])[:background_limit],
-                            "may_be_truncated": True,
+                            "step_id": dependency.step_id, "goal": goal,
+                            "answer": dependency.answer[:background_limit],
+                            "may_be_truncated": len(dependency.answer) > background_limit,
                         })
                         clause_history.append({"question": goal, "route": "knowledge", "complete": True})
                     context_data["completed_steps"] = bounded_dependencies
@@ -469,6 +470,17 @@ class KnowledgeAgent:
                     max_context_chars=background_limit,
                     max_history_turns=self.config.max_history_turns,
                 )
+                if dependency_transform and decision.kind in {
+                    IntentKind.KNOWLEDGE, IntentKind.NEEDS_CLARIFICATION,
+                }:
+                    # Explicit plan references resolve the referent; only the
+                    # knowledge snapshots below can supply factual evidence.
+                    # With an MCP-only prerequisite preparation reports the
+                    # missing evidence instead of spending an unreserved search.
+                    decision = replace(
+                        decision, kind=IntentKind.KNOWLEDGE, clarification_question="",
+                        retrieval_query=step.goal, reason_code="plan_dependency_transform",
+                    )
                 if decision.kind is IntentKind.MCP_TOOL:
                     decision = IntentDecision(
                         kind=IntentKind.NEEDS_CLARIFICATION,
@@ -500,6 +512,8 @@ class KnowledgeAgent:
                     selection_settings=self.skill_selection_settings,
                     step_id=step.step_id,
                     visible_context=context,
+                    dependency_context=dependency_context,
+                    dependency_transform=dependency_transform,
                 )
                 state = prepared.state
                 if prepared.terminal_result is not None:
@@ -559,7 +573,10 @@ class KnowledgeAgent:
                 status="service_error", model_calls=state.model_calls,
                 tool_calls=state.tool_calls, stop_reason="plan_step_failed",
             )
-        return StepOutcome(result, state.followup_searches, state.context_chars)
+        return StepOutcome(
+            result, state.followup_searches, state.context_chars,
+            evidence=cited_evidence(result, state.supplied_evidence) if step.kind == "knowledge" else (),
+        )
 
     def _ask_single(
         self,

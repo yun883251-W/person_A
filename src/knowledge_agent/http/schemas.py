@@ -16,7 +16,7 @@ from ..agent.trace import (
     TraceStage,
     TraceStatus,
 )
-from ..schemas import AnswerStatus
+from ..schemas import AnswerStatus, AnswerValidationStatus, DeclaredAnswerStatus
 
 MAX_TITLE_LENGTH = 200
 MAX_QUESTION_LENGTH = 10_000
@@ -160,6 +160,20 @@ class TraceEventResponse(_PublicModel):
     selected_skill_id: str | None = None
     strategy_id: str | None = None
     step_id: str | None = None
+    declared_status: DeclaredAnswerStatus | None = None
+    validation_status: AnswerValidationStatus | None = None
+    validation_reason: str | None = None
+    supplied_source_count: int | None = Field(default=None, ge=0, strict=True)
+
+
+class AnswerDiagnosticsResponse(_PublicModel):
+    """Public status/validation facts only; private model text has no API field."""
+
+    declared_status: DeclaredAnswerStatus | None = None
+    validation_status: AnswerValidationStatus
+    validation_reason: str | None = None
+    supplied_source_count: int = Field(ge=0, strict=True)
+    accepted_source_count: int = Field(ge=0, strict=True)
 
 
 class TurnTraceResponse(_PublicModel):
@@ -232,6 +246,7 @@ class PlanStepResponse(_PublicModel):
     model_calls: int = Field(ge=0, strict=True)
     tool_calls: int = Field(ge=0, strict=True)
     stop_reason: str | None = None
+    answer_diagnostics: AnswerDiagnosticsResponse | None = None
 
 
 class PlanSummaryResponse(_PublicModel):
@@ -252,6 +267,7 @@ class AnswerResponse(_PublicModel):
     model_calls: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     stop_reason: str | None = None
+    answer_diagnostics: AnswerDiagnosticsResponse | None = None
     trace: TurnTraceResponse | None = Field(
         default=None,
         description="本轮结束后的执行摘要；没有可用记录时为 null，不是实时进度",
@@ -286,6 +302,7 @@ class TurnResponse(_PublicModel):
     model_calls: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     stop_reason: str | None = None
+    answer_diagnostics: AnswerDiagnosticsResponse | None = None
     trace: TurnTraceResponse | None = Field(
         default=None,
         description="随本轮回答保存的执行摘要；旧记录或不可用摘要为 null",

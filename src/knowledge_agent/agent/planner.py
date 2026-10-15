@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+from .answer_diagnostics import validate_public_answer_diagnostics
 
 if TYPE_CHECKING:
     from .intent import IntentDecision
@@ -600,9 +601,11 @@ def validate_plan_summary(value: object) -> dict[str, Any]:
         raise PlanValidationError("plan_invalid_step_count")
     result: list[dict[str, Any]] = []
     for index, item in enumerate(items, 1):
-        if not isinstance(item, dict) or set(item) != {
+        required_fields = {
             "step_id", "goal", "kind", "depends_on", "status", "model_calls", "tool_calls", "stop_reason",
-        }:
+        }
+        if (not isinstance(item, dict) or not required_fields <= set(item)
+                or set(item) - required_fields - {"answer_diagnostics"}):
             raise PlanValidationError("plan_invalid_summary_step")
         step_id, goal, kind, dependencies = _validate_identity(item, index)
         step_status = item["status"]
@@ -619,4 +622,9 @@ def validate_plan_summary(value: object) -> dict[str, Any]:
             "status": step_status, "model_calls": item["model_calls"], "tool_calls": item["tool_calls"],
             "stop_reason": reason,
         })
+        if "answer_diagnostics" in item:
+            try:
+                result[-1]["answer_diagnostics"] = validate_public_answer_diagnostics(item["answer_diagnostics"])
+            except (TypeError, ValueError) as exc:
+                raise PlanValidationError("plan_invalid_summary_diagnostics") from exc
     return {"version": 1, "status": status, "steps": result}

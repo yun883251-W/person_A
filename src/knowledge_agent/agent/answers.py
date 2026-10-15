@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 
-from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
+from ..schemas import (
+    AnswerDiagnostics, AnswerResult, AnswerSource, AnswerStatus,
+    AnswerValidationStatus, RouteSummary,
+)
 from .answer_contract import (
     ANSWER_VALIDATION_REASONS,
     has_evidence_gap,
@@ -13,6 +16,7 @@ from .answer_contract import (
     parse_answer_contract,
     plain_refusal_kind,
 )
+from .answer_diagnostics import answer_diagnostics_trace_fields, final_answer_excerpt
 from .citations import (
     SOURCE_LIKE_TOKEN_RE as _SOURCE_LIKE_TOKEN_RE,
     SOURCE_TOKEN_RE as _SOURCE_TOKEN_RE,
@@ -209,6 +213,7 @@ def finalize_answer(
             error_code=(
                 answer_result.stop_reason if trace_status == "error" else None
             ),
+            **answer_diagnostics_trace_fields(answer_result.answer_diagnostics),
         )
     return answer_result
 
@@ -251,6 +256,22 @@ def _finalize_answer(
 
     parsed = parse_answer_contract(result.answer)
     answer = parsed.body
+    excerpt, excerpt_truncated = final_answer_excerpt(result.answer)
+
+    def diagnostics(
+        validation_status: AnswerValidationStatus = "passed",
+        validation_reason: str | None = None,
+        accepted_source_count: int = 0,
+    ) -> AnswerDiagnostics:
+        return AnswerDiagnostics(
+            declared_status=parsed.kind,
+            validation_status=validation_status,
+            validation_reason=validation_reason,
+            supplied_source_count=len(state.source_map),
+            accepted_source_count=accepted_source_count,
+            model_final_excerpt=excerpt,
+            excerpt_truncated=excerpt_truncated,
+        )
 
     def rejected(code: str, message: str) -> AnswerResult:
         state.status = "insufficient_evidence"
@@ -262,6 +283,7 @@ def _finalize_answer(
             model_calls=state.model_calls,
             tool_calls=state.tool_calls,
             stop_reason=code,
+            answer_diagnostics=diagnostics("rejected", code),
         )
 
     if parsed.error_code is not None:
@@ -322,12 +344,38 @@ def _finalize_answer(
             model_calls=state.model_calls,
             tool_calls=state.tool_calls,
             stop_reason=stop_reason,
+            answer_diagnostics=diagnostics(
+                "warning" if parsed.kind is not None and parsed.kind != refusal else "passed",
+                "answer_status_body_mismatch" if parsed.kind is not None and parsed.kind != refusal else None,
+            ),
         )
 
     if parsed.kind in non_factual_kinds:
-        return rejected(
-            "answer_status_conflict",
-            "模型声明无法直接回答，但正文未符合简短拒答或澄清的格式，当前无法可靠核验其内容。",
+        # A malformed refusal is a formatting warning, not evidence that the
+        # request failed technically. Preserve the model's stated business
+        # outcome, but publish only program-authored text. Unknown references
+        # and hand-written metadata were already rejected above this boundary.
+        status = parsed.kind
+        stop_reason = {
+            "insufficient_evidence": "model_reported_insufficient_evidence",
+            "needs_clarification": "model_requested_clarification",
+            "out_of_scope": "model_reported_out_of_scope",
+        }[status]
+        message = {
+            "insufficient_evidence": "模型报告本轮资料不足以支持回答。其回复格式不符合要求，已用此说明替代原文；相关资料是否充分仍需进一步核实。",
+            "needs_clarification": "模型表示需要补充问题的对象、参数或上下文。其回复格式不符合要求，已用此说明替代原文，请明确你希望解决的问题。",
+            "out_of_scope": "模型判断该问题超出当前助手的服务范围。其回复格式不符合要求，已用此说明替代原文；本助手支持 Python 和 LangChain 学习问题。",
+        }[status]
+        state.status = status
+        state.stop_reason = stop_reason
+        return AnswerResult(
+            question=state.original_question,
+            answer=message,
+            status=status,
+            model_calls=state.model_calls,
+            tool_calls=state.tool_calls,
+            stop_reason=stop_reason,
+            answer_diagnostics=diagnostics("warning", "refusal_format_nonconforming"),
         )
     if has_scope_refusal(uncited_answer):
         return rejected(
@@ -362,4 +410,5 @@ def _finalize_answer(
         model_calls=state.model_calls,
         tool_calls=state.tool_calls,
         stop_reason=stop_reason,
+        answer_diagnostics=diagnostics(accepted_source_count=len(cited_sources)),
     )

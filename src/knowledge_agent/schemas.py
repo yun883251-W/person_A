@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -119,6 +119,37 @@ class AnswerSource:
         )
 
 
+DeclaredAnswerStatus = Literal[
+    "supported", "partial", "insufficient_evidence", "needs_clarification", "out_of_scope",
+]
+AnswerValidationStatus = Literal["passed", "warning", "rejected"]
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerDiagnostics:
+    """Keep model intent separate from validation and the answer's business status.
+
+    The bounded final-text excerpt is private persistence data, never model
+    history, public JSON, or trace progress. Model reasoning fields are excluded.
+    """
+
+    declared_status: DeclaredAnswerStatus | None
+    validation_status: AnswerValidationStatus
+    validation_reason: str | None
+    supplied_source_count: int
+    accepted_source_count: int
+    model_final_excerpt: str | None = field(default=None, repr=False)
+    excerpt_truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StepAnswerDiagnostics:
+    """Private diagnostics for one leaf; public plan data uses an allow-list."""
+
+    step_id: str
+    diagnostics: AnswerDiagnostics
+
+
 @dataclass(frozen=True, slots=True)
 class AnswerResult:
     """Structured answer with an optional private, persisted assessment snapshot.
@@ -141,3 +172,5 @@ class AnswerResult:
     # Public execution summary only: goals, dependencies, outcomes and counts.
     # Never store model reasoning or raw tool responses in this field.
     plan: dict[str, Any] | None = None
+    answer_diagnostics: AnswerDiagnostics | None = None
+    step_answer_diagnostics: tuple[StepAnswerDiagnostics, ...] = field(default=(), repr=False)

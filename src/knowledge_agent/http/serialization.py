@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from ..agent.trace import TurnTrace, trace_to_dict
+from ..agent.answer_diagnostics import public_answer_diagnostics
 from ..knowledge.manager import DocumentSummary, IndexOperationResult, IndexStatus
 from ..schemas import AnswerResult, AnswerSource
 from ..session_store import SessionRecord, StoredTurn
@@ -98,6 +99,7 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
         model_calls=result.model_calls,
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
+        answer_diagnostics=public_answer_diagnostics(result.answer_diagnostics),
         trace=_trace_response(result.trace),
         routing=(
             RouteSummaryResponse.model_validate(result.routing, from_attributes=True)
@@ -123,6 +125,7 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
         model_calls=result.model_calls,
         tool_calls=result.tool_calls,
         stop_reason=result.stop_reason,
+        answer_diagnostics=public_answer_diagnostics(result.answer_diagnostics),
         trace=_trace_response(result.trace),
         routing=(
             RouteSummaryResponse.model_validate(result.routing, from_attributes=True)

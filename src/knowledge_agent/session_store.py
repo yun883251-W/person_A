@@ -44,6 +44,10 @@ from langchain_core.messages import (
 
 from .schemas import AnswerResult, AnswerSource, RouteSummary
 from .agent.trace import trace_from_dict, trace_to_dict
+from .agent.answer_diagnostics import (
+    answer_diagnostics_from_storage, answer_diagnostics_to_storage,
+    step_diagnostics_from_storage, step_diagnostics_to_storage,
+)
 
 
 # 第一阶段：存储层及应用接入开发。
@@ -1263,6 +1267,10 @@ def _result_to_json(result: AnswerResult) -> str:
         from .agent.planner import validate_plan_summary
 
         payload["plan"] = validate_plan_summary(result.plan)
+    if result.answer_diagnostics is not None:
+        payload["answer_diagnostics"] = answer_diagnostics_to_storage(result.answer_diagnostics)
+    if result.step_answer_diagnostics:
+        payload["step_answer_diagnostics"] = step_diagnostics_to_storage(result.step_answer_diagnostics)
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -1286,7 +1294,7 @@ def _result_from_json(value: str) -> AnswerResult:
         "stop_reason",
     }
     _require_fields(
-        root, fields, {"trace", "routing", "assessment_state", "plan"}, "result_json"
+        root, fields, {"trace", "routing", "assessment_state", "plan", "answer_diagnostics", "step_answer_diagnostics"}, "result_json"
     )
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
         raise ValueError(f"Unsupported result serialization version: {root['version']!r}")
@@ -1400,6 +1408,8 @@ def _result_from_json(value: str) -> AnswerResult:
         from .agent.planner import validate_plan_summary
 
         plan = validate_plan_summary(root["plan"])
+    answer_diagnostics = answer_diagnostics_from_storage(root.get("answer_diagnostics"))
+    step_answer_diagnostics = step_diagnostics_from_storage(root.get("step_answer_diagnostics", []))
     return AnswerResult(
         question=question,
         answer=answer,
@@ -1413,6 +1423,8 @@ def _result_from_json(value: str) -> AnswerResult:
         routing=routing,
         assessment_state=assessment_state,
         plan=plan,
+        answer_diagnostics=answer_diagnostics,
+        step_answer_diagnostics=step_answer_diagnostics,
     )
 
 
