@@ -14,6 +14,7 @@ from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 from ..config import AgentConfig
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
+from .citations import historical_answer_text
 from .planner import PlanStep, TaskPlan, validate_plan_summary
 from .trace import TraceRecorder, finish_trace_safely
 
@@ -93,7 +94,10 @@ def execute_plan(
         if dependencies and step.kind == "knowledge":
             dependency_context = json.dumps(
                 {"completed_steps": [
-                    {"step_id": key, "goal": goals[key], "answer": results[key].answer}
+                    {
+                        "step_id": key, "goal": goals[key],
+                        "answer": historical_answer_text(results[key].answer, results[key].sources),
+                    }
                     for key in step.depends_on if key in results
                 ]},
                 ensure_ascii=False,

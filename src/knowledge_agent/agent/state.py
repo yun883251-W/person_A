@@ -9,13 +9,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from ..knowledge.skill_retrieval import SkillRetrievalOutcome, SkillRetrievalPlan
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
 from ..session_store import SessionStoreError
 from ..tools.registry import InMemoryToolRegistry
+from .citations import historical_answer_text
 from .router import RouteKind
 from .skill_selector import SelectedSkillSnapshot
 from .trace import TraceRecorder
@@ -71,12 +72,26 @@ class ConversationHistory:
     def messages(
         self, session_id: str, *, route: RouteKind | None = None
     ) -> tuple[BaseMessage, ...]:
-        return tuple(
-            message
-            for turn in self.turns(session_id)
-            if route is None or turn.route == route.value
-            for message in turn.messages
-        )
+        """Project committed turns into model context without old knowledge IDs.
+
+        Keep raw messages and rendered results on each turn for persistence and
+        display. Replaying raw knowledge exchanges would also replay retrieved
+        chunks, tool payloads and rejected model answers as if they were current.
+        This read-time projection covers restored sessions without a migration.
+        """
+        messages: list[BaseMessage] = []
+        for turn in self.turns(session_id):
+            if route is not None and turn.route != route.value:
+                continue
+            if turn.route == RouteKind.KNOWLEDGE.value:
+                answer = historical_answer_text(turn.result.answer, turn.result.sources)
+                messages.extend((
+                    HumanMessage(content=turn.question),
+                    AIMessage(content=answer or "该轮回答移除历史引用后没有可供回顾的正文。"),
+                ))
+            else:
+                messages.extend(turn.messages)
+        return tuple(messages)
 
     def append(self, session_id: str, turn: ConversationTurn) -> None:
         key = self._session_key(session_id)

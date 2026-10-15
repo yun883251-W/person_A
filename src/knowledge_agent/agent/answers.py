@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import replace
 
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
+from .citations import (
+    SOURCE_LIKE_TOKEN_RE as _SOURCE_LIKE_TOKEN_RE,
+    SOURCE_TOKEN_RE as _SOURCE_TOKEN_RE,
+    WRITTEN_CITATION_RE as _WRITTEN_CITATION_RE,
+    format_source as _format_source,
+)
 from .router import RouteDecision
 from .state import ModelTurnResult, TurnState
 from .trace import finish_trace_safely
@@ -38,15 +43,6 @@ def _attach_routing(result: AnswerResult, decision: RouteDecision) -> AnswerResu
     )
 
 
-_SOURCE_TOKEN_RE = re.compile(r"\[(S[1-9]\d*)\]")
-_SOURCE_LIKE_TOKEN_RE = re.compile(r"\[S[^\]\r\n]*\]", re.IGNORECASE)
-_WRITTEN_CITATION_RE = re.compile(
-    r"(?:[^\s【】]+\.md\s*[·|][^\r\n【】]*?(?:第\s*)?\d+\s*"
-    r"(?:[-–—~～至]\s*\d+)?\s*行)|"
-    r"(?:【[^\r\n【】]*\.md[^\r\n【】]*\d+\s*"
-    r"(?:[-–—~～至]\s*\d+)?\s*行】)",
-    re.IGNORECASE,
-)
 _INSUFFICIENT_EVIDENCE_MARKERS = (
     "当前知识库资料不足",
     "资料不足以回答",
@@ -80,18 +76,6 @@ def _public_failure_answer(status: AnswerStatus, stop_reason: str | None) -> str
     if stop_reason == "model_empty_response":
         return "模型未返回可用的回答，请稍后重试。"
     return "当前无法完成回答，请稍后重试。"
-
-
-def _format_source(source: AnswerSource) -> str:
-    """Render a citation solely from indexed source metadata."""
-    parts = [source.source_path]
-    if source.heading_path:
-        parts.append(" > ".join(source.heading_path))
-    if source.start_line == source.end_line:
-        parts.append(f"原文第 {source.start_line} 行")
-    else:
-        parts.append(f"原文第 {source.start_line}-{source.end_line} 行")
-    return f"【{' · '.join(parts)}】"
 
 
 def _answer_index_version(sources: Sequence[AnswerSource]) -> str | None:

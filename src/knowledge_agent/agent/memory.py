@@ -19,6 +19,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from ..session_store import (
     SessionNotFoundError, SessionStore, SessionSummary, SessionSummaryConflictError,
 )
+from .citations import historical_answer_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,17 +82,16 @@ _TOKEN_RE = re.compile(
 )
 _URL_CREDENTIAL_RE = re.compile(r"(?i)(https?://)[^\s/@:]+:[^\s/@]+@")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
-_SOURCE_MARKER_RE = re.compile(r"\[S\d+\]")
 
 
 def safe_summary_text(text: str, *, max_chars: int) -> str:
-    """Bound text and redact recognizable credentials before input or restore."""
+    """Remove credentials and old citations before bounding input or restoration."""
     cleaned = _PRIVATE_KEY_RE.sub("[私钥已省略]", text)
     cleaned = _CODE_BLOCK_RE.sub("[代码块已省略]", cleaned)
     cleaned = _CREDENTIAL_RE.sub("[凭据已省略]", cleaned)
     cleaned = _TOKEN_RE.sub("[凭据已省略]", cleaned)
     cleaned = _URL_CREDENTIAL_RE.sub(r"\1[凭据已省略]@", cleaned)
-    cleaned = _SOURCE_MARKER_RE.sub("", cleaned)
+    cleaned = historical_answer_text(cleaned)
     return _CONTROL_RE.sub("", cleaned).strip()[:max_chars].rstrip()
 
 
