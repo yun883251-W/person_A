@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "基于本地 Markdown 文档的知识库问答 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["langchain-deepseek>=0.1", "langchain-ollama>=0.2"]
+dependencies = ["langchain-deepseek>=0.1", "langchain-ollama>=0.2.2"]
 
 [project.scripts]
 person-a = "knowledge_agent.cli:main"

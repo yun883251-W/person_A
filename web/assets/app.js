@@ -710,6 +710,7 @@
     model_reported_insufficient_evidence: "模型报告资料不足", partial_answer: "资料只能支持部分回答",
     model_authentication_failed: "模型鉴权失败", model_timeout: "模型调用超时",
     model_not_found: "模型不存在", model_request_invalid: "模型请求无效",
+    model_output_invalid: "模型返回的内容或工具参数格式无效",
     model_service_unavailable: "模型服务不可用", model_invocation_failed: "模型调用失败",
     missing_citations: "回答缺少可核验引用", unknown_citation: "回答含有未知来源标记",
     unverified_citation_metadata: "回答中的来源信息无法核验", invalid_agent_parameters: "执行参数无效",
@@ -737,6 +738,33 @@
     manual_skill_mcp_conflict: "所选 Skill 与 MCP 工具请求冲突",
     mcp_capability_unavailable: "请求的 MCP 工具能力不可用",
     multi_step_plan: "按多步骤任务执行",
+    plan_invalid_response: "规划模型未返回有效内容", plan_unexpected_tool_call: "规划模型返回了不允许的工具调用",
+    plan_invalid_json: "规划模型返回的 JSON 无效", plan_invalid_structure: "规划模型返回的字段或结构不符合约定",
+    plan_response_step_count: "模型计划的步骤数量与请求不一致", plan_invalid_step_id: "模型计划的步骤编号无效",
+    plan_invalid_goal: "计划目标格式无效", plan_invalid_kind: "模型计划的步骤类别无效",
+    plan_invalid_dependencies: "模型计划的步骤依赖无效", plan_ungrounded_step_goal: "模型改写了原始任务目标",
+    plan_unauthorized_tool: "模型计划包含未授权工具", plan_invalid_step_tools: "模型计划的步骤类别与工具不匹配",
+    plan_ungrounded_tool_goal: "模型计划的工具与原始任务权限不一致", plan_missing_requested_tool: "模型计划遗漏了请求的工具",
+    plan_invalid_question: "缺少有效任务描述", plan_not_requested: "未识别到明确的多个任务",
+    plan_invalid_request_goal: "原始任务目标为空、过长或包含非法字符",
+    plan_invalid_numbering: "任务编号需从 1 开始且连续",
+    plan_manual_skill_mcp_conflict: "手动知识 Skill 与计划中的工具操作冲突",
+    plan_completed: "全部任务已完成", plan_partial: "任务部分完成",
+    plan_dependency_unfinished: "依赖的前置任务未完成", plan_tool_budget_exhausted: "该步骤的工具调用预算不足",
+    plan_context_budget_exhausted: "该步骤的资料与背景超过上下文限制",
+    plan_budget_exhausted: "任务执行预算不足", plan_out_of_scope: "请求的任务超出知识范围",
+    plan_step_failed: "该步骤执行失败", plan_failed: "任务未能完成",
+    plan_needs_clarification: "任务需要补充信息", plan_insufficient_evidence: "任务缺少可支持回答的资料",
+    plan_invalid_step_count: "请求需包含 2～3 个不同任务", plan_stateful_assessment: "MBTI 问卷操作需要单独执行",
+    plan_repeated_tool: "同一轮计划不能重复调用同一工具", plan_unavailable_tool: "请求的工具尚未接入",
+    plan_clause_needs_clarification: "某一步的操作目标需要补充", plan_unconfirmed_clause_action: "某一步尚不能确认为可执行操作",
+    plan_requested_clarification: "规划模型需要进一步明确任务目标", plan_context_too_long: "规划内容超出上下文限制",
+    plan_model_budget_exhausted: "规划或执行的模型调用预算不足", plan_preparation_failed: "任务规划准备失败",
+    plan_invalid_capabilities: "规划工具能力配置无效", plan_invalid_context: "规划历史上下文格式无效",
+    plan_invalid_step_limit: "规划步骤上限配置无效", plan_invalid_context_limit: "规划上下文上限配置无效",
+    plan_invalid_invoker: "规划模型调用器配置无效", plan_invalid_clause_resolver: "规划步骤意图识别器配置无效",
+    plan_clause_intent_unavailable: "规划步骤的意图识别器不可用", plan_invalid_clause_intent: "规划步骤的意图识别结果无效",
+    plan_unauthorized_clause_tool: "规划步骤的工具权限校验失败",
     skill_disabled: "本轮使用普通问答", skill_manual: "使用手动指定的技能",
     skill_rule_match: "规则匹配到技能", skill_model_match: "模型选择了技能",
     skill_no_match: "没有匹配的技能，使用普通问答",
@@ -923,7 +951,7 @@
     completed: "全部完成", partial: "部分完成", failed: "未能完成", needs_clarification: "需要补充信息",
   };
   const planStepStatusLabels = {
-    pending: "尚未执行", success: "已完成", insufficient_evidence: "资料不足",
+    pending: "尚未执行", success: "已完成", insufficient_evidence: "未完整完成",
     needs_clarification: "需要补充信息", service_error: "执行异常", limit_reached: "达到调用上限",
     out_of_scope: "超出范围", skipped: "已跳过",
   };
@@ -933,15 +961,18 @@
     if (!plan || typeof plan !== "object" || Array.isArray(plan) || plan.version !== 1
       || !Array.isArray(plan.steps)) return null;
     const steps = plan.steps.filter((step) => step && typeof step === "object" && !Array.isArray(step));
-    if (!steps.length) return null;
-
     const details = element("details", "execution-details plan-details");
+    details.open = plan.status !== "completed";
     const summary = element("summary", "execution-summary");
     summary.append(element("span", "execution-summary-title", "任务执行步骤"));
     summary.append(element("span", "execution-summary-meta",
       `${steps.length} 步 · ${traceLabel(planStatusLabels, plan.status, "状态未记录")}`));
     details.append(summary);
     const body = element("div", "execution-body");
+    if (!steps.length) {
+      body.append(element("p", null, "计划尚未进入执行阶段。"));
+      body.append(element("p", "trace-detail", traceReason(result.stop_reason)));
+    }
     const list = element("ol", "plan-steps");
     for (const step of steps) {
       const item = element("li", "plan-step");
@@ -1153,7 +1184,8 @@
       if (assessment) content.append(assessment);
       if (result.sources?.length) content.append(renderSources(result.sources));
       const meta = element("div", "message-meta");
-      const label = assessment && result.status === "success" ? "MBTI 测试" : statusLabels[result.status] || "回答结果";
+      const label = result.plan?.status === "partial" ? "任务部分完成"
+        : assessment && result.status === "success" ? "MBTI 测试" : statusLabels[result.status] || "回答结果";
       const badge = element("span", "status-badge", label);
       badge.dataset.status = result.status;
       meta.append(badge);

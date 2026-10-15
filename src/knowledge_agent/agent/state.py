@@ -197,6 +197,9 @@ class PreparedModelTurn:
     max_retries: int
     skill_id: str | None = None
     route: RouteKind = RouteKind.KNOWLEDGE
+    # Planned knowledge leaves can reserve their final invocation for an answer
+    # without exposing tools that would require another model round afterwards.
+    answer_model: Any | None = None
 
 
 ModelTurnKind = Literal["tool_requests", "final_answer", "empty_response"]

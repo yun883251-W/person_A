@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 from ..models import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
     ChatModelNotFoundError,
+    ChatModelOutputError,
     ChatModelRequestError,
     ChatModelServiceError,
     ChatModelTimeoutError,
@@ -73,6 +75,11 @@ def invoke_model_turn(
             )
         raise
     state.messages.append(message)
+
+    if message.invalid_tool_calls:
+        if state.trace_recorder is not None and model_event is not None:
+            state.trace_recorder.finish_event(model_event, "error", error_code="model_output_invalid")
+        raise ChatModelOutputError("The model returned malformed tool arguments.")
 
     if message.tool_calls:
         if state.trace_recorder is not None and model_event is not None:
@@ -298,8 +305,32 @@ def continue_model_loop(
             state.status = "limit_reached"
             state.stop_reason = budget_exhausted
             return result
+        next_turn = turn
+        if turn.answer_model is not None and max_model_calls - state.model_calls == 1:
+            # Complete the pending tool exchange, then spend the reserved last
+            # call on an answer. No retry or additional tool execution occurs.
+            state.messages.append(SystemMessage(content=(
+                "这是当前知识步骤的最后一次模型调用。请根据已经取得的资料直接回答，"
+                "不要再请求工具。只引用本步骤实际提供的来源："
+                + "、".join(f"[{key}]" for key in state.source_map)
+                + "。资料不足时明确说明不足，不要编造引用。"
+            )))
+            next_turn = replace(
+                turn, model=turn.answer_model,
+                tools=KnowledgeTools(definitions=(), executors={}),
+            )
+        if state.step_id is not None:
+            state.context_chars = sum(
+                len(str(message.content))
+                + (len(json.dumps(message.tool_calls, ensure_ascii=False)) if isinstance(message, AIMessage) and message.tool_calls else 0)
+                for message in state.messages
+            )
+            if state.context_chars > max_context_chars:
+                state.status = "limit_reached"
+                state.stop_reason = "context_budget_exhausted"
+                return result
         try:
-            result = invoke_model_turn(turn, state)
+            result = invoke_model_turn(next_turn, state)
         except ChatModelInvocationError as exc:
             _record_model_failure(state, exc)
             return result
@@ -311,6 +342,8 @@ def continue_model_loop(
 
 def _model_error_code(exc: ChatModelInvocationError) -> str:
     """Return the stable, non-sensitive public category for a model failure."""
+    if isinstance(exc, ChatModelOutputError):
+        return "model_output_invalid"
     if isinstance(exc, ChatModelAuthenticationError):
         return "model_authentication_failed"
     if isinstance(exc, ChatModelTimeoutError):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from copy import deepcopy
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Final, Mapping, cast
 from urllib.parse import urlsplit
@@ -46,6 +47,10 @@ class ChatModelServiceError(ChatModelInvocationError):
 
 class ChatModelRequestError(ChatModelInvocationError):
     """The request is invalid or uses a capability the model lacks."""
+
+
+class ChatModelOutputError(ChatModelInvocationError):
+    """The provider answered, but its response or tool arguments were invalid."""
 
 
 def create_embedding_model(
@@ -285,6 +290,8 @@ def _normalize_chat_model_error(
     status = _exception_status_code(exc)
     name = type(exc).__name__.lower()
 
+    if "outputparser" in name:
+        return ChatModelOutputError("The model returned an invalid structured response."), False
     if status in {401, 403} or "authentication" in name or "permissiondenied" in name:
         return ChatModelAuthenticationError("Chat model authentication failed."), False
     if status == 404 or "notfound" in name:
@@ -317,6 +324,33 @@ def _exception_status_code(exc: Exception) -> int | None:
             if isinstance(value, int) and not isinstance(value, bool):
                 return value
     return None
+
+
+def bind_chat_json_schema(model: BaseChatModel, schema: Mapping[str, Any]) -> Any:
+    """Constrain an isolated Ollama JSON response without changing the client.
+
+    Use the native ``format`` schema, not a synthetic tool or a permissive JSON
+    parser. Callers still own strict parsing, semantic validation and budgets.
+    Returning a bound runnable preserves the raw AIMessage and leaves ordinary
+    answers and tool calls on the shared model unaffected. Other providers keep
+    their existing prompt-based contract; do not send Ollama-only parameters.
+    This function only prepares the request and never contacts the service.
+    """
+    if not isinstance(schema, Mapping) or schema.get("type") != "object":
+        raise ValueError("The response schema must describe a JSON object")
+    try:
+        from langchain_ollama import ChatOllama
+    except ImportError:
+        return model
+    if not isinstance(model, ChatOllama):
+        return model
+    try:
+        return model.bind(format=deepcopy(dict(schema)))
+    except (TypeError, ValueError, NotImplementedError) as exc:
+        raise ChatModelRequestError(
+            "The configured Ollama adapter does not support structured output."
+        ) from exc
+
 
 def bind_chat_tools(model: BaseChatModel, tools: Sequence[Any]) -> Any:
     """Bind agent-supplied tool schemas without executing the tools.

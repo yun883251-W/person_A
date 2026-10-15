@@ -19,7 +19,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from ..config import AgentConfig, get_intent_settings, get_skill_selection_settings
 from ..knowledge.retrieval import KnowledgeRetriever
-from ..models import ChatModelInvocationError, initialize_chat_model, invoke_chat_model
+from ..models import (
+    ChatModelInvocationError,
+    bind_chat_json_schema,
+    initialize_chat_model,
+    invoke_chat_model,
+)
 from ..schemas import AnswerResult, AnswerStatus, RouteSummary
 from ..session_store import SessionStore, SessionStoreError, StoredTurn
 from ..skill_loader import load_skill
@@ -34,9 +39,10 @@ from .model_loop import (
     invoke_model_turn,
     run_model_loop,
 )
-from .plan_executor import StepBudget, StepOutcome, execute_plan
+from .plan_executor import StepBudget, StepOutcome, execute_plan, minimum_step_budget
 from .preparation import (
     _PLAN_STEP_CONTEXT_INSTRUCTION,
+    PreparedContextLimitError,
     classify_question,
     create_knowledge_tools,
     create_section_executor,
@@ -77,6 +83,44 @@ answers and [S#] citations in this turn's retrieved evidence, never the summary.
 Do not claim to remember details that are absent from both recent history and
 the summary; ask for clarification when the intended subject is ambiguous.
 """
+
+
+_PLAN_RESPONSE_ERRORS = frozenset({
+    "plan_invalid_response", "plan_unexpected_tool_call", "plan_invalid_json",
+    "plan_invalid_structure", "plan_response_step_count", "plan_invalid_step_id",
+    "plan_invalid_goal", "plan_invalid_kind", "plan_invalid_dependencies",
+    "plan_ungrounded_step_goal", "plan_unauthorized_tool", "plan_invalid_step_tools",
+    "plan_ungrounded_tool_goal", "plan_missing_requested_tool",
+})
+_PLAN_REQUEST_MESSAGES = {
+    "plan_invalid_question": "请提供要执行的任务，并写清每一步的目标。",
+    "plan_invalid_request_goal": "每一步的目标必须是非空文本，不超过 2000 个字符，且不能包含非法控制字符。",
+    "plan_invalid_numbering": "请从 1 开始连续编号，每个编号对应一个任务。",
+    "plan_manual_skill_mcp_conflict": "手动指定的 Skill 只适用于知识问答。请切换为自动选择或普通问答后，再发送包含工具操作的计划。",
+    "plan_not_requested": "请用“先……再……”或编号列出需要执行的任务。",
+    "plan_invalid_step_count": "每轮计划支持 2～3 个不同任务，请调整任务数量或拆开重复任务。",
+    "plan_stateful_assessment": "MBTI 开始、作答、暂停和评分需要单独操作，请从多任务请求中拆出这些操作。",
+    "plan_repeated_tool": "同一轮计划暂不支持重复调用同一个工具，请把重复的工具任务分开发送。",
+    "plan_unavailable_tool": "请求中包含当前不可用的工具，请改用已接入的工具或单独说明要完成的任务。",
+    "plan_clause_needs_clarification": "某一步的操作目标不明确，请写清要搜索的平台和主题。",
+    "plan_unconfirmed_clause_action": "某一步尚不能确认为可执行操作，请明确是否需要打开搜索页面，并写清平台和主题。",
+    "plan_requested_clarification": "规划模型未能确定各步的执行目标。请明确每一步要完成的任务，或拆成独立问题。",
+    "plan_context_too_long": "任务描述超出本轮规划的上下文限制，请缩短描述或拆成独立问题。",
+}
+
+
+def _plan_validation_failure(code: str) -> tuple[AnswerStatus, str]:
+    """Separate model contract failures from requests needing clarification."""
+    if code == "plan_model_budget_exhausted":
+        return "limit_reached", "本轮模型调用预算不足以规划并执行任务，尚未执行任何步骤。请拆成单独问题。"
+    if code in _PLAN_RESPONSE_ERRORS:
+        return "service_error", (
+            "规划模型返回的计划未通过校验，尚未执行任何步骤。请重试；"
+            "若持续出现，请检查模型的结构化输出配置。"
+        )
+    if code in _PLAN_REQUEST_MESSAGES:
+        return "needs_clarification", _PLAN_REQUEST_MESSAGES[code] + "尚未执行任何步骤。"
+    return "service_error", "任务规划配置或准备过程异常，尚未执行任何步骤。请检查模型与能力配置。"
 
 
 def resolve_followup_question(
@@ -274,17 +318,27 @@ class KnowledgeAgent:
             nonlocal planning_calls
             if planning_calls >= self.config.max_model_calls:
                 raise planner.PlanValidationError("plan_model_budget_exhausted")
+            planning_model = bind_chat_json_schema(self.model, planner.plan_response_schema())
             planning_calls += 1
             # A planning retry is another model request; this first version
             # makes exactly one attempt so its shared call budget stays exact.
-            return invoke_chat_model(self.model, messages, max_retries=0)
+            return invoke_chat_model(planning_model, messages, max_retries=0)
 
         def resolve_clause(clause: str) -> IntentDecision:
             # Resolve only original user clauses. The planner cannot create
             # permissions by rewriting a goal or consulting conversation memory.
             def invoke_clause_model(messages: Sequence[BaseMessage]) -> object:
                 nonlocal planning_calls
-                if planning_calls >= self.config.max_model_calls - 3:
+                # Reserve the planner and every requested leaf, not a fixed
+                # two-step allowance that undercounts three-step requests.
+                reserved = 1
+                for requested_goal in planner.raw_plan_clauses(question):
+                    names = planner.authorized_tool_names(requested_goal, capabilities)
+                    reserved += minimum_step_budget(planner.PlanStep(
+                        "", requested_goal, "mcp" if names else "knowledge",
+                        allowed_tool_names=names,
+                    ))[0]
+                if planning_calls + 1 + reserved > self.config.max_model_calls:
                     raise IntentModelBudgetError()
                 planning_calls += 1
                 return invoke_chat_model(self.model, messages, max_retries=0)
@@ -302,6 +356,8 @@ class KnowledgeAgent:
                 reason_code=decision.reason_code,
                 error_code=decision.reason_code if decision.decision_source == "fallback" else None,
             )
+            if decision.reason_code == "browser_bilibili_semantic_budget_exhausted":
+                raise planner.PlanValidationError("plan_model_budget_exhausted")
             return decision
 
         failure_status: AnswerStatus = "needs_clarification"
@@ -319,15 +375,11 @@ class KnowledgeAgent:
                 max_context_chars=self.config.max_context_chars,
                 clause_intent_resolver=resolve_clause,
             )
+            if skill_id is not None and any(step.kind == "mcp" for step in plan.steps):
+                raise planner.PlanValidationError("plan_manual_skill_mcp_conflict")
         except planner.PlanValidationError as exc:
             code = exc.code
-            answer = (
-                "这条请求暂不能生成可执行计划。请拆成独立问题，或明确每一步的目标、"
-                "要搜索的主题。MBTI 开始、作答、暂停和评分请单独操作。"
-            )
-            if code == "plan_model_budget_exhausted":
-                failure_status = "limit_reached"
-                answer = "本轮模型调用预算不足以规划并执行任务，请拆成单独问题。"
+            failure_status, answer = _plan_validation_failure(code)
         except ChatModelInvocationError as exc:
             code = _model_error_code(exc)
             failure_status = "service_error"
@@ -344,6 +396,7 @@ class KnowledgeAgent:
                 run_step=lambda step, budget, context, recorder: self._run_planned_step(
                     step, budget, context, recorder, original_question=question, skill_id=skill_id,
                     skill_mode=skill_mode, conversation_summary=summary_text,
+                    knowledge_history=self.history.turns(session_id) if session_id is not None else (),
                 ),
             )
             if session_id is not None:
@@ -377,26 +430,57 @@ class KnowledgeAgent:
         trace: TraceRecorder, *, original_question: str, skill_id: str | None,
         skill_mode: str | None = None,
         conversation_summary: str = "",
+        knowledge_history: Sequence[object] = (),
     ) -> StepOutcome:
         """Execute one leaf with the remaining budget; never commit a child turn."""
         state = TurnState(original_question=step.goal, trace_recorder=trace, step_id=step.step_id)
-        context_data = {
-            "original_user_request": original_question,
-            "completed_dependency_data": dependency_context,
-        }
-        summary_text = conversation_summary[:max(0, budget.context_chars // 4)] if step.kind == "knowledge" else ""
-        if summary_text:
-            context_data["session_summary_data"] = summary_text
-        context = json.dumps(context_data, ensure_ascii=False)
         try:
             if step.kind == "knowledge":
-                decision = IntentDecision(
-                    kind=IntentKind.KNOWLEDGE, retrieval_query=step.goal,
-                    decision_source="model", reason_code="planned_knowledge_step",
+                # Each step sees only its own question, relevant knowledge
+                # history and explicit dependencies, never sibling instructions.
+                background_limit = min(2000, max(1, budget.context_chars // 4))
+                summary_text = conversation_summary[:background_limit]
+                context_data: dict[str, Any] = {}
+                clause_history = list(knowledge_history[-self.config.max_history_turns:])
+                if dependency_context:
+                    completed = json.loads(dependency_context).get("completed_steps", [])
+                    bounded_dependencies = []
+                    for dependency in completed:
+                        goal = str(dependency.get("goal", ""))[:1000]
+                        bounded_dependencies.append({
+                            "step_id": dependency["step_id"], "goal": goal,
+                            "answer": str(dependency["answer"])[:background_limit],
+                            "may_be_truncated": True,
+                        })
+                        clause_history.append({"question": goal, "route": "knowledge", "complete": True})
+                    context_data["completed_steps"] = bounded_dependencies
+                decision = identify_intent(
+                    step.goal, context=tuple(clause_history),
+                    settings=replace(get_intent_settings(), mode="rules", browser_mode="rules"),
+                    max_context_chars=background_limit,
+                    max_history_turns=self.config.max_history_turns,
                 )
+                if decision.kind is IntentKind.MCP_TOOL:
+                    decision = IntentDecision(
+                        kind=IntentKind.NEEDS_CLARIFICATION,
+                        clarification_question="此步骤没有获得工具操作授权，请单独明确需要执行的操作。",
+                        reason_code="plan_unconfirmed_clause_action",
+                    )
+                if summary_text:
+                    context_data["session_summary_data"] = summary_text
+                    if decision.reason_code == "followup_without_context":
+                        decision = replace(
+                            decision, kind=IntentKind.KNOWLEDGE, clarification_question="",
+                            retrieval_query=step.goal + "\n历史知识背景：" + summary_text,
+                            reason_code="knowledge_summary_followup",
+                        )
+                if decision.reason_code == "knowledge_followup":
+                    context_data["recent_knowledge_questions"] = decision.retrieval_query
+                context = json.dumps(context_data, ensure_ascii=False) if context_data else ""
+                history = (HumanMessage(content="PLAN_CONTEXT_DATA\n" + context + "\nEND_PLAN_CONTEXT_DATA"),) if context else ()
                 prepared = prepare_question(
                     step.goal, retriever=self.retriever,
-                    max_context_chars=budget.context_chars - len(summary_text),
+                    max_context_chars=budget.context_chars,
                     trace_recorder=trace, intent_decision=decision,
                     max_model_calls=budget.model_calls,
                     max_tool_calls=budget.tool_calls,
@@ -406,17 +490,21 @@ class KnowledgeAgent:
                     model=self.model,
                     selection_settings=self.skill_selection_settings,
                     step_id=step.step_id,
-                    visible_context=original_question + "\n" + summary_text,
+                    visible_context=context,
                 )
                 state = prepared.state
-                state.context_chars += len(summary_text)
                 if prepared.terminal_result is not None:
                     return StepOutcome(prepared.terminal_result, state.followup_searches, state.context_chars)
                 turn = prepare_model_turn(
                     prepared, model=self.model, retriever=self.retriever,
                     system_prompt=self.system_prompt + _PLAN_STEP_CONTEXT_INSTRUCTION,
-                    history=(HumanMessage(content="PLAN_CONTEXT_DATA\n" + context),),
+                    history=history,
                     skill_id=skill_id, max_retries=0,
+                    allow_tool_calls=(
+                        budget.model_calls - state.model_calls > 1
+                        and budget.tool_calls > state.tool_calls
+                    ),
+                    max_context_chars=budget.context_chars,
                 )
             else:
                 if step.intent is not None and (
@@ -443,6 +531,18 @@ class KnowledgeAgent:
             # A mixed tool outcome is not a completed prerequisite.
             if result.stop_reason == "partial_tool_failure" and result.status == "success":
                 result = replace(result, status="insufficient_evidence")
+        except PreparedContextLimitError:
+            result = AnswerResult(
+                question=step.goal, answer="本步骤的资料与背景超出上下文限制，无法保留完整的可引用资料。",
+                status="limit_reached", model_calls=state.model_calls,
+                tool_calls=state.tool_calls, stop_reason="plan_context_budget_exhausted",
+            )
+        except ChatModelInvocationError as exc:
+            result = AnswerResult(
+                question=step.goal, answer="本步骤的模型调用失败，未自动重试。",
+                status="service_error", model_calls=state.model_calls,
+                tool_calls=state.tool_calls, stop_reason=_model_error_code(exc),
+            )
         except Exception:
             # Do not retry a failed tool step: a timeout may have executed it.
             result = AnswerResult(

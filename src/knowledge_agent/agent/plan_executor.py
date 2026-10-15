@@ -41,6 +41,13 @@ _SKIPPED_MESSAGES = {
 }
 
 
+def minimum_step_budget(step: PlanStep) -> tuple[int, int]:
+    """Reserve one initial retrieval for knowledge, or the requested MCP calls."""
+    browser = step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
+    model_calls = 2 if step.kind == "mcp" and not browser else 1
+    return model_calls, max(1, len(step.allowed_tool_names))
+
+
 def execute_plan(
     plan: TaskPlan,
     *,
@@ -56,14 +63,16 @@ def execute_plan(
     verified citation rendering and keeping external tool data in its own step.
     """
     results: dict[str, AnswerResult] = {}
+    goals = {step.step_id: step.goal for step in plan.steps}
     summaries: list[dict] = []
     sections: list[str] = []
     sources: dict[tuple[str, str], AnswerSource] = {}
     model_calls = initial_model_calls
-    tool_calls = followup_searches = context_chars = 0
+    tool_calls = followup_searches = 0
     limit_hit = False
+    unavailable: set[str] = set()
 
-    for step in plan.steps:
+    for position, step in enumerate(plan.steps):
         handle = trace.start_event("plan_step", "program", step_id=step.step_id)
         dependencies = [results.get(key) for key in step.depends_on]
         skip_reason = None
@@ -72,11 +81,10 @@ def execute_plan(
         # Browser search has a program-authored receipt and can finish with a
         # single valid proposal. Its optional repair still uses remaining budget.
         # Generic MCP tools need a second model call to report their result.
-        browser_search = step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
-        minimum_calls = 2 if step.kind == "mcp" and not browser_search else 1
+        minimum_calls, minimum_tools = minimum_step_budget(step)
         if skip_reason is None and config.max_model_calls - model_calls < minimum_calls:
             skip_reason = "plan_model_budget_exhausted"
-        if skip_reason is None and tool_calls >= config.max_tool_calls:
+        if skip_reason is None and config.max_tool_calls - tool_calls < minimum_tools:
             skip_reason = "plan_tool_budget_exhausted"
 
         dependency_context = ""
@@ -85,16 +93,13 @@ def execute_plan(
         if dependencies and step.kind == "knowledge":
             dependency_context = json.dumps(
                 {"completed_steps": [
-                    {"step_id": key, "answer": results[key].answer}
+                    {"step_id": key, "goal": goals[key], "answer": results[key].answer}
                     for key in step.depends_on if key in results
                 ]},
                 ensure_ascii=False,
             )
-        available_context = config.max_context_chars - context_chars - len(dependency_context)
-        if skip_reason is None and available_context <= 0:
-            skip_reason = "plan_context_budget_exhausted"
-
         if skip_reason is not None:
+            unavailable.add(step.step_id)
             limit_hit |= skip_reason != "plan_dependency_unfinished"
             summaries.append({
                 "step_id": step.step_id, "goal": step.goal, "kind": step.kind,
@@ -105,11 +110,26 @@ def execute_plan(
             trace.finish_event(handle, "skipped", reason_code=step.step_id, error_code=skip_reason)
             continue
 
+        # Leave a first answer/retrieval for every later viable step. Extra
+        # selection calls, supplemental reads and repairs may use only surplus.
+        reserved_models = reserved_tools = 0
+        blocked = set(unavailable)
+        for later in plan.steps[position + 1:]:
+            if any(key in blocked for key in later.depends_on):
+                blocked.add(later.step_id)
+                continue
+            required_models, required_tools = minimum_step_budget(later)
+            reserved_models += required_models
+            reserved_tools += required_tools
+        remaining_models = config.max_model_calls - model_calls
+        remaining_tools = config.max_tool_calls - tool_calls
         remaining = StepBudget(
-            model_calls=config.max_model_calls - model_calls,
-            tool_calls=config.max_tool_calls - tool_calls,
+            model_calls=min(remaining_models, max(minimum_calls, remaining_models - reserved_models)),
+            tool_calls=min(remaining_tools, max(minimum_tools, remaining_tools - reserved_tools)),
             followup_searches=max(0, config.max_followup_searches - followup_searches),
-            context_chars=available_context,
+            # Each leaf has its own message list. Previously consumed evidence
+            # is not resident here; runner accounts for actual dependencies.
+            context_chars=config.max_context_chars,
         )
         outcome = run_step(step, remaining, dependency_context, trace)
         result = outcome.result
@@ -117,7 +137,8 @@ def execute_plan(
         model_calls += result.model_calls
         tool_calls += result.tool_calls
         followup_searches += outcome.followup_searches
-        context_chars += outcome.context_chars + len(dependency_context)
+        if result.status != "success":
+            unavailable.add(step.step_id)
         limit_hit |= result.status == "limit_reached"
         summaries.append({
             "step_id": step.step_id, "goal": step.goal, "kind": step.kind,
@@ -126,7 +147,7 @@ def execute_plan(
             "stop_reason": result.stop_reason,
         })
         label = {
-            "success": "", "insufficient_evidence": "资料不足：",
+            "success": "", "insufficient_evidence": "未完整完成：",
             "needs_clarification": "需要补充信息：", "service_error": "执行失败：",
             "limit_reached": "达到本轮限制：", "out_of_scope": "超出范围：",
         }[result.status]
@@ -154,6 +175,9 @@ def execute_plan(
     elif any(item["status"] == "insufficient_evidence" for item in summaries):
         status = "insufficient_evidence"
         plan_status, stop_reason = "partial", "plan_insufficient_evidence"
+    elif results and all(result.status == "out_of_scope" for result in results.values()):
+        status = "out_of_scope"
+        plan_status, stop_reason = "failed", "plan_out_of_scope"
     else:
         status = "limit_reached" if limit_hit else "service_error"
         plan_status, stop_reason = "failed", "plan_budget_exhausted" if limit_hit else "plan_failed"

@@ -196,7 +196,7 @@ def finalize_answer(
     """Finalize an answer and record the citation-validation outcome."""
     recorder = state.trace_recorder
     finalize_event = (
-        recorder.start_event("finalize", "program") if recorder is not None else None
+        recorder.start_event("finalize", "program", step_id=state.step_id) if recorder is not None else None
     )
     try:
         answer_result = _finalize_answer(result, state)
