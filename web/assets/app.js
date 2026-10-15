@@ -704,10 +704,15 @@
     question_is_ambiguous: "问题需要澄清", question_out_of_scope: "问题超出当前范围",
     index_not_built: "索引尚未建立", initial_retrieval_failed: "初始检索失败",
     initial_retrieval_empty: "初始检索没有结果", evidence_context_limit: "资料超出上下文限制",
+    initial_retrieval_irrelevant: "检索候选未达到相关性要求",
+    retrieval_relevant: "候选通过相关性筛选", retrieval_below_relevance: "候选相关性不足",
+    retrieval_no_candidates: "索引没有可用候选",
     model_call_budget_exhausted: "达到模型调用上限", tool_budget_exhausted: "达到工具调用上限",
     followup_search_budget_exhausted: "达到补充检索上限", model_empty_response: "模型未返回有效内容",
     model_did_not_finish: "模型未生成最终回答", model_requested_clarification: "模型请求澄清",
     model_reported_insufficient_evidence: "模型报告资料不足", partial_answer: "资料只能支持部分回答",
+    model_reported_out_of_scope: "模型明确说明问题超出服务范围",
+    answer_contract_invalid: "回答状态格式不符合约定", answer_status_conflict: "回答状态与正文不一致",
     model_authentication_failed: "模型鉴权失败", model_timeout: "模型调用超时",
     model_not_found: "模型不存在", model_request_invalid: "模型请求无效",
     model_output_invalid: "模型返回的内容或工具参数格式无效",
@@ -750,6 +755,18 @@
     plan_invalid_numbering: "任务编号需从 1 开始且连续",
     plan_manual_skill_mcp_conflict: "手动知识 Skill 与计划中的工具操作冲突",
     plan_completed: "全部任务已完成", plan_partial: "任务部分完成",
+    plan_partial_execution: "部分任务发生执行异常或达到限制",
+    plan_partial_validation: "部分任务的回答未通过校验",
+    plan_answer_validation_failed: "回答未通过校验",
+    plan_explicit_clauses: "按当前明确子句构造计划，无模型规划调用",
+    plan_invalid_dependency_reference: "引用了不存在、当前或后续的步骤",
+    plan_ambiguous_dependency: "步骤中的指代不明确",
+    plan_tool_dependency_unsupported: "工具参数需要在当前步骤中明确提供",
+    plan_clause_intent_failed: "步骤意图识别服务失败",
+    browser_bilibili_semantic_timeout: "浏览器意图识别超时",
+    browser_bilibili_semantic_budget_exhausted: "浏览器意图识别预算不足",
+    browser_bilibili_semantic_error: "浏览器意图识别服务失败",
+    browser_bilibili_unavailable: "B 站浏览器工具当前不可用",
     plan_dependency_unfinished: "依赖的前置任务未完成", plan_tool_budget_exhausted: "该步骤的工具调用预算不足",
     plan_context_budget_exhausted: "该步骤的资料与背景超过上下文限制",
     plan_budget_exhausted: "任务执行预算不足", plan_out_of_scope: "请求的任务超出知识范围",
@@ -956,6 +973,18 @@
     out_of_scope: "超出范围", skipped: "已跳过",
   };
 
+  const answerValidationReasons = new Set([
+    "missing_citations", "unknown_citation", "unverified_citation_metadata",
+    "answer_contract_invalid", "answer_status_conflict",
+  ]);
+
+  function planStepLabel(step) {
+    if (answerValidationReasons.has(step.stop_reason)) return "回答校验未通过";
+    if (step.stop_reason === "partial_tool_failure") return "部分工具执行失败";
+    if (step.status === "insufficient_evidence") return "资料覆盖不足";
+    return traceLabel(planStepStatusLabels, step.status, "状态未记录");
+  }
+
   function renderPlan(result) {
     const plan = result.plan;
     if (!plan || typeof plan !== "object" || Array.isArray(plan) || plan.version !== 1
@@ -972,13 +1001,26 @@
     if (!steps.length) {
       body.append(element("p", null, "计划尚未进入执行阶段。"));
       body.append(element("p", "trace-detail", traceReason(result.stop_reason)));
+    } else {
+      const groups = new Map();
+      for (const step of steps) {
+        if (step.status === "success") continue;
+        const label = planStepLabel(step);
+        const ids = groups.get(label) || [];
+        ids.push(traceText(step.step_id, "步骤"));
+        groups.set(label, ids);
+      }
+      if (groups.size) {
+        body.append(element("p", "trace-detail",
+          Array.from(groups, ([label, ids]) => `${label}：${ids.join("、")}`).join("；")));
+      }
     }
     const list = element("ol", "plan-steps");
     for (const step of steps) {
       const item = element("li", "plan-step");
       const heading = element("div", "trace-event-heading");
       heading.append(element("strong", "plan-step-id", traceText(step.step_id, "步骤")));
-      const badge = element("span", "plan-step-status", traceLabel(planStepStatusLabels, step.status, "状态未记录"));
+      const badge = element("span", "plan-step-status", planStepLabel(step));
       badge.dataset.status = traceText(step.status, "unknown");
       heading.append(badge); item.append(heading);
       item.append(element("p", "plan-step-goal", traceText(step.goal, "未记录任务目标")));
@@ -1007,7 +1049,7 @@
     }
     body.append(list);
     body.append(element("p", "trace-note plan-note",
-      "这里展示本轮完成后的任务记录。各步骤共享本轮调用预算；规划产生的模型调用计入下方执行详情中的总数。"));
+      "资料覆盖不足表示当前检索证据不够，不等于服务出错，也不能证明整个知识库没有相关内容。各步骤共享本轮调用预算。"));
     details.append(body);
     return details;
   }
@@ -1184,7 +1226,13 @@
       if (assessment) content.append(assessment);
       if (result.sources?.length) content.append(renderSources(result.sources));
       const meta = element("div", "message-meta");
-      const label = result.plan?.status === "partial" ? "任务部分完成"
+      const label = result.plan?.status === "partial" ? ({
+        plan_insufficient_evidence: "部分任务资料不足",
+        plan_partial_execution: "部分任务执行异常",
+        plan_partial_validation: "部分答案校验未通过",
+        plan_answer_validation_failed: "答案校验未通过",
+        plan_needs_clarification: "部分任务需要澄清",
+      }[result.stop_reason] || "任务部分完成")
         : assessment && result.status === "success" ? "MBTI 测试" : statusLabels[result.status] || "回答结果";
       const badge = element("span", "status-badge", label);
       badge.dataset.status = result.status;

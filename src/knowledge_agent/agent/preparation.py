@@ -33,6 +33,7 @@ from ..tools.knowledge import (
     create_search_executor,
 )
 from ..tools.registry import InMemoryToolRegistry, create_tool_registry
+from .answer_contract import ANSWER_CONTRACT_INSTRUCTION
 from .answers import _public_failure_answer
 from .intent import IntentDecision, IntentModelBudgetError, identify_intent
 from .prompts import SYSTEM_PROMPT
@@ -611,6 +612,7 @@ def prepare_question(
                 result_count=len(raw_results) if isinstance(raw_results, list) else None,
                 index_version=output.get("index_version"),
                 error_code=code,
+                reason_code=output.get("reason_code"),
             )
         return output
 
@@ -632,7 +634,7 @@ def prepare_question(
                 retrieval_event, "error" if outcome.errors else "empty",
                 result_count=0, reason_code=plan.reason_code,
             )
-        if outcome.errors and outcome.executed == 0:
+        if outcome.errors:
             index_missing = any(item.stop_reason == "index_not_built" for item in outcome.step_results)
             return _terminal_preparation(
                 state, kind,
@@ -645,9 +647,17 @@ def prepare_question(
                 state, kind, answer="本轮工具调用预算不足，尚未取得可用资料。",
                 status="limit_reached", stop_reason="tool_budget_exhausted",
             )
+        below_relevance = any(
+            item.stop_reason == "retrieval_below_relevance" for item in outcome.step_results
+        )
         return _terminal_preparation(
-            state, kind, answer="当前知识库资料不足以回答这个问题。",
-            status="insufficient_evidence", stop_reason="initial_retrieval_empty",
+            state, kind,
+            answer=(
+                "本次检索未找到达到相关性要求的资料，当前无法依据知识库回答这个问题。"
+                if below_relevance else "当前知识库资料不足以回答这个问题。"
+            ),
+            status="insufficient_evidence",
+            stop_reason="initial_retrieval_irrelevant" if below_relevance else "initial_retrieval_empty",
         )
 
     state.retrieval_status = "results_found"
@@ -860,6 +870,7 @@ def prepare_model_turn(
         turn_prompt = f"{system_prompt.rstrip()}\n\n{_SOURCE_CITATION_INSTRUCTION}"
         if selected_skill is not None:
             turn_prompt = f"{turn_prompt}\n\n{selected_skill.instructions}"
+        turn_prompt = f"{turn_prompt}\n\n{ANSWER_CONTRACT_INSTRUCTION}"
         if not allow_tool_calls:
             tools = KnowledgeTools(definitions=(), executors=MappingProxyType({}))
             turn_prompt += (

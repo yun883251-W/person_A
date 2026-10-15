@@ -6,6 +6,13 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
+from .answer_contract import (
+    ANSWER_VALIDATION_REASONS,
+    has_evidence_gap,
+    has_scope_refusal,
+    parse_answer_contract,
+    plain_refusal_kind,
+)
 from .citations import (
     SOURCE_LIKE_TOKEN_RE as _SOURCE_LIKE_TOKEN_RE,
     SOURCE_TOKEN_RE as _SOURCE_TOKEN_RE,
@@ -21,7 +28,11 @@ def _attach_completed_trace(result: AnswerResult, state: TurnState) -> AnswerRes
     """Finalize and attach this turn's optional execution trace."""
     if state.trace_recorder is None:
         return result
-    failed = result.status in {"service_error", "limit_reached"}
+    failed = (
+        result.status in {"service_error", "limit_reached"}
+        or result.stop_reason in ANSWER_VALIDATION_REASONS
+        or result.stop_reason == "partial_tool_failure"
+    )
     trace = finish_trace_safely(
         state.trace_recorder,
         "failed" if failed else "completed",
@@ -43,21 +54,7 @@ def _attach_routing(result: AnswerResult, decision: RouteDecision) -> AnswerResu
     )
 
 
-_INSUFFICIENT_EVIDENCE_MARKERS = (
-    "当前知识库资料不足",
-    "资料不足以回答",
-    "参考资料中暂无相关信息",
-    "insufficient evidence",
-    "not enough information",
-)
-_PARTIAL_ANSWER_MARKERS = (
-    "只能回答",
-    "仅能回答",
-    "只支持部分",
-    "仅支持部分",
-    "部分回答",
-    "partial answer",
-)
+# MCP clarification remains separate from the knowledge answer/evidence contract.
 _CLARIFICATION_MARKERS = (
     "请说明",
     "请明确",
@@ -194,7 +191,8 @@ def finalize_answer(
         raise
 
     if recorder is not None and finalize_event is not None:
-        if answer_result.status in {"service_error", "limit_reached"}:
+        if (answer_result.status in {"service_error", "limit_reached"}
+                or answer_result.stop_reason in ANSWER_VALIDATION_REASONS):
             trace_status = "error"
         elif answer_result.status == "insufficient_evidence":
             trace_status = "empty"
@@ -207,8 +205,9 @@ def finalize_answer(
             trace_status,
             result_count=len(answer_result.sources),
             index_version=answer_result.index_version,
+            reason_code=answer_result.stop_reason,
             error_code=(
-                answer_result.stop_reason if trace_status != "success" else None
+                answer_result.stop_reason if trace_status == "error" else None
             ),
         )
     return answer_result
@@ -250,15 +249,26 @@ def _finalize_answer(
             stop_reason=stop_reason,
         )
 
-    answer = result.answer.strip()
-    folded_answer = answer.casefold()
-    is_clarification = any(
-        marker in folded_answer for marker in _CLARIFICATION_MARKERS
-    )
-    is_insufficient = any(
-        marker in folded_answer for marker in _INSUFFICIENT_EVIDENCE_MARKERS
-    )
-    is_partial = any(marker in folded_answer for marker in _PARTIAL_ANSWER_MARKERS)
+    parsed = parse_answer_contract(result.answer)
+    answer = parsed.body
+
+    def rejected(code: str, message: str) -> AnswerResult:
+        state.status = "insufficient_evidence"
+        state.stop_reason = code
+        return AnswerResult(
+            question=state.original_question,
+            answer=message,
+            status="insufficient_evidence",
+            model_calls=state.model_calls,
+            tool_calls=state.tool_calls,
+            stop_reason=code,
+        )
+
+    if parsed.error_code is not None:
+        return rejected(
+            parsed.error_code,
+            "回答状态格式不完整，当前无法可靠判断回答与资料的关系，请重试。",
+        )
 
     cited_ids: list[str] = []
     seen_ids: set[str] = set()
@@ -278,46 +288,65 @@ def _finalize_answer(
     has_written_citation = _WRITTEN_CITATION_RE.search(answer) is not None
 
     if has_unknown_source or has_written_citation:
-        state.status = "insufficient_evidence"
-        state.stop_reason = (
-            "unknown_citation" if has_unknown_source else "unverified_citation_metadata"
-        )
-        return AnswerResult(
-            question=state.original_question,
-            answer="回答中的来源标注无法核验，当前未能生成可靠答案。",
-            status="insufficient_evidence",
-            model_calls=state.model_calls,
-            tool_calls=state.tool_calls,
-            stop_reason=state.stop_reason,
+        return rejected(
+            "unknown_citation" if has_unknown_source else "unverified_citation_metadata",
+            "回答中的来源标注无法核验，当前未能生成可靠答案。",
         )
 
     cited_sources = tuple(state.source_map[source_id] for source_id in cited_ids)
-    if not cited_sources and not (is_clarification or is_insufficient):
-        state.status = "insufficient_evidence"
-        state.stop_reason = "missing_citations"
+    # A refusal must never decorate unrelated documents with apparently valid
+    # citations. Check source IDs first, then remove them from a pure refusal's
+    # display text and return no source objects. Historical answers receive this
+    # same validated public body, without the protocol header.
+    uncited_answer = _SOURCE_TOKEN_RE.sub("", answer).strip()
+    refusal = plain_refusal_kind(uncited_answer)
+    non_factual_kinds = {"insufficient_evidence", "needs_clarification", "out_of_scope"}
+    if refusal is not None:
+        # A verified, purely non-factual refusal is safe to preserve even when
+        # the model picked the wrong header. Its body determines the outcome;
+        # a self-reported “supported” must never turn a refusal green.
+        status = refusal
+        stop_reason = {
+            "insufficient_evidence": "model_reported_insufficient_evidence",
+            "needs_clarification": "model_requested_clarification",
+            "out_of_scope": "model_reported_out_of_scope",
+        }[refusal]
+        state.status = status
+        state.stop_reason = stop_reason
         return AnswerResult(
             question=state.original_question,
-            answer="回答缺少可核验的知识库引用，当前未能生成可靠答案。",
-            status="insufficient_evidence",
+            answer=uncited_answer,
+            status=status,
+            sources=(),
+            index_version=None,
             model_calls=state.model_calls,
             tool_calls=state.tool_calls,
-            stop_reason=state.stop_reason,
+            stop_reason=stop_reason,
+        )
+
+    if parsed.kind in non_factual_kinds:
+        return rejected(
+            "answer_status_conflict",
+            "模型声明无法直接回答，但正文未符合简短拒答或澄清的格式，当前无法可靠核验其内容。",
+        )
+    if has_scope_refusal(uncited_answer):
+        return rejected(
+            "answer_status_conflict",
+            "回答同时声明超出服务范围并给出实质内容，当前无法核验这些内容。",
+        )
+    if not cited_sources:
+        return rejected(
+            "missing_citations",
+            "本轮尚未形成有资料支持的回答：正文包含实质内容，但没有可核验的知识库引用。",
         )
 
     resolved_answer = _SOURCE_TOKEN_RE.sub(
         lambda match: _format_source(state.source_map[match.group(1)]),
         answer,
     )
-    if is_clarification:
-        status = "needs_clarification"
-        stop_reason = "model_requested_clarification"
-    elif is_insufficient or is_partial:
+    if parsed.kind == "partial" or has_evidence_gap(uncited_answer):
         status = "insufficient_evidence"
-        stop_reason = (
-            "partial_answer"
-            if cited_sources
-            else "model_reported_insufficient_evidence"
-        )
+        stop_reason = "partial_answer"
     else:
         status = "success"
         stop_reason = "answer_completed"

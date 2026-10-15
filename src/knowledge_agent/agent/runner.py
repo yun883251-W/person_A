@@ -21,7 +21,6 @@ from ..config import AgentConfig, get_intent_settings, get_skill_selection_setti
 from ..knowledge.retrieval import KnowledgeRetriever
 from ..models import (
     ChatModelInvocationError,
-    bind_chat_json_schema,
     initialize_chat_model,
     invoke_chat_model,
 )
@@ -96,6 +95,9 @@ _PLAN_REQUEST_MESSAGES = {
     "plan_invalid_question": "请提供要执行的任务，并写清每一步的目标。",
     "plan_invalid_request_goal": "每一步的目标必须是非空文本，不超过 2000 个字符，且不能包含非法控制字符。",
     "plan_invalid_numbering": "请从 1 开始连续编号，每个编号对应一个任务。",
+    "plan_invalid_dependency_reference": "任务引用了尚不存在、当前或后续的步骤。请明确引用当前请求中已经列出的前置步骤。",
+    "plan_ambiguous_dependency": "某一步的“它、上述内容”等指代不明确。请写出具体主题，或明确说明“第一步的结果”“上一步的回答”。",
+    "plan_tool_dependency_unsupported": "工具步骤需要在当前子句中写明完整参数，暂不支持从前一步回答中提取工具参数。",
     "plan_manual_skill_mcp_conflict": "手动指定的 Skill 只适用于知识问答。请切换为自动选择或普通问答后，再发送包含工具操作的计划。",
     "plan_not_requested": "请用“先……再……”或编号列出需要执行的任务。",
     "plan_invalid_step_count": "每轮计划支持 2～3 个不同任务，请调整任务数量或拆开重复任务。",
@@ -111,8 +113,14 @@ _PLAN_REQUEST_MESSAGES = {
 
 def _plan_validation_failure(code: str) -> tuple[AnswerStatus, str]:
     """Separate model contract failures from requests needing clarification."""
-    if code == "plan_model_budget_exhausted":
-        return "limit_reached", "本轮模型调用预算不足以规划并执行任务，尚未执行任何步骤。请拆成单独问题。"
+    if code in {"plan_model_budget_exhausted", "browser_bilibili_semantic_budget_exhausted"}:
+        return "limit_reached", "本轮模型调用预算不足以识别并执行任务，尚未执行任何步骤。请拆成单独问题。"
+    if code == "browser_bilibili_semantic_timeout":
+        return "service_error", "某一步的浏览器意图识别超时，尚未执行任何步骤。请稍后重试。"
+    if code == "browser_bilibili_unavailable":
+        return "service_error", "计划需要的 B 站浏览器工具当前不可用，尚未执行任何步骤。请检查 MCP 服务配置。"
+    if code.startswith("browser_bilibili_semantic_") or code == "plan_clause_intent_failed":
+        return "service_error", "某一步的浏览器意图识别服务失败或返回内容未通过校验，尚未执行任何步骤。请稍后重试。"
     if code in _PLAN_RESPONSE_ERRORS:
         return "service_error", (
             "规划模型返回的计划未通过校验，尚未执行任何步骤。请重试；"
@@ -314,24 +322,14 @@ class KnowledgeAgent:
         summary_messages = self._summary_messages(session_id)
         summary_text = str(summary_messages[0].content) if summary_messages else ""
 
-        def invoke_planner(messages: Sequence[BaseMessage]) -> object:
-            nonlocal planning_calls
-            if planning_calls >= self.config.max_model_calls:
-                raise planner.PlanValidationError("plan_model_budget_exhausted")
-            planning_model = bind_chat_json_schema(self.model, planner.plan_response_schema())
-            planning_calls += 1
-            # A planning retry is another model request; this first version
-            # makes exactly one attempt so its shared call budget stays exact.
-            return invoke_chat_model(planning_model, messages, max_retries=0)
-
         def resolve_clause(clause: str) -> IntentDecision:
             # Resolve only original user clauses. The planner cannot create
             # permissions by rewriting a goal or consulting conversation memory.
             def invoke_clause_model(messages: Sequence[BaseMessage]) -> object:
                 nonlocal planning_calls
-                # Reserve the planner and every requested leaf, not a fixed
-                # two-step allowance that undercounts three-step requests.
-                reserved = 1
+                # Plans are constructed by the host. Only semantic clause
+                # classification and leaf execution spend model calls.
+                reserved = 0
                 for requested_goal in planner.raw_plan_clauses(question):
                     names = planner.authorized_tool_names(requested_goal, capabilities)
                     reserved += minimum_step_budget(planner.PlanStep(
@@ -356,22 +354,16 @@ class KnowledgeAgent:
                 reason_code=decision.reason_code,
                 error_code=decision.reason_code if decision.decision_source == "fallback" else None,
             )
-            if decision.reason_code == "browser_bilibili_semantic_budget_exhausted":
-                raise planner.PlanValidationError("plan_model_budget_exhausted")
             return decision
 
         failure_status: AnswerStatus = "needs_clarification"
+        failure_source = "rules"
+        failure_reason = ""
         try:
-            if self.config.max_model_calls < 2:
-                raise planner.PlanValidationError("plan_model_budget_exhausted")
             plan = planner.build_plan(
                 question,
-                context=(
-                    *self.history.messages(session_id, route=RouteKind.KNOWLEDGE),
-                    *summary_messages,
-                ) if session_id is not None else (),
                 available_tools=capabilities,
-                model_invoker=invoke_planner, max_steps=3,
+                max_steps=3,
                 max_context_chars=self.config.max_context_chars,
                 clause_intent_resolver=resolve_clause,
             )
@@ -379,17 +371,26 @@ class KnowledgeAgent:
                 raise planner.PlanValidationError("plan_manual_skill_mcp_conflict")
         except planner.PlanValidationError as exc:
             code = exc.code
+            failure_source = exc.decision_source
+            failure_reason = exc.reason_code
             failure_status, answer = _plan_validation_failure(code)
         except ChatModelInvocationError as exc:
             code = _model_error_code(exc)
+            failure_source = "fallback"
+            failure_reason = code
             failure_status = "service_error"
-            answer = "任务规划模型暂不可用，尚未执行任何步骤。请稍后重试。"
+            answer = "任务中的意图识别模型暂不可用，尚未执行任何步骤。请稍后重试。"
         except Exception:
             code = "plan_preparation_failed"
+            failure_source = "fallback"
+            failure_reason = code
             failure_status = "service_error"
             answer = "任务规划暂未完成，尚未执行任何步骤。请检查模型与能力配置。"
         else:
-            trace.finish_event(event, "success", decision_source="model", result_count=len(plan.steps))
+            trace.finish_event(
+                event, "success", decision_source=plan.decision_source,
+                reason_code=plan.reason_code, result_count=len(plan.steps),
+            )
             result = execute_plan(
                 plan, question=question, config=self.config,
                 initial_model_calls=planning_calls, trace=trace,
@@ -405,19 +406,27 @@ class KnowledgeAgent:
                 ))
             return result
 
-        trace.finish_event(event, "error", error_code=code)
+        trace.finish_event(
+            event, "empty" if failure_status == "needs_clarification" else "error",
+            error_code=code if failure_status != "needs_clarification" else None,
+            decision_source=failure_source, reason_code=failure_reason or code,
+        )
         result = AnswerResult(
             question=question, answer=answer, status=failure_status,
             model_calls=planning_calls, stop_reason=code,
             routing=RouteSummary(
-                route="direct", intent="needs_clarification", decision_source="fallback", reason_code=code,
+                route="direct", intent="needs_clarification",
+                decision_source=failure_source, reason_code=failure_reason or code,
             ),
             plan=planner.validate_plan_summary({
                 "version": 1,
                 "status": "needs_clarification" if failure_status == "needs_clarification" else "failed",
                 "steps": [],
             }),
-            trace=finish_trace_safely(trace, "failed", error_code=code),
+            trace=finish_trace_safely(
+                trace, "completed" if failure_status == "needs_clarification" else "failed",
+                error_code=code if failure_status != "needs_clarification" else None,
+            ),
         )
         if session_id is not None:
             self._commit_turn(session_id, TurnState(original_question=question), result, (

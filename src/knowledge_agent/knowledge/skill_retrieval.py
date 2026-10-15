@@ -625,7 +625,7 @@ def execute_retrieval_plan(
             continue
 
         stop_reason = (
-            "retrieval_empty"
+            output.get("reason_code", "retrieval_empty")
             if status == "empty"
             else "section_limited"
             if status == "limited"

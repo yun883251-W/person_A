@@ -1,4 +1,4 @@
-"""知识库检索（待实现）。
+"""知识库检索。
 
 职责：读取 ingest 发布的本地索引，根据问题返回带来源的相关文档片段。
 输入：用户问题、索引目录、Embedding 配置及检索参数。
@@ -6,10 +6,8 @@
 
 沿用本地 JSON / JSONL 索引，不引入数据库，也不在查询时重新入库。
 本模块不生成最终回答，不执行检索到的代码或 Prompt。
-当前仅记录 TODO，尚未实现检索逻辑。
-
-实施顺序：先完成 TODO 01—14，再集中执行 TODO 15—18 的验证。
-开发项中的参数与数据检查是运行时功能；测试、联调和效果评估统一放到最后。
+相关性闸门先于 RRF/top-k，允许正常返回空结果；模型或索引错误仍抛出异常。
+默认余弦阈值属于未校准的启发式参数，开发后的测试与效果评估仍待执行。
 """
 
 
@@ -36,6 +34,7 @@ from .ingest import (
     check_ollama_embedding_model,
 )
 from .keywords import extract_keywords
+from .relevance import extract_topic_terms, matching_topic_terms, topic_coverage
 from ..models import create_embedding_model
 from ..schemas import DocumentChunk, RetrievalChannel, RetrievalResult
 
@@ -50,6 +49,28 @@ class RetrievalConfig:
     keyword_candidate_count: int
     rrf_k: int
     request_timeout: float
+    min_cosine: float = 0.45
+    semantic_min_cosine: float = 0.65
+    min_topic_coverage: float = 0.6
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("RETRIEVAL_MIN_COSINE", self.min_cosine),
+            ("RETRIEVAL_SEMANTIC_MIN_COSINE", self.semantic_min_cosine),
+        ):
+            if (
+                isinstance(value, bool) or not isinstance(value, Real)
+                or not math.isfinite(value) or not -1.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} 必须是 [-1, 1] 内的有限数值")
+        if self.semantic_min_cosine < self.min_cosine:
+            raise ValueError("RETRIEVAL_SEMANTIC_MIN_COSINE 不能小于 RETRIEVAL_MIN_COSINE")
+        coverage = self.min_topic_coverage
+        if (
+            isinstance(coverage, bool) or not isinstance(coverage, Real)
+            or not math.isfinite(coverage) or not 0.0 < coverage <= 1.0
+        ):
+            raise ValueError("RETRIEVAL_MIN_TOPIC_COVERAGE 必须是 (0, 1] 内的有限数值")
 
 
 def load_retrieval_config() -> RetrievalConfig:
@@ -84,6 +105,9 @@ def load_retrieval_config() -> RetrievalConfig:
         keyword_candidate_count=settings.keyword_candidate_count,
         rrf_k=settings.rrf_k,
         request_timeout=settings.request_timeout,
+        min_cosine=settings.min_cosine,
+        semantic_min_cosine=settings.semantic_min_cosine,
+        min_topic_coverage=settings.min_topic_coverage,
     )
 
 @dataclass(frozen=True, slots=True)
@@ -666,7 +690,12 @@ def retrieve_keyword_candidates(
     snapshot: IndexSnapshot,
     config: RetrievalConfig,
 ) -> tuple[KeywordCandidate, ...]:
-    """Rank chunks by the number of distinct normalized query terms matched."""
+    """Rank meaningful topic matches, using the existing index for candidate lookup.
+
+    Chinese postings contain individual characters. Intersect them to discover
+    candidates, then require the original consecutive pair in the source text;
+    single-character/question-word overlap is not a meaningful keyword hit.
+    """
     if not isinstance(query, PreparedQuery):
         raise TypeError("query 必须是 PreparedQuery")
     if not isinstance(snapshot, IndexSnapshot):
@@ -680,13 +709,17 @@ def retrieve_keyword_candidates(
 
     matches: dict[str, list[str]] = {}
     postings = snapshot.keyword_postings
-    for term in extract_query_keywords(query.original_question):
-        for chunk_id in postings.get(term, ()):
-            matched_terms = matches.get(chunk_id)
-            if matched_terms is None:
-                matches[chunk_id] = [term]
-            elif matched_terms[-1] != term:
-                matched_terms.append(term)
+    for term in extract_topic_terms(query.original_question):
+        index_terms = extract_keywords(term)
+        if not index_terms:
+            continue
+        possible_ids = set(postings.get(index_terms[0], ()))
+        for index_term in index_terms[1:]:
+            possible_ids.intersection_update(postings.get(index_term, ()))
+        for chunk_id in possible_ids:
+            chunk = snapshot.chunks[chunk_id]
+            if matching_topic_terms((term,), chunk.retrieval_text):
+                matches.setdefault(chunk_id, []).append(term)
 
     if not matches:
         return ()
@@ -706,6 +739,79 @@ def retrieve_keyword_candidates(
             matched_terms=tuple(matched_terms),
         )
         for rank, (chunk_id, matched_terms) in enumerate(ranked, start=1)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalDiagnostics:
+    """Per-call signals, safe to retain without sharing mutable request state."""
+
+    reason_code: str
+    candidate_count: int
+    relevant_candidate_count: int
+    topic_term_count: int
+    max_cosine: float | None
+    max_topic_coverage: float
+    min_cosine: float
+    semantic_min_cosine: float
+    min_topic_coverage: float
+
+
+def filter_relevant_candidates(
+    query: PreparedQuery,
+    snapshot: IndexSnapshot,
+    vector_candidates: tuple[VectorCandidate, ...],
+    keyword_candidates: tuple[KeywordCandidate, ...],
+    config: RetrievalConfig,
+) -> tuple[tuple[VectorCandidate, ...], tuple[KeywordCandidate, ...], RetrievalDiagnostics]:
+    """Gate raw candidates before fusion, never interpreting RRF as confidence.
+
+    Keep candidates supported by both cosine and topic coverage, high-cosine
+    paraphrases without lexical overlap, or an exact match of all topic hints
+    from the keyword channel. These are relevance heuristics, not proof that a
+    passage answers every requested detail. The answering stage still checks
+    evidence sufficiency. All-rejected candidates are a normal empty retrieval.
+    """
+    terms = extract_topic_terms(query.original_question)
+    vectors = {candidate.chunk_id: candidate for candidate in vector_candidates}
+    keywords = {candidate.chunk_id: candidate for candidate in keyword_candidates}
+    candidate_ids = vectors.keys() | keywords.keys()
+    accepted: set[str] = set()
+    max_coverage = 0.0
+    for chunk_id in candidate_ids:
+        chunk = snapshot.chunks[chunk_id]
+        matched = matching_topic_terms(terms, chunk.retrieval_text)
+        coverage = topic_coverage(terms, matched)
+        max_coverage = max(max_coverage, coverage)
+        vector = vectors.get(chunk_id)
+        cosine = vector.score if vector is not None else None
+        semantic_support = cosine is not None and cosine >= config.semantic_min_cosine
+        combined_support = (
+            cosine is not None and cosine >= config.min_cosine
+            and coverage >= config.min_topic_coverage
+        )
+        exact_topic_support = chunk_id in keywords and bool(terms) and coverage == 1.0
+        if semantic_support or combined_support or exact_topic_support:
+            accepted.add(chunk_id)
+
+    diagnostics = RetrievalDiagnostics(
+        reason_code=(
+            "retrieval_relevant" if accepted else
+            "retrieval_below_relevance" if candidate_ids else "retrieval_no_candidates"
+        ),
+        candidate_count=len(candidate_ids),
+        relevant_candidate_count=len(accepted),
+        topic_term_count=len(terms),
+        max_cosine=max((candidate.score for candidate in vector_candidates), default=None),
+        max_topic_coverage=max_coverage,
+        min_cosine=config.min_cosine,
+        semantic_min_cosine=config.semantic_min_cosine,
+        min_topic_coverage=config.min_topic_coverage,
+    )
+    return (
+        tuple(candidate for candidate in vector_candidates if candidate.chunk_id in accepted),
+        tuple(candidate for candidate in keyword_candidates if candidate.chunk_id in accepted),
+        diagnostics,
     )
 
 @dataclass(frozen=True, slots=True)
@@ -1027,6 +1133,15 @@ class _RetrievalRuntime:
     embedding_model: OllamaEmbeddingModel
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalOutcome:
+    """Results and relevance diagnostics captured from the same index/request."""
+
+    results: tuple[RetrievalResult, ...]
+    diagnostics: RetrievalDiagnostics
+    index_version: str
+
+
 class KnowledgeRetriever:
     """Thread-safe, reusable entry point for index retrieval and context reads."""
 
@@ -1078,14 +1193,27 @@ class KnowledgeRetriever:
         return self._current_runtime().snapshot.index_version
 
     def retrieve(self, question: str) -> tuple[RetrievalResult, ...]:
-        """Run both retrieval channels against one captured index snapshot."""
+        """Return relevant source-preserving results; an empty tuple is valid."""
+        return self.retrieve_with_diagnostics(question).results
+
+    def retrieve_with_diagnostics(self, question: str) -> RetrievalOutcome:
+        """Run both channels and relevance filtering against one captured snapshot.
+
+        No mutable ``last_stats`` are stored, so concurrent callers cannot read
+        each other's diagnostics. Technical failures still propagate as errors.
+        """
         runtime = self._current_runtime()
         snapshot = runtime.snapshot
         query = prepare_query(question, snapshot, runtime.embedding_model)
         vectors = retrieve_vector_candidates(query, snapshot, self.config)
         keywords = retrieve_keyword_candidates(query, snapshot, self.config)
+        vectors, keywords, diagnostics = filter_relevant_candidates(
+            query, snapshot, vectors, keywords, self.config,
+        )
         fused = fuse_candidates(vectors, keywords, self.config)
-        return organize_retrieval_results(snapshot, fused)
+        return RetrievalOutcome(
+            organize_retrieval_results(snapshot, fused), diagnostics, snapshot.index_version,
+        )
 
     def read_context(self, chunk_id: str, **kwargs: Any) -> ContextReadResult:
         """Read context from the snapshot active when this call begins."""
@@ -1149,5 +1277,8 @@ RetrievalService = KnowledgeRetriever
 # 在临时文档集上分别新增、修改、删除文件并更新索引，刷新后检查结果变化。
 # 确认被删除内容不再召回，修改内容使用新的来源记录，未变内容仍可正常检索。
 # 记录典型问题的命中来源、候选数量和查询耗时，据此调整召回数量与融合参数。
+# 校准 RETRIEVAL_MIN_COSINE / RETRIEVAL_SEMANTIC_MIN_COSINE / TOPIC_COVERAGE。
+# 覆盖改写但无词面重合、精确 API/C++ 标识符、中文主题、纯提问词和库外问题。
+# 验证过滤在 RRF/top-k 前生效，相关性为空与索引/Embedding 错误分别记录。
 # 阈值需结合相关及不相关问题确定；不把“返回了 top_k 条”当作检索正确的证明。
 # 验证完成后汇总通过项、失败项及待修复问题，不能将未执行项目标记为通过。

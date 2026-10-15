@@ -19,6 +19,8 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Final, Mapping, cast
 from urllib.parse import urlsplit
 
+from .model_diagnostics import record_chat_failure, record_embedding_timing
+
 if TYPE_CHECKING:
     from .config import ChatSettings
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -82,6 +84,7 @@ def create_embedding_model(
                 options=self._default_params,
                 keep_alive=self.keep_alive,
             )
+            record_embedding_timing(response)
             return response["embeddings"]
 
     return NonTruncatingOllamaEmbeddings(
@@ -277,6 +280,11 @@ def invoke_chat_model(
             return cast("AIMessage", model.invoke(messages))
         except Exception as exc:
             error, recoverable = _normalize_chat_model_error(exc)
+            record_chat_failure(
+                exc, status_code=_exception_status_code(exc),
+                error_category=type(error).__name__, retryable=recoverable,
+                attempt=attempt + 1, model=model,
+            )
             if not recoverable or attempt == retries:
                 raise error from exc
 

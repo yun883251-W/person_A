@@ -67,6 +67,9 @@ class RetrievalSettings:
     rrf_k: int
     request_timeout: float
     project_root: Path = PROJECT_ROOT
+    min_cosine: float = 0.45
+    semantic_min_cosine: float = 0.65
+    min_topic_coverage: float = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +299,9 @@ def get_retrieval_settings() -> RetrievalSettings:
         keyword_candidate_count=int(value("RETRIEVAL_KEYWORD_CANDIDATES", "20")),
         rrf_k=int(value("RETRIEVAL_RRF_K", "60")),
         request_timeout=float(value("EMBEDDING_REQUEST_TIMEOUT", "60")),
+        min_cosine=float(value("RETRIEVAL_MIN_COSINE", "0.45")),
+        semantic_min_cosine=float(value("RETRIEVAL_SEMANTIC_MIN_COSINE", "0.65")),
+        min_topic_coverage=float(value("RETRIEVAL_MIN_TOPIC_COVERAGE", "0.6")),
     )
 
 

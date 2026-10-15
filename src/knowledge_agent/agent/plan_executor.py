@@ -14,6 +14,7 @@ from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 from ..config import AgentConfig
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RouteSummary
+from .answer_contract import ANSWER_VALIDATION_REASONS
 from .citations import historical_answer_text
 from .planner import PlanStep, TaskPlan, validate_plan_summary
 from .trace import TraceRecorder, finish_trace_safely
@@ -40,6 +41,17 @@ _SKIPPED_MESSAGES = {
     "plan_tool_budget_exhausted": "本轮工具调用预算已用完，本步骤未执行。",
     "plan_context_budget_exhausted": "本轮上下文预算已用完，本步骤未执行。",
 }
+
+def _outcome_kind(result: AnswerResult) -> str:
+    """Separate evidence coverage from a failed execution or invalid answer."""
+    if result.status in {"service_error", "limit_reached"} or result.stop_reason == "partial_tool_failure":
+        return "execution"
+    if result.stop_reason in ANSWER_VALIDATION_REASONS:
+        return "validation"
+    return {
+        "success": "completed", "insufficient_evidence": "evidence",
+        "needs_clarification": "clarification", "out_of_scope": "scope",
+    }.get(result.status, "execution")
 
 
 def minimum_step_budget(step: PlanStep) -> tuple[int, int]:
@@ -77,7 +89,7 @@ def execute_plan(
         handle = trace.start_event("plan_step", "program", step_id=step.step_id)
         dependencies = [results.get(key) for key in step.depends_on]
         skip_reason = None
-        if any(result is None or result.status != "success" for result in dependencies):
+        if any(result is None or _outcome_kind(result) != "completed" for result in dependencies):
             skip_reason = "plan_dependency_unfinished"
         # Browser search has a program-authored receipt and can finish with a
         # single valid proposal. Its optional repair still uses remaining budget.
@@ -111,7 +123,10 @@ def execute_plan(
                 "model_calls": 0, "tool_calls": 0, "stop_reason": skip_reason,
             })
             sections.append(f"### {step.step_id} · {step.goal}\n\n{_SKIPPED_MESSAGES[skip_reason]}")
-            trace.finish_event(handle, "skipped", reason_code=step.step_id, error_code=skip_reason)
+            trace.finish_event(
+                handle, "skipped", reason_code=skip_reason,
+                error_code=skip_reason if skip_reason != "plan_dependency_unfinished" else None,
+            )
             continue
 
         # Leave a first answer/retrieval for every later viable step. Extra
@@ -141,44 +156,71 @@ def execute_plan(
         model_calls += result.model_calls
         tool_calls += result.tool_calls
         followup_searches += outcome.followup_searches
-        if result.status != "success":
+        outcome_kind = _outcome_kind(result)
+        if outcome_kind != "completed":
             unavailable.add(step.step_id)
         limit_hit |= result.status == "limit_reached"
         summaries.append({
             "step_id": step.step_id, "goal": step.goal, "kind": step.kind,
-            "depends_on": list(step.depends_on), "status": result.status,
+            "depends_on": list(step.depends_on),
+            "status": "service_error" if result.stop_reason == "partial_tool_failure" else result.status,
             "model_calls": result.model_calls, "tool_calls": result.tool_calls,
             "stop_reason": result.stop_reason,
         })
         label = {
-            "success": "", "insufficient_evidence": "未完整完成：",
+            "success": "", "insufficient_evidence": "资料覆盖不足：",
             "needs_clarification": "需要补充信息：", "service_error": "执行失败：",
             "limit_reached": "达到本轮限制：", "out_of_scope": "超出范围：",
         }[result.status]
+        if outcome_kind == "validation":
+            label = "回答校验未通过："
+        elif result.stop_reason == "partial_tool_failure":
+            label = "部分工具执行失败："
         sections.append(f"### {step.step_id} · {step.goal}\n\n{label}{result.answer}")
         for source in result.sources:
             sources[(source.index_version, source.chunk_id)] = source
         trace.finish_event(
-            handle, "success" if result.status == "success" else "error",
-            reason_code=step.step_id, route_kind=step.kind,
+            handle, {
+                "completed": "success", "evidence": "empty",
+                "clarification": "skipped", "scope": "skipped",
+                "validation": "error", "execution": "error",
+            }[outcome_kind],
+            reason_code=result.stop_reason, route_kind=step.kind,
             result_count=len(result.sources),
-            error_code=result.stop_reason if result.status != "success" else None,
+            error_code=result.stop_reason if outcome_kind in {"validation", "execution"} else None,
         )
 
     completed = sum(item["status"] == "success" for item in summaries)
+    outcome_counts = {
+        kind: sum(_outcome_kind(result) == kind for result in results.values())
+        for kind in ("evidence", "clarification", "scope", "validation", "execution")
+    }
+    technical_failure = bool(outcome_counts["validation"] or outcome_counts["execution"] or limit_hit)
     has_content = any(result.sources or result.status == "success" for result in results.values())
     if completed == len(plan.steps):
         status: AnswerStatus = "success"
         plan_status, stop_reason = "completed", "plan_completed"
     elif has_content:
         status = "insufficient_evidence"
-        plan_status, stop_reason = "partial", "plan_partial"
+        plan_status = "partial"
+        stop_reason = (
+            "plan_partial_execution" if outcome_counts["execution"] or limit_hit
+            else "plan_partial_validation" if outcome_counts["validation"]
+            else "plan_insufficient_evidence" if outcome_counts["evidence"]
+            else "plan_needs_clarification" if outcome_counts["clarification"]
+            else "plan_partial"
+        )
     elif any(item["status"] == "needs_clarification" for item in summaries):
         status = "needs_clarification"
         plan_status, stop_reason = "needs_clarification", "plan_needs_clarification"
     elif any(item["status"] == "insufficient_evidence" for item in summaries):
         status = "insufficient_evidence"
-        plan_status, stop_reason = "partial", "plan_insufficient_evidence"
+        plan_status = "partial"
+        stop_reason = (
+            "plan_partial_execution" if outcome_counts["execution"] or limit_hit
+            else "plan_answer_validation_failed" if outcome_counts["validation"]
+            else "plan_insufficient_evidence"
+        )
     elif results and all(result.status == "out_of_scope" for result in results.values()):
         status = "out_of_scope"
         plan_status, stop_reason = "failed", "plan_out_of_scope"
@@ -186,6 +228,19 @@ def execute_plan(
         status = "limit_reached" if limit_hit else "service_error"
         plan_status, stop_reason = "failed", "plan_budget_exhausted" if limit_hit else "plan_failed"
     heading = f"已完成 {completed}/{len(plan.steps)} 个任务。"
+    details = [
+        f"{label} {outcome_counts[kind]} 步"
+        for kind, label in (
+            ("evidence", "资料覆盖不足"), ("clarification", "需要补充信息"),
+            ("scope", "超出范围"), ("validation", "回答校验未通过"),
+            ("execution", "执行异常或达到限制"),
+        ) if outcome_counts[kind]
+    ]
+    skipped = sum(item["status"] == "skipped" for item in summaries)
+    if skipped:
+        details.append(f"未执行 {skipped} 步")
+    if details:
+        heading += "\n" + "；".join(details) + "。"
     summary = validate_plan_summary({"version": 1, "status": plan_status, "steps": summaries})
     versions = {source.index_version for source in sources.values()}
     mixed_tools = any(step.kind == "mcp" for step in plan.steps)
@@ -196,10 +251,10 @@ def execute_plan(
         routing=RouteSummary(
             route="mcp" if mixed_tools else "knowledge",
             intent="mcp_tool" if mixed_tools else "knowledge",
-            decision_source="model", reason_code="multi_step_plan",
+            decision_source=plan.decision_source, reason_code="multi_step_plan",
         ),
         trace=finish_trace_safely(
-            trace, "completed" if status == "success" else "failed",
-            error_code=None if status == "success" else stop_reason,
+            trace, "failed" if technical_failure else "completed",
+            error_code=stop_reason if technical_failure else None,
         ),
     )

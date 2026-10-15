@@ -11,7 +11,7 @@ agent/preparation.py 负责当前回合的工具组装与上下文准备。
 from __future__ import annotations
 
 from collections.abc import MutableMapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Literal, Protocol
 
 from langchain_core.tools import StructuredTool
@@ -128,7 +128,16 @@ def create_search_executor(
 
     def search_knowledge(query: str) -> KnowledgeToolResult:
         try:
-            results = retriever.retrieve(query)
+            detailed_retrieve = getattr(retriever, "retrieve_with_diagnostics", None)
+            relevance: dict[str, Any] = {}
+            if callable(detailed_retrieve):
+                outcome = detailed_retrieve(query)
+                results = outcome.results
+                relevance = asdict(outcome.diagnostics)
+                index_version = outcome.index_version
+            else:
+                results = retriever.retrieve(query)
+                index_version = results[0].index_version if results else retriever.index_version
         except IndexNotBuiltError:
             state.retrieval_status = "failed"
             state.retrieval_error_code = "index_not_built"
@@ -157,14 +166,18 @@ def create_search_executor(
 
         if not results:
             state.retrieval_status = "empty"
+            state.retrieval_error_code = None
             return {
                 "status": "empty",
                 "query": query,
-                "index_version": retriever.index_version,
+                "index_version": index_version,
+                "reason_code": relevance.get("reason_code", "retrieval_no_candidates"),
+                "relevance": relevance,
                 "results": [],
             }
 
         state.retrieval_status = "results_found"
+        state.retrieval_error_code = None
         serialized_results: list[dict[str, Any]] = []
         for rank, result in enumerate(results, start=1):
             state.evidence[result.chunk_id] = result
@@ -193,6 +206,8 @@ def create_search_executor(
             "status": "success",
             "query": query,
             "index_version": results[0].index_version,
+            "reason_code": relevance.get("reason_code", "retrieval_relevant"),
+            "relevance": relevance,
             "results": serialized_results,
         }
 
