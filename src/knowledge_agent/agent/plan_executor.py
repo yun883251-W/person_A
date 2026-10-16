@@ -251,7 +251,7 @@ def execute_plan(
         heading += "\n" + "；".join(details) + "。"
     format_warnings = sum(
         result.answer_diagnostics is not None
-        and result.answer_diagnostics.validation_status == "warning"
+        and result.answer_diagnostics.validation_reason == "refusal_format_nonconforming"
         for result in results.values()
     )
     if format_warnings:

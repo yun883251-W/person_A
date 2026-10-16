@@ -103,8 +103,8 @@ _TRANSFORM = re.compile(
 )
 _NEW_FACTS = re.compile(
     r"搜索|检索|查找|查询|补充|扩展|举例|示例|最新|额外|其他资料|更多资料|"
-    r"工作原理|底层原理|如何实现|编写代码|实现代码|对比|比较|"
-    r"\b(?:search|research|look up|additional|new facts|examples?|compare|implement)\b",
+    r"解释|介绍|讲解|说明|分析|证明|推导|工作原理|底层原理|如何实现|编写代码|实现代码|对比|比较|"
+    r"\b(?:search|research|look up|additional|new facts|examples?|compare|implement|explain|introduce|analyze|analyse|prove)\b",
     re.IGNORECASE,
 )
 

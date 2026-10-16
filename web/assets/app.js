@@ -707,6 +707,10 @@
     initial_retrieval_irrelevant: "检索候选未达到相关性要求",
     retrieval_relevant: "候选通过相关性筛选", retrieval_below_relevance: "候选相关性不足",
     retrieval_no_candidates: "索引没有可用候选",
+    dependency_evidence_reused: "复用前置步骤已引用的原始资料，无需新检索",
+    dependency_evidence_unavailable: "前置步骤缺少可复用的已引用原文",
+    dependency_evidence_after_empty_retrieval: "新检索为空，继续使用前置原始资料",
+    plan_dependency_transform: "根据明确前置步骤整理已有内容",
     model_call_budget_exhausted: "达到模型调用上限", tool_budget_exhausted: "达到工具调用上限",
     followup_search_budget_exhausted: "达到补充检索上限", model_empty_response: "模型未返回有效内容",
     model_did_not_finish: "模型未生成最终回答", model_requested_clarification: "模型请求澄清",
@@ -714,6 +718,7 @@
     model_reported_out_of_scope: "模型明确说明问题超出服务范围",
     answer_contract_invalid: "回答状态格式不符合约定", answer_status_conflict: "回答状态与正文不一致",
     refusal_format_nonconforming: "模型声明资料不足，回复格式异常；已用程序说明替代正文",
+    answer_status_body_mismatch: "模型声明与正文不一致，已按实际拒答类型处理",
     model_authentication_failed: "模型鉴权失败", model_timeout: "模型调用超时",
     model_not_found: "模型不存在", model_request_invalid: "模型请求无效",
     model_output_invalid: "模型返回的内容或工具参数格式无效",
@@ -763,6 +768,7 @@
     plan_invalid_dependency_reference: "引用了不存在、当前或后续的步骤",
     plan_ambiguous_dependency: "步骤中的指代不明确",
     plan_tool_dependency_unsupported: "工具参数需要在当前步骤中明确提供",
+    plan_knowledge_tool_dependency_unsupported: "工具结果暂不支持作为知识步骤的前置资料",
     plan_clause_intent_failed: "步骤意图识别服务失败",
     browser_bilibili_semantic_timeout: "浏览器意图识别超时",
     browser_bilibili_semantic_budget_exhausted: "浏览器意图识别预算不足",
@@ -855,7 +861,7 @@
     out_of_scope: "模型报告超出范围",
   };
   const validationLabels = {
-    passed: "通过", warning: "回复格式异常，已使用程序说明", rejected: "未通过，原正文未发布",
+    passed: "通过", warning: "有提示（见校验说明）", rejected: "未通过，原正文未发布",
   };
 
   function answerDiagnosticFields(diagnostic) {
@@ -1012,8 +1018,11 @@
   ]);
 
   function planStepLabel(step) {
-    if (step.answer_diagnostics?.declared_status === "insufficient_evidence"
-      && step.answer_diagnostics?.validation_status === "warning") return "模型报告资料不足（回复格式异常）";
+    if (step.status === "insufficient_evidence"
+      && step.answer_diagnostics?.declared_status === "insufficient_evidence"
+      && step.answer_diagnostics?.validation_reason === "refusal_format_nonconforming") {
+      return "模型报告资料不足（回复格式异常）";
+    }
     if (answerValidationReasons.has(step.stop_reason)) return "回答校验未通过";
     if (step.stop_reason === "partial_tool_failure") return "部分工具执行失败";
     if (step.status === "insufficient_evidence") return "资料覆盖不足";

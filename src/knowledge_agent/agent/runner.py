@@ -99,6 +99,7 @@ _PLAN_REQUEST_MESSAGES = {
     "plan_invalid_dependency_reference": "任务引用了尚不存在、当前或后续的步骤。请明确引用当前请求中已经列出的前置步骤。",
     "plan_ambiguous_dependency": "某一步的“它、上述内容”等指代不明确。请写出具体主题，或明确说明“第一步的结果”“上一步的回答”。",
     "plan_tool_dependency_unsupported": "工具步骤需要在当前子句中写明完整参数，暂不支持从前一步回答中提取工具参数。",
+    "plan_knowledge_tool_dependency_unsupported": "暂不支持把工具结果作为知识步骤的前置资料，请拆开处理，或让该步骤依赖已完成的知识问答。",
     "plan_manual_skill_mcp_conflict": "手动指定的 Skill 只适用于知识问答。请切换为自动选择或普通问答后，再发送包含工具操作的计划。",
     "plan_not_requested": "请用“先……再……”或编号列出需要执行的任务。",
     "plan_invalid_step_count": "每轮计划支持 2～3 个不同任务，请调整任务数量或拆开重复任务。",

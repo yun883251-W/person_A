@@ -579,6 +579,10 @@ def build_plan(
         if names and dependencies:
             # Tool arguments must come from this clause, never another answer.
             raise PlanValidationError("plan_tool_dependency_unsupported")
+        if not names and any(steps[int(key[1:]) - 1].kind != "knowledge" for key in dependencies):
+            # A browser receipt / MCP answer is not a source document. Refuse
+            # this unsupported handoff before executing the external action.
+            raise PlanValidationError("plan_knowledge_tool_dependency_unsupported")
         steps.append(PlanStep(
             f"P{index}", goal, "mcp" if names else "knowledge",
             dependencies, tuple(names), clause_intents.get(goal),
