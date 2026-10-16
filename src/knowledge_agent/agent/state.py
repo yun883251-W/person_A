@@ -171,6 +171,9 @@ class TurnState:
     trace_recorder: TraceRecorder | None = None
     # Browser actions have a program-authored receipt, not an LLM page summary.
     browser_action_result: AnswerResult | None = None
+    # Host-bound topic from this request's clauses; never inferred from history
+    # or another model answer. Browser dispatch must match it exactly.
+    browser_search_topic: str | None = None
 
     def __post_init__(self) -> None:
         if self.retrieval_question is None:

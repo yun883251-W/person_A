@@ -115,6 +115,10 @@ def execute_plan(
                 "depends_on": list(step.depends_on), "status": "skipped",
                 "model_calls": 0, "tool_calls": 0, "stop_reason": skip_reason,
             })
+            if step.topic_binding is not None:
+                summaries[-1]["topic_binding"] = {
+                    "topic": step.topic_binding.topic, "source_step_id": step.topic_binding.source_step_id,
+                }
             sections.append(f"### {step.step_id} · {step.goal}\n\n{_SKIPPED_MESSAGES[skip_reason]}")
             trace.finish_event(
                 handle, "skipped", reason_code=skip_reason,
@@ -173,6 +177,10 @@ def execute_plan(
         diagnostic = public_answer_diagnostics(result.answer_diagnostics)
         if diagnostic is not None:
             step_summary["answer_diagnostics"] = diagnostic
+        if step.topic_binding is not None:
+            step_summary["topic_binding"] = {
+                "topic": step.topic_binding.topic, "source_step_id": step.topic_binding.source_step_id,
+            }
         summaries.append(step_summary)
         label = {
             "success": "", "insufficient_evidence": "资料覆盖不足：",

@@ -3,8 +3,9 @@
 The planner may describe two or three requested tasks, but cannot call a tool or
 grant permission to one. MCP steps copy their operational goal from the current
 user request. Questionnaire controls remain in the deterministic MBTI session.
-Only the public execution summary may be persisted; it contains no arguments,
-intermediate answers, model reasoning, or questionnaire answers.
+Only the public execution summary may be persisted; it may include a literal
+user-topic binding, but no full tool payload, intermediate answers, model
+reasoning, or questionnaire answers.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 from .answer_diagnostics import validate_public_answer_diagnostics
+from .topic_references import TopicBinding, TopicReferenceError, resolve_topic_reference, validate_topic_binding
 
 if TYPE_CHECKING:
     from .intent import IntentDecision
@@ -31,6 +33,8 @@ class PlanStep:
     # Host-owned classification of the original clause; never model JSON or
     # persisted plan data. Reusing it avoids a second semantic classification.
     intent: IntentDecision | None = None
+    # A topic copied from another user clause is not an answer dependency.
+    topic_binding: TopicBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +468,7 @@ def _validate_identity(item: dict[str, Any], index: int) -> tuple[str, str, str,
 def _clause_authorizations(
     clauses: tuple[str, ...], capabilities: tuple[dict[str, str], ...],
     resolver: Callable[[str], IntentDecision] | None,
+    topic_bindings: Mapping[str, TopicBinding] | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, IntentDecision]]:
     """Classify only possible browser actions, never ordinary knowledge clauses.
 
@@ -478,10 +483,23 @@ def _clause_authorizations(
     resolved: dict[str, IntentDecision] = {}
     for clause in clauses:
         names = authorized_tool_names(clause, capabilities)
-        if _is_browser_task_clause(clause):
-            if resolver is None:
-                raise PlanValidationError("plan_clause_intent_unavailable")
-            decision = resolver(clause)
+        binding = (topic_bindings or {}).get(clause)
+        if binding is not None or _is_browser_task_clause(clause):
+            if binding is not None:
+                if not validate_topic_binding(binding, clauses):
+                    raise PlanValidationError("plan_topic_reference_invalid")
+                if SEARCH_BILIBILI_TOOL not in available:
+                    raise PlanValidationError("browser_bilibili_unavailable")
+                decision = IntentDecision(
+                    kind=IntentKind.MCP_TOOL,
+                    allowed_tool_names=(SEARCH_BILIBILI_TOOL,),
+                    authorized_user_input=clause,
+                    reason_code="browser_bilibili_topic_reference",
+                )
+            else:
+                if resolver is None:
+                    raise PlanValidationError("plan_clause_intent_unavailable")
+                decision = resolver(clause)
             if not isinstance(decision, IntentDecision):
                 raise PlanValidationError("plan_invalid_clause_intent")
             if decision.kind is IntentKind.NEEDS_CLARIFICATION:
@@ -562,11 +580,20 @@ def build_plan(
         raise PlanValidationError("plan_stateful_assessment")
     if len(question) > max_context_chars:
         raise PlanValidationError("plan_context_too_long")
+    topic_bindings: dict[str, TopicBinding] = {}
+    for index, clause in enumerate(clauses):
+        try:
+            binding = resolve_topic_reference(clause, clauses[:index])
+        except TopicReferenceError as exc:
+            raise PlanValidationError(exc.code) from exc
+        if binding is not None:
+            topic_bindings[clause] = binding
     dependencies_by_step = tuple(
-        _explicit_dependencies(clause, index) for index, clause in enumerate(clauses, 1)
+        () if clause in topic_bindings else _explicit_dependencies(clause, index)
+        for index, clause in enumerate(clauses, 1)
     )
     clause_tools, clause_intents = _clause_authorizations(
-        clauses, capabilities, clause_intent_resolver,
+        clauses, capabilities, clause_intent_resolver, topic_bindings,
     )
     # Reject duplicate tool execution before any planned action is dispatched.
     requested_names = [name for names in clause_tools.values() for name in names]
@@ -577,7 +604,7 @@ def build_plan(
         names = clause_tools[goal]
         dependencies = dependencies_by_step[index - 1]
         if names and dependencies:
-            # Tool arguments must come from this clause, never another answer.
+            # Tool arguments may use a bound user topic, never another answer.
             raise PlanValidationError("plan_tool_dependency_unsupported")
         if not names and any(steps[int(key[1:]) - 1].kind != "knowledge" for key in dependencies):
             # A browser receipt / MCP answer is not a source document. Refuse
@@ -585,7 +612,7 @@ def build_plan(
             raise PlanValidationError("plan_knowledge_tool_dependency_unsupported")
         steps.append(PlanStep(
             f"P{index}", goal, "mcp" if names else "knowledge",
-            dependencies, tuple(names), clause_intents.get(goal),
+            dependencies, tuple(names), clause_intents.get(goal), topic_bindings.get(goal),
         ))
     return TaskPlan(tuple(steps))
 
@@ -609,7 +636,7 @@ def validate_plan_summary(value: object) -> dict[str, Any]:
             "step_id", "goal", "kind", "depends_on", "status", "model_calls", "tool_calls", "stop_reason",
         }
         if (not isinstance(item, dict) or not required_fields <= set(item)
-                or set(item) - required_fields - {"answer_diagnostics"}):
+                or set(item) - required_fields - {"answer_diagnostics", "topic_binding"}):
             raise PlanValidationError("plan_invalid_summary_step")
         step_id, goal, kind, dependencies = _validate_identity(item, index)
         step_status = item["status"]
@@ -631,4 +658,18 @@ def validate_plan_summary(value: object) -> dict[str, Any]:
                 result[-1]["answer_diagnostics"] = validate_public_answer_diagnostics(item["answer_diagnostics"])
             except (TypeError, ValueError) as exc:
                 raise PlanValidationError("plan_invalid_summary_diagnostics") from exc
+        if item.get("topic_binding") is not None:
+            binding = item["topic_binding"]
+            if (kind != "mcp" or dependencies or not isinstance(binding, dict)
+                    or set(binding) != {"topic", "source_step_id"}
+                    or not isinstance(binding["topic"], str)
+                    or not isinstance(binding["source_step_id"], str)):
+                raise PlanValidationError("plan_invalid_summary_topic_binding")
+            source = next((prior for prior in result[:-1] if prior["step_id"] == binding["source_step_id"]), None)
+            if source is None or source["kind"] != "knowledge":
+                raise PlanValidationError("plan_invalid_summary_topic_binding")
+            candidate = TopicBinding(goal, binding["topic"], binding["source_step_id"], source["goal"])
+            if not validate_topic_binding(candidate, tuple(prior["goal"] for prior in result)):
+                raise PlanValidationError("plan_invalid_summary_topic_binding")
+            result[-1]["topic_binding"] = dict(binding)
     return {"version": 1, "status": status, "steps": result}

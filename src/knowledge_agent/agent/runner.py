@@ -72,6 +72,7 @@ from .state import (
     _complete_history_messages,
 )
 from .trace import TraceRecorder, finish_trace_safely
+from .topic_references import validate_topic_binding
 
 
 _SESSION_SUMMARY_INSTRUCTION = """
@@ -107,6 +108,9 @@ _PLAN_REQUEST_MESSAGES = {
     "plan_repeated_tool": "同一轮计划暂不支持重复调用同一个工具，请把重复的工具任务分开发送。",
     "plan_unavailable_tool": "请求中包含当前不可用的工具，请改用已接入的工具或单独说明要完成的任务。",
     "plan_clause_needs_clarification": "某一步的操作目标不明确，请写清要搜索的平台和主题。",
+    "plan_topic_reference_missing": "已识别到 B 站搜索请求，但当前这条消息的前面没有可唯一确定的主题，请补充要搜索的主题。",
+    "plan_topic_reference_ambiguous": "已识别到 B 站搜索请求，但“相关视频”可能对应多个主题，请明确要搜索哪一个。",
+    "plan_topic_reference_invalid": "搜索主题与当前任务的原始描述不一致，请明确要搜索的主题。",
     "plan_unconfirmed_clause_action": "某一步尚不能确认为可执行操作，请明确是否需要打开搜索页面，并写清平台和主题。",
     "plan_requested_clarification": "规划模型未能确定各步的执行目标。请明确每一步要完成的任务，或拆成独立问题。",
     "plan_context_too_long": "任务描述超出本轮规划的上下文限制，请缩短描述或拆成独立问题。",
@@ -537,6 +541,28 @@ class KnowledgeAgent:
                     or step.intent.allowed_tool_names != step.allowed_tool_names
                 ):
                     raise ValueError("Plan step differs from the authorized user clause")
+                if step.topic_binding is not None:
+                    from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+
+                    event = trace.start_event("intent", "program", step_id=step.step_id)
+                    valid_binding = (
+                        step.topic_binding.original_clause == step.goal
+                        and step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
+                        and step.intent is not None
+                        and validate_topic_binding(step.topic_binding, planner.raw_plan_clauses(original_question))
+                    )
+                    trace.finish_event(
+                        event, "success" if valid_binding else "error", decision_source="rules",
+                        intent_kind="mcp_tool", route_kind="mcp",
+                        reason_code="browser_bilibili_topic_reference" if valid_binding else "plan_topic_reference_invalid",
+                        error_code=None if valid_binding else "plan_topic_reference_invalid",
+                    )
+                    if not valid_binding:
+                        return StepOutcome(AnswerResult(
+                            question=step.goal, answer="搜索主题绑定无法核验，尚未执行浏览器操作。",
+                            status="service_error", stop_reason="plan_topic_reference_invalid",
+                        ))
+                    state.browser_search_topic = step.topic_binding.topic
                 turn = prepare_mcp_model_turn(
                     state, model=self.model, registry=self.mcp_registry,
                     allowed_tool_names=step.allowed_tool_names,

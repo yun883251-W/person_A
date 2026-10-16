@@ -23,6 +23,10 @@ from .router import RouteKind
 from .state import ModelTurnResult, PreparedModelTurn, ToolCallResult, TurnState
 
 
+class _TopicBindingMismatch(ValueError):
+    """The model proposed a different subject than the host-resolved user topic."""
+
+
 def is_browser_search_turn(turn: PreparedModelTurn) -> bool:
     """The special workflow owns exactly one approved browser capability."""
     return (
@@ -75,7 +79,10 @@ def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, 
     call_id = call.get("id")
     if not isinstance(call_id, str) or not call_id.strip() or call_id in state.completed_tool_call_ids:
         raise ValueError("invalid_tool_call_id")
-    return call, validate_search_arguments(call.get("args"))
+    arguments = validate_search_arguments(call.get("args"))
+    if state.browser_search_topic is not None and arguments["query"] != state.browser_search_topic:
+        raise _TopicBindingMismatch("browser_search_topic_mismatch")
+    return call, arguments
 
 
 def _verified_payload(output: object, arguments: Mapping[str, str]) -> dict[str, Any] | None:
@@ -131,24 +138,34 @@ def run_browser_search(
         proposal = invoke_model(turn, state)
         try:
             _call, arguments = _validated_call(proposal.message, state)
-        except (TypeError, ValueError):
-            _reject_parameters(state, "browser_invalid_tool_arguments")
+        except (TypeError, ValueError) as exc:
+            code = "browser_search_topic_mismatch" if isinstance(exc, _TopicBindingMismatch) else "browser_invalid_tool_arguments"
+            _reject_parameters(state, code)
             # Drop malformed assistant calls rather than send an orphan call ID
             # back to the provider or persist them as a completed conversation.
             state.messages[:] = initial_messages
             if attempt == 0 and state.model_calls < max_model_calls:
+                topic_repair = (
+                    " The query must exactly match this host-resolved topic: "
+                    + json.dumps(state.browser_search_topic, ensure_ascii=False) + "."
+                    if state.browser_search_topic is not None else ""
+                )
                 state.messages.append(HumanMessage(content=(
                     "STRUCTURED_ARGUMENT_REPAIR: Your previous output was rejected before execution. "
                     "Call only mcp__browser__search_bilibili exactly once using native tool calling. "
                     "Its arguments must be a JSON object with exactly one field, query: a nonblank "
                     "string of 1 to 200 characters without control characters. Extract the search "
                     "topic from the original user request; do not invent a different topic. "
-                    "Do not output JSON as plain answer text or issue additional calls."
+                    "Do not output JSON as plain answer text or issue additional calls." + topic_repair
                 )))
                 continue
             return _finish(
-                state, "未能生成符合要求的搜索参数，尚未请求打开浏览器。请明确要搜索的关键词后重试。",
-                status="service_error", code="browser_invalid_tool_arguments",
+                state, (
+                    "模型生成的搜索词与已确定的主题不一致，尚未请求打开浏览器。请重试。"
+                    if code == "browser_search_topic_mismatch" else
+                    "未能生成符合要求的搜索参数，尚未请求打开浏览器。请重试。"
+                ),
+                status="service_error", code=code,
             )
         break
 

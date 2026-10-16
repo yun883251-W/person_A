@@ -232,6 +232,13 @@ class AssessmentResponse(_PublicModel):
     result: dict[str, Any] | None = None
 
 
+class TopicBindingResponse(_PublicModel):
+    """Same-request user-topic reference, distinct from an answer dependency."""
+
+    topic: str = Field(min_length=1, max_length=200)
+    source_step_id: Literal["P1", "P2"]
+
+
 class PlanStepResponse(_PublicModel):
     """Observable work and outcome for one bounded task step."""
 
@@ -247,6 +254,7 @@ class PlanStepResponse(_PublicModel):
     tool_calls: int = Field(ge=0, strict=True)
     stop_reason: str | None = None
     answer_diagnostics: AnswerDiagnosticsResponse | None = None
+    topic_binding: TopicBindingResponse | None = None
 
 
 class PlanSummaryResponse(_PublicModel):

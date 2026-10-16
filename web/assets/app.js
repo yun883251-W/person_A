@@ -767,9 +767,14 @@
     plan_explicit_clauses: "按当前明确子句构造计划，无模型规划调用",
     plan_invalid_dependency_reference: "引用了不存在、当前或后续的步骤",
     plan_ambiguous_dependency: "步骤中的指代不明确",
-    plan_tool_dependency_unsupported: "工具参数需要在当前步骤中明确提供",
+    plan_tool_dependency_unsupported: "工具参数不能从前置回答中推测",
     plan_knowledge_tool_dependency_unsupported: "工具结果暂不支持作为知识步骤的前置资料",
+    plan_topic_reference_missing: "当前请求没有可补全的明确搜索主题",
+    plan_topic_reference_ambiguous: "当前请求包含多个可能的搜索主题，请明确选择",
+    plan_topic_reference_invalid: "搜索主题引用不符合当前请求的约束",
     plan_clause_intent_failed: "步骤意图识别服务失败",
+    browser_bilibili_topic_reference: "从同一条请求的前置用户描述补全 B 站搜索主题",
+    browser_search_topic_mismatch: "模型生成的搜索参数与已确定的主题不一致，未执行搜索",
     browser_bilibili_semantic_timeout: "浏览器意图识别超时",
     browser_bilibili_semantic_budget_exhausted: "浏览器意图识别预算不足",
     browser_bilibili_semantic_error: "浏览器意图识别服务失败",
@@ -1070,9 +1075,18 @@
       item.append(element("p", "plan-step-goal", traceText(step.goal, "未记录任务目标")));
       const dependencies = Array.isArray(step.depends_on)
         ? step.depends_on.filter((value) => typeof value === "string" && value.trim()) : [];
+      const binding = step.topic_binding;
+      const topicBinding = binding && typeof binding === "object" && !Array.isArray(binding)
+        && typeof binding.topic === "string" && binding.topic.trim()
+        && typeof binding.source_step_id === "string"
+        && /^P[12]$/.test(binding.source_step_id) ? binding : null;
       const fields = [
         ["执行方式", traceLabel({ knowledge: "知识问答", mcp: "MCP 工具" }, step.kind)],
         ["依赖步骤", dependencies.length ? dependencies.join("、") : "无"],
+        ...(topicBinding ? [
+          ["搜索主题", topicBinding.topic],
+          ["主题来源", `${topicBinding.source_step_id} 的用户描述（同一条请求）`],
+        ] : []),
         ["模型调用", traceNumber(step.model_calls, " 次")],
         ["工具调用", traceNumber(step.tool_calls, " 次")],
         ...answerDiagnosticFields(step.answer_diagnostics),
