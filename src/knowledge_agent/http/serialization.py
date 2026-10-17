@@ -14,6 +14,8 @@ from .schemas import (
     AnswerResponse,
     AnswerSourceResponse,
     AssessmentResponse,
+    BusinessStateResponse,
+    DialogueSummaryResponse,
     DocumentChangesResponse,
     DocumentResponse,
     IndexOperationResponse,
@@ -106,6 +108,14 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
             if result.routing is not None
             else None
         ),
+        dialogue=(
+            DialogueSummaryResponse.model_validate(result.dialogue, from_attributes=True)
+            if result.dialogue is not None else None
+        ),
+        business_state=(
+            BusinessStateResponse.model_validate(result.business_state, from_attributes=True)
+            if result.business_state is not None else None
+        ),
         assessment=_assessment_response(result.assessment_state),
         plan=_plan_response(result.plan),
     )
@@ -131,6 +141,14 @@ def _turn_response(turn: StoredTurn) -> TurnResponse:
             RouteSummaryResponse.model_validate(result.routing, from_attributes=True)
             if result.routing is not None
             else None
+        ),
+        dialogue=(
+            DialogueSummaryResponse.model_validate(result.dialogue, from_attributes=True)
+            if result.dialogue is not None else None
+        ),
+        business_state=(
+            BusinessStateResponse.model_validate(result.business_state, from_attributes=True)
+            if result.business_state is not None else None
         ),
         assessment=_assessment_response(result.assessment_state),
         plan=_plan_response(result.plan),

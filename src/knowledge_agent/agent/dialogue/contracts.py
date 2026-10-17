@@ -488,6 +488,14 @@ def validate_dialogue_decision(
             _fail("slots_without_business")
         return decision
     if decision.intent in {DialogueIntent.NEW_BUSINESS, DialogueIntent.CONTINUE_BUSINESS}:
+        # Generic, already-authorized MCP requests keep their existing executor
+        # contract in phase one. They are deliberately not made resumable and
+        # therefore have no cross-turn argument payload to validate here.
+        if (
+            decision.business_type is BusinessType.MCP_TOOL
+            and not decision.confirmed_slots and not decision.missing_slots
+        ):
+            return decision
         normalized = validate_business_slots(
             decision.business_type,
             decision.confirmed_slots,

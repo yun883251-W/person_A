@@ -7,7 +7,7 @@
 | [规划、检索与回答可靠性修复](RELIABILITY_FIXES.md) | 本轮十项问题的处理、相关性门槛、回答状态协议、日志与未验证范围 |
 | [语义意图、多任务组合与长对话摘要](SEMANTIC_PLANS_MEMORY.md) | 新增能力、配置、调用预算、摘要存储和未执行的使用用例 |
 | [意图边界与任务规划](INTENT_PLANNING.md) | 知识咨询、工具指令边界，以及有限步骤规划与共享预算 |
-| [会话意图与任务承接开发清单](DIALOGUE_INTENT_TODO.md) | 新模块骨架、逐项开发 TODO、现有模块接入及集中验收；尚未实现 |
+| [会话意图与任务承接开发清单](DIALOGUE_INTENT_TODO.md) | 一期已接入；记录单焦点/单 pending、SQLite v3、公开投影及剩余真实联调项 |
 | [自动 Skill 与检索策略](AUTO_SKILL_TODO.md) | 自动选择、技能专用检索、前后端接入和未执行的验收清单 |
 | [MBTI MCP 接入](MBTI_MCP.md) | 内置问卷、评分工具、会话答题及配置方式 |
 | [B 站搜索 MCP](BROWSER_MCP.md) | 自然语言提取搜索主题、固定 B 站链接、本机浏览器唤起及待验收项 |

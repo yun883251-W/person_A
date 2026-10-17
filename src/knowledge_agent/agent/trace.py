@@ -122,6 +122,9 @@ class TraceEvent:
     validation_status: AnswerValidationStatus | None = None
     validation_reason: str | None = None
     supplied_source_count: int | None = None
+    dialogue_action: str | None = None
+    business_type: str | None = None
+    execution_mode: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class TurnTrace:
@@ -284,6 +287,9 @@ class TraceRecorder:
         validation_status: AnswerValidationStatus | None = None,
         validation_reason: str | None = None,
         supplied_source_count: int | None = None,
+        dialogue_action: str | None = None,
+        business_type: str | None = None,
+        execution_mode: str | None = None,
     ) -> TraceEvent | None:
         """Finish one event; events omitted by the cap return ``None``."""
 
@@ -321,6 +327,9 @@ class TraceRecorder:
             validation_status=validation_status,
             validation_reason=self._bounded(validation_reason),
             supplied_source_count=supplied_source_count,
+            dialogue_action=self._bounded(dialogue_action),
+            business_type=self._bounded(business_type),
+            execution_mode=self._bounded(execution_mode),
         )
         self._events.append(event)
         self._publish_finished(event)
@@ -433,7 +442,7 @@ _EVENT_FIELDS = {
     "index_version",
     "error_code",
 }
-_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code", "skill_mode", "selected_skill_id", "strategy_id", "step_id", "declared_status", "validation_status", "validation_reason", "supplied_source_count"}
+_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code", "skill_mode", "selected_skill_id", "strategy_id", "step_id", "declared_status", "validation_status", "validation_reason", "supplied_source_count", "dialogue_action", "business_type", "execution_mode"}
 _TRACE_STAGES = frozenset(("planning", "plan_step", "classify", "intent", "route", "initial_retrieval", "skill_select", "skill_retrieval", "skill_prepare", "model", "tool", "finalize"))
 _TRACE_INITIATORS = frozenset(("program", "model"))
 _TRACE_STATUSES = frozenset(("success", "empty", "error", "skipped"))
@@ -444,6 +453,9 @@ _TRACE_INTENT_KINDS = frozenset((
     "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ))
 _TRACE_ROUTE_KINDS = frozenset(("knowledge", "mcp", "direct"))
+_DIALOGUE_ACTIONS = frozenset(("new_business", "continue_business", "cancel_business", "pause_business", "resume_business", "chitchat", "unclear", "unsupported"))
+_BUSINESS_TYPES = frozenset(("knowledge", "bilibili_search", "mbti", "mcp_tool"))
+_EXECUTION_MODES = frozenset(("single", "plan"))
 _DECLARED_ANSWER_STATUSES = frozenset(("supported", "partial", "insufficient_evidence", "needs_clarification", "out_of_scope"))
 _ANSWER_VALIDATION_STATUSES = frozenset(("passed", "warning", "rejected"))
 
@@ -530,6 +542,18 @@ def _event_to_dict(event: TraceEvent, label: str) -> dict[str, Any]:
         ),
         "validation_reason": _public_string(event.validation_reason, f"{label}.validation_reason"),
         "supplied_source_count": _non_negative_int(event.supplied_source_count, f"{label}.supplied_source_count", nullable=True),
+        "dialogue_action": (
+            _enum(event.dialogue_action, _DIALOGUE_ACTIONS, f"{label}.dialogue_action")
+            if event.dialogue_action is not None else None
+        ),
+        "business_type": (
+            _enum(event.business_type, _BUSINESS_TYPES, f"{label}.business_type")
+            if event.business_type is not None else None
+        ),
+        "execution_mode": (
+            _enum(event.execution_mode, _EXECUTION_MODES, f"{label}.execution_mode")
+            if event.execution_mode is not None else None
+        ),
     }
 
 
@@ -634,6 +658,18 @@ def trace_from_dict(value: Any) -> TurnTrace:
             ),
             validation_reason=_public_string(item.get("validation_reason"), f"{label}.validation_reason"),
             supplied_source_count=_non_negative_int(item.get("supplied_source_count"), f"{label}.supplied_source_count", nullable=True),
+            dialogue_action=(
+                _enum(item["dialogue_action"], _DIALOGUE_ACTIONS, f"{label}.dialogue_action")
+                if item.get("dialogue_action") is not None else None
+            ),
+            business_type=(
+                _enum(item["business_type"], _BUSINESS_TYPES, f"{label}.business_type")
+                if item.get("business_type") is not None else None
+            ),
+            execution_mode=(
+                _enum(item["execution_mode"], _EXECUTION_MODES, f"{label}.execution_mode")
+                if item.get("execution_mode") is not None else None
+            ),
         ))
     events_truncated = value["events_truncated"]
     if not isinstance(events_truncated, bool):

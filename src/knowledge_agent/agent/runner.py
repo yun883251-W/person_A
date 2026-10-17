@@ -13,6 +13,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -24,14 +25,26 @@ from ..models import (
     initialize_chat_model,
     invoke_chat_model,
 )
-from ..schemas import AnswerResult, AnswerStatus, RouteSummary
+from ..schemas import (
+    AnswerResult, AnswerStatus, BusinessStateSummary, DialogueSummary, RouteSummary,
+)
 from ..session_store import SessionStore, SessionStoreError, StoredTurn
 from ..skill_loader import load_skill
 from ..tools.registry import InMemoryToolRegistry
 from . import assessment, planner
 from .answers import _attach_completed_trace, _attach_routing, finalize_answer, finalize_mcp_answer
 from .dependencies import DependencyContext, cited_evidence, is_dependency_transform
-from .intent import IntentDecision, IntentKind, IntentModelBudgetError, identify_intent
+from .intent import (
+    IntentDecision, IntentKind, IntentModelBudgetError, McpCapability, identify_intent,
+)
+from .dialogue.contracts import (
+    BusinessPhase, BusinessType, DialogueDecision, DialogueIntent, ExecutionMode,
+    SessionBusinessState, StateTransition, empty_business_state, public_business_state,
+)
+from .dialogue.resolver import DialogueResolution, resolve_dialogue
+from .dialogue.transitions import (
+    ExecutionOutcome, apply_execution_outcome, apply_mbti_outcome, mark_dispatching,
+)
 from .model_loop import (
     _model_error_code,
     continue_model_loop,
@@ -73,6 +86,7 @@ from .state import (
 )
 from .trace import TraceRecorder, finish_trace_safely
 from .topic_references import validate_topic_binding
+from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 
 _SESSION_SUMMARY_INSTRUCTION = """
@@ -84,6 +98,31 @@ answers and [S#] citations in this turn's retrieved evidence, never the summary.
 Do not claim to remember details that are absent from both recent history and
 the summary; ask for clarification when the intended subject is ambiguous.
 """
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _dialogue_summary(decision: DialogueDecision) -> DialogueSummary:
+    return DialogueSummary(
+        action=decision.intent.value,
+        business_type=decision.business_type.value if decision.business_type else None,
+        execution_mode=decision.execution_mode.value,
+        reason_code=decision.reason_code,
+    )
+
+
+def _business_summary(state: SessionBusinessState) -> BusinessStateSummary:
+    public = public_business_state(state)
+    return BusinessStateSummary(
+        business_type=public["business_type"], phase=public["phase"],
+        waiting_for_input=public["waiting_for_input"],
+        missing_slots=tuple(public["missing_slots"]),
+        clarification_question=public["clarification_question"],
+        parameters=dict(public["parameters"]),
+        allowed_actions=tuple(public["allowed_actions"]),
+    )
 
 
 _PLAN_RESPONSE_ERRORS = frozenset({
@@ -179,8 +218,91 @@ class KnowledgeAgent:
         self.session_store = session_store
         self.assessment_states: dict[str, dict[str, Any]] = {}
         self.session_summaries: dict[str, str] = {}
+        self.business_states: dict[str, SessionBusinessState] = {}
         self.mcp_registry = (
             mcp_registry if mcp_registry is not None else InMemoryToolRegistry()
+        )
+
+    def _business_state(self, session_id: str) -> SessionBusinessState:
+        current = self.business_states.get(session_id)
+        if current is not None:
+            return current
+        loader = getattr(self.session_store, "load_business_state", None)
+        stored = loader(session_id) if callable(loader) else None
+        current = stored or empty_business_state(session_id, updated_at=_utc_now())
+        self.business_states[session_id] = current
+        return current
+
+    def restore_business_state(self, session_id: str, state: SessionBusinessState) -> None:
+        """Install an already validated state loaded by the application lifecycle."""
+        if state.session_id != session_id:
+            raise ValueError("business state belongs to another session")
+        self.business_states[session_id] = state
+
+    def get_business_state(self, session_id: str) -> SessionBusinessState:
+        return self._business_state(session_id)
+
+    def _dialogue_capabilities(self) -> tuple[McpCapability, ...]:
+        snapshots: list[McpCapability] = []
+        for item in self._mcp_capabilities():
+            schema = item.get("input_schema")
+            required_inputs: list[tuple[str, str]] = []
+            if isinstance(schema, Mapping):
+                required = schema.get("required", ())
+                properties = schema.get("properties", {})
+                if isinstance(required, Sequence) and not isinstance(required, (str, bytes)):
+                    for name in required:
+                        if isinstance(name, str):
+                            value_type = "string"
+                            if isinstance(properties, Mapping) and isinstance(properties.get(name), Mapping):
+                                candidate = properties[name].get("type")
+                                if isinstance(candidate, str):
+                                    value_type = candidate
+                            required_inputs.append((name, value_type))
+            snapshots.append(McpCapability(
+                name=str(item["name"]), description=str(item["description"]),
+                required_inputs=tuple(required_inputs),
+            ))
+        return tuple(snapshots)
+
+    def _save_transition(self, session_id: str, transition: StateTransition) -> SessionBusinessState:
+        saver = getattr(self.session_store, "save_business_state", None)
+        if callable(saver):
+            saver(
+                session_id, transition.next_state,
+                expected_revision=transition.expected_revision,
+            )
+        self.business_states[session_id] = transition.next_state
+        return transition.next_state
+
+    @staticmethod
+    def _legacy_intent(question: str, decision: DialogueDecision) -> IntentDecision:
+        legacy = decision.legacy_intent_decision
+        if isinstance(legacy, IntentDecision):
+            return legacy
+        source = decision.decision_source.value
+        if decision.business_type is BusinessType.KNOWLEDGE:
+            return IntentDecision(
+                IntentKind.KNOWLEDGE, retrieval_query=question.strip(),
+                decision_source=source, reason_code=decision.reason_code,
+            )
+        if decision.business_type in {BusinessType.BILIBILI_SEARCH, BusinessType.MCP_TOOL, BusinessType.MBTI}:
+            tools = decision.allowed_tool_names
+            if decision.business_type is BusinessType.MBTI:
+                tools = assessment.TOOLS
+            return IntentDecision(
+                IntentKind.MCP_TOOL, allowed_tool_names=tools,
+                decision_source=source, reason_code=decision.reason_code,
+                authorized_user_input=question.strip(),
+            )
+        if decision.intent is DialogueIntent.CHITCHAT:
+            return IntentDecision(IntentKind.GREETING, decision_source=source, reason_code=decision.reason_code)
+        if decision.intent is DialogueIntent.UNSUPPORTED:
+            return IntentDecision(IntentKind.OUT_OF_SCOPE, decision_source=source, reason_code=decision.reason_code)
+        return IntentDecision(
+            IntentKind.NEEDS_CLARIFICATION, decision_source=source,
+            clarification_question=decision.clarification_question,
+            reason_code=decision.reason_code,
         )
 
     def _summary_messages(self, session_id: str | None) -> tuple[BaseMessage, ...]:
@@ -302,28 +424,224 @@ class KnowledgeAgent:
         skill_id: str | None = None,
         skill_mode: str | None = None,
     ) -> AnswerResult:
-        """Dispatch an ordinary request or one bounded, explicitly multi-step task."""
+        """Resolve one dialogue action, then dispatch it through the existing executors."""
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be a non-empty string")
         request = normalize_skill_request(skill_mode, skill_id)
         if request.mode == "manual":
             load_skill(request.skill_id)
         snapshot = self.assessment_states.get(session_id) if session_id is not None else None
+        state = self._business_state(session_id) if session_id is not None else None
+        turn_id = uuid.uuid4().hex
+        model_calls = 0
+
+        def invoke_intent_model(messages: Sequence[object]) -> object:
+            nonlocal model_calls
+            if model_calls >= self.config.max_model_calls - 1:
+                raise IntentModelBudgetError()
+            model_calls += 1
+            return invoke_chat_model(self.model, messages, max_retries=0)
+
+        dialogue_capabilities = self._dialogue_capabilities()
+        resolution = resolve_dialogue(
+            question, session_id=session_id, state=state,
+            assessment_state=snapshot,
+            history=self.history.turns(session_id) if session_id is not None else (),
+            capabilities=dialogue_capabilities,
+            remaining_model_calls=self.config.max_model_calls,
+            model_invoker=invoke_intent_model,
+            updated_at=_utc_now(), turn_id=turn_id,
+            legacy_classifier=lambda: identify_intent(
+                question.strip(),
+                context=self.history.turns(session_id) if session_id is not None else (),
+                available_tools=dialogue_capabilities,
+                assessment_state=None,
+                model_invoker=invoke_intent_model,
+                max_history_turns=self.config.max_history_turns,
+                max_context_chars=self.config.max_context_chars,
+            ),
+        )
+        # The resolver reports its own bounded classifier call count. The local
+        # counter is authoritative for provider budget accounting.
+        model_calls = max(model_calls, resolution.model_calls)
+        decision = resolution.decision
+
         if (
-            planner.should_plan(question)
-            and assessment.request_action(question, snapshot) is None
-            and assessment.request_clarification(question, snapshot) is None
+            decision.business_type is BusinessType.BILIBILI_SEARCH
+            and resolution.state_transition is not None
+            and resolution.state_transition.next_state.focus is not None
+            and resolution.state_transition.next_state.focus.phase is BusinessPhase.READY
+            and session_id is not None
         ):
-            return self._ask_plan(question.strip(), session_id, skill_id=request.skill_id, skill_mode=request.mode)
-        return self._ask_single(question, session_id, skill_id=request.skill_id, skill_mode=request.mode)
+            ready = self._save_transition(session_id, resolution.state_transition)
+            return self._dispatch_bilibili(
+                question.strip(), session_id, ready, decision,
+                turn_id=turn_id, model_calls=model_calls,
+            )
+
+        if decision.execution_mode is ExecutionMode.PLAN:
+            return self._ask_plan(
+                question.strip(), session_id, skill_id=request.skill_id,
+                skill_mode=request.mode, dialogue_resolution=resolution,
+                dialogue_model_calls=model_calls, turn_id=turn_id,
+            )
+
+        if decision.intent is DialogueIntent.CANCEL_BUSINESS:
+            if decision.business_type is BusinessType.MBTI:
+                return self._ask_single(
+                    question, session_id, skill_id=request.skill_id,
+                    skill_mode=request.mode,
+                    intent_decision=self._legacy_intent(question, decision),
+                    intent_model_calls=model_calls,
+                    dialogue_resolution=resolution, turn_id=turn_id,
+                )
+            return self._direct_dialogue_result(
+                question.strip(), session_id, resolution,
+                "已取消当前业务。已经完成的操作不会被撤销。",
+                status="success", turn_id=turn_id, model_calls=model_calls,
+            )
+        if decision.intent is DialogueIntent.UNCLEAR or decision.missing_slots:
+            answer = decision.clarification_question or "请写出完整、明确的请求。"
+            return self._direct_dialogue_result(
+                question.strip(), session_id, resolution, answer,
+                status="needs_clarification", turn_id=turn_id, model_calls=model_calls,
+            )
+        if decision.intent is DialogueIntent.UNSUPPORTED:
+            return self._direct_dialogue_result(
+                question.strip(), session_id, resolution,
+                "这个请求不在当前已接入的业务范围内。",
+                status="out_of_scope", turn_id=turn_id, model_calls=model_calls,
+            )
+        return self._ask_single(
+            question, session_id, skill_id=request.skill_id, skill_mode=request.mode,
+            intent_decision=self._legacy_intent(question, decision),
+            intent_model_calls=model_calls, dialogue_resolution=resolution,
+            turn_id=turn_id,
+        )
+
+    def _direct_dialogue_result(
+        self, question: str, session_id: str | None, resolution: DialogueResolution,
+        answer: str, *, status: AnswerStatus, turn_id: str, model_calls: int,
+    ) -> AnswerResult:
+        trace = TraceRecorder()
+        handle = trace.start_event("intent", "program")
+        decision = resolution.decision
+        trace.finish_event(
+            handle, "success", decision_source=decision.decision_source.value,
+            intent_kind=("out_of_scope" if status == "out_of_scope" else "needs_clarification"),
+            reason_code=decision.reason_code,
+            dialogue_action=decision.intent.value,
+            business_type=decision.business_type.value if decision.business_type else None,
+            execution_mode=decision.execution_mode.value,
+        )
+        result = AnswerResult(
+            question=question, answer=answer, status=status,
+            model_calls=model_calls, stop_reason=resolution.decision.reason_code,
+            routing=RouteSummary(
+                route="direct", intent=(
+                    "out_of_scope" if status == "out_of_scope" else "needs_clarification"
+                ),
+                decision_source=resolution.decision.decision_source.value,
+                reason_code=resolution.decision.reason_code,
+            ),
+            dialogue=_dialogue_summary(resolution.decision),
+            trace=finish_trace_safely(trace, "completed"),
+        )
+        if session_id is None:
+            return result
+        return self._commit_turn(
+            session_id, TurnState(original_question=question), result,
+            (HumanMessage(content=question), AIMessage(content=answer)),
+            business_transition=resolution.state_transition,
+            dialogue_decision=resolution.decision, turn_id=turn_id,
+        )
+
+    def _dispatch_bilibili(
+        self, question: str, session_id: str, ready: SessionBusinessState,
+        decision: DialogueDecision, *, turn_id: str, model_calls: int,
+    ) -> AnswerResult:
+        pending = ready.pending
+        if pending is None:
+            raise ValueError("ready Bilibili business has no pending request")
+        dispatch = mark_dispatching(
+            ready, expected_revision=ready.revision, updated_at=_utc_now(),
+        )
+        dispatching = self._save_transition(session_id, dispatch)
+        trace = TraceRecorder()
+        intent_event = trace.start_event("intent", "program")
+        trace.finish_event(
+            intent_event, "success", decision_source=decision.decision_source.value,
+            intent_kind="mcp_tool", reason_code=decision.reason_code,
+            dialogue_action=decision.intent.value,
+            business_type=decision.business_type.value if decision.business_type else None,
+            execution_mode=decision.execution_mode.value,
+        )
+        state = TurnState(original_question=question, trace_recorder=trace)
+        state.model_calls = model_calls
+        outcome = ExecutionOutcome.UNKNOWN
+        try:
+            state.tool_calls += 1
+            output = self.mcp_registry.execute(
+                SEARCH_BILIBILI_TOOL, dict(pending.confirmed_slots), context=state,
+            )
+            if isinstance(output, Mapping) and output.get("status") == "success":
+                outcome = ExecutionOutcome.SUCCEEDED
+                text = output.get("text")
+                answer = str(text).strip() if isinstance(text, str) and text.strip() else "已执行 B 站搜索。"
+                status: AnswerStatus = "success"
+            else:
+                error = output.get("error", {}) if isinstance(output, Mapping) else {}
+                error_code = str(error.get("code", "")) if isinstance(error, Mapping) else ""
+                uncertain = any(marker in error_code.casefold() for marker in (
+                    "timeout", "disconnect", "connection_lost", "result_unknown",
+                ))
+                outcome = ExecutionOutcome.UNKNOWN if uncertain else ExecutionOutcome.FAILED
+                answer = (
+                    "B 站搜索结果尚未确认；为避免重复操作，不会自动重试。"
+                    if uncertain else "B 站搜索执行失败，未自动重试。"
+                )
+                status = "service_error"
+        except TimeoutError:
+            outcome = ExecutionOutcome.TIMED_OUT
+            answer = "B 站搜索结果尚未确认；为避免重复操作，不会自动重试。"
+            status = "service_error"
+        except Exception:
+            answer = "B 站搜索是否完成尚未确认；为避免重复操作，不会自动重试。"
+            status = "service_error"
+        final_transition = apply_execution_outcome(
+            dispatching, expected_revision=dispatching.revision,
+            outcome=outcome, updated_at=_utc_now(),
+        )
+        result = AnswerResult(
+            question=question, answer=answer, status=status,
+            model_calls=state.model_calls, tool_calls=state.tool_calls,
+            stop_reason=final_transition.reason_code if final_transition else "execution_unknown",
+            routing=RouteSummary(
+                route="mcp", intent="mcp_tool",
+                decision_source=decision.decision_source.value,
+                reason_code=decision.reason_code,
+            ),
+            dialogue=_dialogue_summary(decision),
+        )
+        result = _attach_completed_trace(result, state)
+        return self._commit_turn(
+            session_id, state, result,
+            (HumanMessage(content=question), AIMessage(content=answer)),
+            business_transition=final_transition,
+            dialogue_decision=decision, turn_id=turn_id,
+            allow_failure=True,
+        )
 
     def _ask_plan(
         self, question: str, session_id: str | None, *, skill_id: str | None,
         skill_mode: str | None = None,
+        dialogue_resolution: DialogueResolution | None = None,
+        dialogue_model_calls: int = 0,
+        turn_id: str | None = None,
     ) -> AnswerResult:
         trace = TraceRecorder(requested_skill_id=skill_id)
         event = trace.start_event("planning", "program")
-        planning_calls = 0
+        planning_calls = dialogue_model_calls
         capabilities = self._mcp_capabilities()
         summary_messages = self._summary_messages(session_id)
         summary_text = str(summary_messages[0].content) if summary_messages else ""
@@ -396,6 +714,16 @@ class KnowledgeAgent:
             trace.finish_event(
                 event, "success", decision_source=plan.decision_source,
                 reason_code=plan.reason_code, result_count=len(plan.steps),
+                dialogue_action=(
+                    dialogue_resolution.decision.intent.value if dialogue_resolution else None
+                ),
+                business_type=(
+                    dialogue_resolution.decision.business_type.value
+                    if dialogue_resolution and dialogue_resolution.decision.business_type else None
+                ),
+                execution_mode=(
+                    dialogue_resolution.decision.execution_mode.value if dialogue_resolution else None
+                ),
             )
             result = execute_plan(
                 plan, question=question, config=self.config,
@@ -406,16 +734,32 @@ class KnowledgeAgent:
                     knowledge_history=self.history.turns(session_id) if session_id is not None else (),
                 ),
             )
+            if dialogue_resolution is not None:
+                result = replace(result, dialogue=_dialogue_summary(dialogue_resolution.decision))
             if session_id is not None:
-                self._commit_turn(session_id, TurnState(original_question=question), result, (
+                result = self._commit_turn(session_id, TurnState(original_question=question), result, (
                     HumanMessage(content=question), AIMessage(content=result.answer),
-                ))
+                ), business_transition=(
+                    dialogue_resolution.state_transition if dialogue_resolution else None
+                ), dialogue_decision=(
+                    dialogue_resolution.decision if dialogue_resolution else None
+                ), turn_id=turn_id)
             return result
 
         trace.finish_event(
             event, "empty" if failure_status == "needs_clarification" else "error",
             error_code=code if failure_status != "needs_clarification" else None,
             decision_source=failure_source, reason_code=failure_reason or code,
+            dialogue_action=(
+                dialogue_resolution.decision.intent.value if dialogue_resolution else None
+            ),
+            business_type=(
+                dialogue_resolution.decision.business_type.value
+                if dialogue_resolution and dialogue_resolution.decision.business_type else None
+            ),
+            execution_mode=(
+                dialogue_resolution.decision.execution_mode.value if dialogue_resolution else None
+            ),
         )
         result = AnswerResult(
             question=question, answer=answer, status=failure_status,
@@ -433,11 +777,19 @@ class KnowledgeAgent:
                 trace, "completed" if failure_status == "needs_clarification" else "failed",
                 error_code=code if failure_status != "needs_clarification" else None,
             ),
+            dialogue=(
+                _dialogue_summary(dialogue_resolution.decision)
+                if dialogue_resolution is not None else None
+            ),
         )
         if session_id is not None:
-            self._commit_turn(session_id, TurnState(original_question=question), result, (
+            result = self._commit_turn(session_id, TurnState(original_question=question), result, (
                 HumanMessage(content=question), AIMessage(content=answer),
-            ))
+            ), business_transition=(
+                dialogue_resolution.state_transition if dialogue_resolution else None
+            ), dialogue_decision=(
+                dialogue_resolution.decision if dialogue_resolution else None
+            ), turn_id=turn_id)
         return result
 
     def _run_planned_step(
@@ -612,6 +964,10 @@ class KnowledgeAgent:
         *,
         skill_id: str | None = None,
         skill_mode: str | None = None,
+        intent_decision: IntentDecision | None = None,
+        intent_model_calls: int = 0,
+        dialogue_resolution: DialogueResolution | None = None,
+        turn_id: str | None = None,
     ) -> AnswerResult:
         """Run one complete question-answer turn and return its public result."""
         if not isinstance(question, str):
@@ -625,7 +981,6 @@ class KnowledgeAgent:
         if session_id is not None:
             turns = self.history.turns(session_id)
 
-        intent_model_calls = 0
         mcp_capabilities = self._mcp_capabilities()
         assessment_state = self.assessment_states.get(session_id) if session_id is not None else None
         assessment_action = assessment.request_action(question, assessment_state)
@@ -639,7 +994,7 @@ class KnowledgeAgent:
 
         intent_event = trace_recorder.start_event("intent", "program")
         try:
-            intent = identify_intent(
+            intent = intent_decision or identify_intent(
                 question, context=turns, model_invoker=invoke_intent_model,
                 available_tools=mcp_capabilities,
                 max_history_turns=self.config.max_history_turns,
@@ -670,6 +1025,16 @@ class KnowledgeAgent:
             decision_source=intent.decision_source, intent_kind=intent.kind.value,
             reason_code=intent.reason_code,
             error_code=intent.reason_code if fallback else None,
+            dialogue_action=(
+                dialogue_resolution.decision.intent.value if dialogue_resolution else None
+            ),
+            business_type=(
+                dialogue_resolution.decision.business_type.value
+                if dialogue_resolution and dialogue_resolution.decision.business_type else None
+            ),
+            execution_mode=(
+                dialogue_resolution.decision.execution_mode.value if dialogue_resolution else None
+            ),
         )
         route_event = trace_recorder.start_event("route", "program")
         try:
@@ -708,6 +1073,7 @@ class KnowledgeAgent:
             return self._ask_assessment(
                 question, session_id, assessment_action, assessment_state, route,
                 trace_recorder, intent_model_calls,
+                dialogue_resolution=dialogue_resolution, turn_id=turn_id,
             )
         if route.route is RouteKind.MCP:
             if route.intent.reason_code == "browser_bilibili_semantic_search" and (
@@ -730,8 +1096,15 @@ class KnowledgeAgent:
                 _attach_routing(finalize_mcp_answer(model_result, state), route),
                 state,
             )
+            if dialogue_resolution is not None:
+                result = replace(result, dialogue=_dialogue_summary(dialogue_resolution.decision))
             if session_id is not None:
-                self._commit_turn(session_id, state, result, state.messages[1:])
+                result = self._commit_turn(
+                    session_id, state, result, state.messages[1:],
+                    business_transition=dialogue_resolution.state_transition if dialogue_resolution else None,
+                    dialogue_decision=dialogue_resolution.decision if dialogue_resolution else None,
+                    turn_id=turn_id,
+                )
             return result
         prepared = self.prepare_question(
             question,
@@ -747,12 +1120,19 @@ class KnowledgeAgent:
             result = _attach_completed_trace(
                 _attach_routing(prepared.terminal_result, route), prepared.state
             )
+            if dialogue_resolution is not None:
+                result = replace(result, dialogue=_dialogue_summary(dialogue_resolution.decision))
             if session_id is not None:
                 messages: tuple[BaseMessage, ...] = (
                     HumanMessage(content=prepared.state.original_question),
                     AIMessage(content=result.answer),
                 )
-                self._commit_turn(session_id, prepared.state, result, messages)
+                result = self._commit_turn(
+                    session_id, prepared.state, result, messages,
+                    business_transition=dialogue_resolution.state_transition if dialogue_resolution else None,
+                    dialogue_decision=dialogue_resolution.decision if dialogue_resolution else None,
+                    turn_id=turn_id,
+                )
             return result
 
         turn = self.prepare_model_turn(prepared, history=history, skill_id=skill_id)
@@ -761,15 +1141,24 @@ class KnowledgeAgent:
             _attach_routing(self.finalize_answer(model_result, prepared.state), route),
             prepared.state,
         )
+        if dialogue_resolution is not None:
+            result = replace(result, dialogue=_dialogue_summary(dialogue_resolution.decision))
         if session_id is not None:
             current_messages = prepared.state.messages[1 + len(history) :]
-            self._commit_turn(session_id, prepared.state, result, current_messages)
+            result = self._commit_turn(
+                session_id, prepared.state, result, current_messages,
+                business_transition=dialogue_resolution.state_transition if dialogue_resolution else None,
+                dialogue_decision=dialogue_resolution.decision if dialogue_resolution else None,
+                turn_id=turn_id,
+            )
         return result
 
     def _ask_assessment(
         self, question: str, session_id: str | None, action: str,
         previous: dict[str, Any] | None, route: RouteDecision,
         trace_recorder: TraceRecorder, model_calls: int,
+        *, dialogue_resolution: DialogueResolution | None = None,
+        turn_id: str | None = None,
     ) -> AnswerResult:
         state = TurnState(original_question=question.strip(), trace_recorder=trace_recorder)
         state.model_calls = model_calls
@@ -841,10 +1230,32 @@ class KnowledgeAgent:
             stop_reason=reply.stop_reason, assessment_state=snapshot,
         )
         result = _attach_completed_trace(_attach_routing(result, route), state)
+        transition = dialogue_resolution.state_transition if dialogue_resolution else None
+        if dialogue_resolution is not None:
+            result = replace(result, dialogue=_dialogue_summary(dialogue_resolution.decision))
+        if session_id is not None and snapshot is not None and transition is None:
+            phase_by_status = {
+                "active": BusinessPhase.ACTIVE,
+                "paused": BusinessPhase.PAUSED,
+                "ready": BusinessPhase.READY,
+                "completed": BusinessPhase.COMPLETED,
+                "cancelled": BusinessPhase.CANCELLED,
+            }
+            current = self._business_state(session_id)
+            phase = phase_by_status[snapshot["status"]]
+            try:
+                transition = apply_mbti_outcome(
+                    current, expected_revision=current.revision,
+                    test_id=snapshot["test_id"], phase=phase, updated_at=_utc_now(),
+                )
+            except Exception:
+                transition = None
         if session_id is not None:
-            self._commit_turn(session_id, state, result, (
+            result = self._commit_turn(session_id, state, result, (
                 HumanMessage(content=state.original_question), AIMessage(content=result.answer),
-            ))
+            ), business_transition=transition,
+                dialogue_decision=dialogue_resolution.decision if dialogue_resolution else None,
+                turn_id=turn_id)
         return result
 
     def _commit_turn(
@@ -853,13 +1264,28 @@ class KnowledgeAgent:
         state: TurnState,
         result: AnswerResult,
         messages: Sequence[object],
-    ) -> None:
+        *,
+        business_transition: StateTransition | None = None,
+        dialogue_decision: DialogueDecision | None = None,
+        turn_id: str | None = None,
+        allow_failure: bool = False,
+    ) -> AnswerResult:
         """Commit only a completed turn; failures and partial tool exchanges are dropped."""
-        if result.status in {"service_error", "limit_reached"}:
-            return
+        if result.status in {"service_error", "limit_reached"} and not allow_failure:
+            return result
         complete_messages = _complete_history_messages(messages)
         if not complete_messages:
-            return
+            if business_transition is not None:
+                self._save_transition(session_id, business_transition)
+            return result
+        next_state = (
+            business_transition.next_state if business_transition is not None
+            else self.business_states.get(session_id)
+        )
+        if dialogue_decision is not None and result.dialogue is None:
+            result = replace(result, dialogue=_dialogue_summary(dialogue_decision))
+        if next_state is not None:
+            result = replace(result, business_state=_business_summary(next_state))
         turn = ConversationTurn(
             question=state.original_question,
             retrieval_question=state.retrieval_question or state.original_question,
@@ -868,22 +1294,30 @@ class KnowledgeAgent:
         )
         if self.session_store is not None:
             try:
-                self.session_store.append_turn(
-                    session_id,
-                    StoredTurn(
-                        turn_id=uuid.uuid4().hex,
+                stored_turn = StoredTurn(
+                        turn_id=turn_id or uuid.uuid4().hex,
                         turn_no=0,
                         question=turn.question,
                         retrieval_question=turn.retrieval_question,
                         messages=turn.messages,
                         result=turn.result,
-                    ),
-                )
+                    )
+                atomic_append = getattr(self.session_store, "append_turn_with_business_state", None)
+                if business_transition is not None and callable(atomic_append):
+                    atomic_append(
+                        session_id, stored_turn, business_transition.next_state,
+                        expected_revision=business_transition.expected_revision,
+                    )
+                else:
+                    self.session_store.append_turn(session_id, stored_turn)
             except SessionStoreError as exc:
                 raise TurnPersistenceError(result) from exc
+        if business_transition is not None:
+            self.business_states[session_id] = business_transition.next_state
         if result.assessment_state is not None:
             self.assessment_states[session_id] = assessment.validate_snapshot(result.assessment_state)
         self.history.append(session_id, turn)
+        return result
 
     def get_session_history(self, session_id: str) -> tuple[ConversationTurn, ...]:
         """Return an immutable snapshot of the session's retained complete turns."""
@@ -894,6 +1328,7 @@ class KnowledgeAgent:
         self.history.clear(session_id)
         self.assessment_states.pop(session_id, None)
         self.session_summaries.pop(session_id, None)
+        self.business_states.pop(session_id, None)
 
     def finalize_answer(
         self,

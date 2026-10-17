@@ -164,6 +164,12 @@ class TraceEventResponse(_PublicModel):
     validation_status: AnswerValidationStatus | None = None
     validation_reason: str | None = None
     supplied_source_count: int | None = Field(default=None, ge=0, strict=True)
+    dialogue_action: Literal[
+        "new_business", "continue_business", "cancel_business", "pause_business",
+        "resume_business", "chitchat", "unclear", "unsupported",
+    ] | None = None
+    business_type: Literal["knowledge", "bilibili_search", "mbti", "mcp_tool"] | None = None
+    execution_mode: Literal["single", "plan"] | None = None
 
 
 class AnswerDiagnosticsResponse(_PublicModel):
@@ -205,6 +211,34 @@ class RouteSummaryResponse(_PublicModel):
     intent: TraceIntentKind
     decision_source: TraceDecisionSource
     reason_code: str
+
+
+class DialogueSummaryResponse(_PublicModel):
+    action: Literal[
+        "new_business", "continue_business", "cancel_business", "pause_business",
+        "resume_business", "chitchat", "unclear", "unsupported",
+    ]
+    business_type: Literal["knowledge", "bilibili_search", "mbti", "mcp_tool"] | None = None
+    execution_mode: Literal["single", "plan"]
+    reason_code: str
+
+
+class BusinessStateResponse(_PublicModel):
+    business_type: Literal["knowledge", "bilibili_search", "mbti", "mcp_tool"] | None = None
+    phase: Literal[
+        "idle", "awaiting_input", "ready", "active", "paused", "dispatching",
+        "completed", "cancelled", "execution_unknown",
+    ]
+    waiting_for_input: bool
+    missing_slots: list[str] = Field(default_factory=list)
+    clarification_question: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    allowed_actions: list[str] = Field(default_factory=list)
+
+
+class SessionBusinessStateResponse(_PublicModel):
+    session_id: SessionId
+    state: BusinessStateResponse
 
 
 class AssessmentQuestionResponse(_PublicModel):
@@ -281,6 +315,8 @@ class AnswerResponse(_PublicModel):
         description="本轮结束后的执行摘要；没有可用记录时为 null，不是实时进度",
     )
     routing: RouteSummaryResponse | None = None
+    dialogue: DialogueSummaryResponse | None = None
+    business_state: BusinessStateResponse | None = None
     assessment: AssessmentResponse | None = Field(
         default=None,
         description="本轮测试进度、当前题目和结果；不包含已提交答案或内部问卷缓存",
@@ -316,6 +352,8 @@ class TurnResponse(_PublicModel):
         description="随本轮回答保存的执行摘要；旧记录或不可用摘要为 null",
     )
     routing: RouteSummaryResponse | None = None
+    dialogue: DialogueSummaryResponse | None = None
+    business_state: BusinessStateResponse | None = None
     assessment: AssessmentResponse | None = Field(
         default=None,
         description="该历史轮次保存的测试进度；旧记录或非测试轮次为 null",

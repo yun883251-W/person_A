@@ -158,4 +158,6 @@ def public_answer_result_dict(result: AnswerResult) -> dict[str, Any]:
         "routing": asdict(result.routing) if result.routing is not None else None,
         "plan": result.plan,
         "answer_diagnostics": public_answer_diagnostics(result.answer_diagnostics),
+        "dialogue": asdict(result.dialogue) if result.dialogue is not None else None,
+        "business_state": asdict(result.business_state) if result.business_state is not None else None,
     }

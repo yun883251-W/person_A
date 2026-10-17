@@ -380,6 +380,7 @@ def resolve_dialogue(
     remaining_model_calls: int,
     model_invoker: Callable[[Sequence[object]], object] | None,
     updated_at: str, turn_id: str | None = None,
+    legacy_classifier: Callable[[], IntentDecision] | None = None,
 ) -> DialogueResolution:
     """Resolve exactly one raw user message without side effects.
 
@@ -491,7 +492,7 @@ def resolve_dialogue(
             )
         return DialogueResolution(decision, transition)
 
-    legacy = identify_intent(
+    legacy = legacy_classifier() if legacy_classifier is not None else identify_intent(
         cleaned, context=history, available_tools=capabilities,
         assessment_state=None,
         settings=IntentSettings(mode="rules", browser_mode="rules"),

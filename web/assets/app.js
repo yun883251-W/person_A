@@ -34,6 +34,7 @@
     knowledgePreviewPath: null, knowledgePreview: null, knowledgePreviewRequest: null,
     knowledgePreviewReferenceHash: null, knowledgePreviewChanged: false,
     summaryRequestVersion: 0,
+    businessState: null,
   };
   const statusLabels = {
     success: "基于知识库回答", insufficient_evidence: "资料不足",
@@ -1443,13 +1444,18 @@
     ui["composer-form"].setAttribute("aria-busy", String(isBusy()));
     ui["current-title"].textContent = state.current?.title || (state.current ? "未命名会话" : "新的学习会话");
     ui["session-subtitle"].textContent = state.current ? "历史保存在本机 · 可继续追问" : "Python / LangChain · 本地文档知识库";
+    const businessHint = state.businessState?.waiting_for_input
+      ? (state.businessState.clarification_question || "当前业务需要补充信息。")
+      : state.businessState?.phase === "execution_unknown"
+        ? "上次操作结果尚未确认；不会自动重放，请明确发起新的操作。"
+        : "";
     ui["composer-hint"].textContent = state.operation === "send"
       ? "正在等待完整回答。离开页面不会取消后台任务。"
       : state.knowledgeBusy ? "知识库操作进行中，完成后可继续提问。"
       : state.knowledgeNeedsRefresh ? "请先打开「知识库管理」刷新状态，确认上次操作结果。"
       : state.needsRefresh ? "请先点击上方「刷新历史」确认本轮结果，再继续提问。"
       : state.operation ? "正在同步会话…"
-      : state.assessmentModeHint ? "MBTI 操作已使用普通问答模式；可点选题目作答。" : "Enter 发送 · Shift + Enter 换行";
+      : businessHint || (state.assessmentModeHint ? "MBTI 操作已使用普通问答模式；可点选题目作答。" : "Enter 发送 · Shift + Enter 换行");
     ui["char-count"].textContent = `${ui.question.value.length.toLocaleString("zh-CN")} / 10,000`;
     for (const button of document.querySelectorAll("[data-prompt]")) button.disabled = busy;
     for (const button of document.querySelectorAll("button.source-card")) button.disabled = isBusy();
@@ -1485,9 +1491,14 @@
     }
   }
 
+  async function loadBusinessState(id) {
+    const result = await request(`/sessions/${encodeURIComponent(id)}/business-state`);
+    return result?.state && typeof result.state === "object" ? result.state : null;
+  }
+
   function resetConversation() {
     resetSummaryPanel();
-    state.current = null; state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; state.assessmentModeHint = false;
+    state.current = null; state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; state.assessmentModeHint = false; state.businessState = null;
     rememberSession(null); ui.question.value = ""; fitInput();
     renderConversation(); updateControls();
   }
@@ -1498,7 +1509,9 @@
     try {
       const record = await request(`/sessions/${encodeURIComponent(id)}`);
       const turns = await loadHistory(id);
+      const businessState = await loadBusinessState(id);
       state.current = record; state.turns = turns; state.pendingQuestion = ""; state.needsRefresh = false;
+      state.businessState = businessState;
       resetSummaryPanel();
       state.assessmentModeHint = false;
       rememberSession(id); ui.question.value = ""; fitInput(); renderConversation();
@@ -1513,6 +1526,7 @@
     notice(""); setOperation("history");
     try {
       state.turns = await loadHistory(state.current.session_id);
+      state.businessState = await loadBusinessState(state.current.session_id);
       state.pendingQuestion = ""; state.needsRefresh = false;
       renderConversation();
       await loadSessions();
@@ -1549,12 +1563,15 @@
       const skillId = skillMode === "manual" ? choice : null;
       const result = await streamAnswer(`/sessions/${encodeURIComponent(state.current.session_id)}/messages/stream`,
         { question, skill_mode: skillMode, skill_id: skillId }, receiveProgress);
-      state.turns.push(result); state.pendingQuestion = ""; renderConversation();
+      state.turns.push(result); state.pendingQuestion = "";
+      if (result.business_state && typeof result.business_state === "object") state.businessState = result.business_state;
+      renderConversation();
       try { await loadSessions(); }
       catch { notice("回答已返回，会话列表暂未刷新，可稍后手动刷新。", "info"); }
     } catch (error) {
       if (error.body?.result) {
         state.turns.push({ ...error.body.result, unsaved: error.body.persisted !== true });
+        if (error.body.persisted === true && error.body.result.business_state) state.businessState = error.body.result.business_state;
         state.pendingQuestion = "";
       }
       state.needsRefresh = submitted && ["network_error", "request_timeout", "invalid_response", "internal_error"].includes(error.code);
@@ -1601,7 +1618,7 @@
         resetConversation();
       } else {
         resetSummaryPanel();
-        state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; renderConversation();
+        state.turns = []; state.pendingQuestion = ""; state.needsRefresh = false; state.businessState = null; renderConversation();
       }
       notice(kind === "delete" ? "会话已删除。" : "历史已清空，可以开始新的提问。", "info");
       try { await loadSessions(); }

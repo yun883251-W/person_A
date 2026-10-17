@@ -8,7 +8,8 @@
 
 存储方案：Python sqlite3 + SQLite，默认数据库位置为：
 PROJECT_ROOT / "data/sessions/chat.db"。
-使用 sessions（会话信息）、turns（完整问答轮）和 session_summaries（背景摘要）。
+使用 sessions（会话信息）、turns（完整问答轮）、session_summaries（背景摘要）
+和 session_business_states（当前业务状态）。
 数据库由后续显式初始化操作创建；导入模块时不连接数据库或创建目录。
 
 职责边界：本模块只管理会话数据，模型调用、检索及来源校验仍由 Agent 负责。
@@ -42,17 +43,25 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from .schemas import AnswerResult, AnswerSource, RouteSummary
+from .schemas import (
+    AnswerResult, AnswerSource, BusinessStateSummary, DialogueSummary, RouteSummary,
+)
 from .agent.trace import trace_from_dict, trace_to_dict
 from .agent.answer_diagnostics import (
     answer_diagnostics_from_storage, answer_diagnostics_to_storage,
     step_diagnostics_from_storage, step_diagnostics_to_storage,
 )
+from .agent.dialogue.contracts import (
+    SessionBusinessState,
+    state_from_payload,
+    state_to_payload,
+    validate_business_state,
+)
 
 
 # 第一阶段：存储层及应用接入开发。
 
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 MESSAGE_SERIALIZATION_VERSION = 1
 
 
@@ -104,6 +113,12 @@ class SessionSummaryConflictError(SessionStoreError):
     """A summary was superseded or its source turns no longer exist."""
 
     operation = "summary"
+
+
+class BusinessStateConflictError(SessionStoreError):
+    """The caller resolved a turn against an obsolete business-state revision."""
+
+    operation = "business_state"
 
 
 def _storage_error(
@@ -216,6 +231,23 @@ class SessionStore(Protocol):
 
     def append_turn(self, session_id: str, turn: StoredTurn) -> StoredTurn:
         """Atomically persist one complete turn and return its stored form."""
+        ...
+
+    def append_turn_with_business_state(
+        self, session_id: str, turn: StoredTurn, state: SessionBusinessState,
+        *, expected_revision: int,
+    ) -> StoredTurn:
+        """Atomically persist one turn and its validated next business state."""
+        ...
+
+    def load_business_state(self, session_id: str) -> SessionBusinessState | None:
+        """Load the dedicated current business state; absence is a legacy empty state."""
+        ...
+
+    def save_business_state(
+        self, session_id: str, state: SessionBusinessState, *, expected_revision: int,
+    ) -> SessionBusinessState:
+        """Compare-and-set one state transition without holding a tool transaction."""
         ...
 
     def load_turns(
@@ -341,10 +373,7 @@ class SQLiteSessionStore:
                     )
                     """
                 )
-                connection.execute(
-                    f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}"
-                )
-            elif schema_version not in (1, DATABASE_SCHEMA_VERSION):
+            elif schema_version not in (1, 2, DATABASE_SCHEMA_VERSION):
                 raise SessionStoreSchemaError(
                     "Unsupported session database schema version: "
                     f"expected {DATABASE_SCHEMA_VERSION}, got {schema_version}"
@@ -362,6 +391,20 @@ class SQLiteSessionStore:
                         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
                             ON DELETE CASCADE,
                         FOREIGN KEY (covered_turn_id) REFERENCES turns(turn_id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+            if schema_version in (0, 1, 2):
+                connection.execute(
+                    """
+                    CREATE TABLE session_business_states (
+                        session_id TEXT PRIMARY KEY,
+                        state_json TEXT NOT NULL,
+                        state_schema_version INTEGER NOT NULL,
+                        revision INTEGER NOT NULL CHECK (revision >= 0),
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
                             ON DELETE CASCADE
                     )
                     """
@@ -541,6 +584,33 @@ class SQLiteSessionStore:
                 time.sleep(min(0.05 * (2**attempt), 0.2))
         raise AssertionError("unreachable")
 
+    def append_turn_with_business_state(
+        self, session_id: str, turn: StoredTurn, state: SessionBusinessState,
+        *, expected_revision: int,
+    ) -> StoredTurn:
+        """Atomically append a turn and compare-and-set its next state."""
+        state = validate_business_state(state)
+        if state.session_id != session_id:
+            raise ValueError("business state belongs to another session")
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be a nonnegative integer")
+        if state.revision != expected_revision + 1:
+            raise ValueError("business state must advance exactly one revision")
+        messages_json = _serialize_messages(turn.messages)
+        result_json = _serialize_result(turn.result)
+        for attempt in range(self.max_write_retries + 1):
+            try:
+                return self._append_turn_once(
+                    session_id, turn, messages_json=messages_json,
+                    result_json=result_json, business_state=state,
+                    expected_revision=expected_revision,
+                )
+            except SessionStoreLockedError:
+                if attempt >= self.max_write_retries:
+                    raise
+                time.sleep(min(0.05 * (2**attempt), 0.2))
+        raise AssertionError("unreachable")
+
     def _append_turn_once(
         self,
         session_id: str,
@@ -548,6 +618,8 @@ class SQLiteSessionStore:
         *,
         messages_json: str,
         result_json: str,
+        business_state: SessionBusinessState | None = None,
+        expected_revision: int | None = None,
     ) -> StoredTurn:
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -574,7 +646,7 @@ class SQLiteSessionStore:
                     != MESSAGE_SERIALIZATION_VERSION
                 ):
                     raise DuplicateTurnError("Turn ID already exists with different content")
-                return StoredTurn(
+                restored = StoredTurn(
                     turn_id=existing["turn_id"],
                     turn_no=existing["turn_no"],
                     question=existing["question"],
@@ -582,6 +654,11 @@ class SQLiteSessionStore:
                     messages=_deserialize_messages(existing["messages_json"]),
                     result=_deserialize_result(existing["result_json"]),
                 )
+                if business_state is not None:
+                    current = self._load_business_state_row(connection, session_id)
+                    if current != business_state:
+                        raise DuplicateTurnError("Turn retry has a different business state")
+                return restored
 
             next_turn_no = connection.execute(
                 """
@@ -630,6 +707,12 @@ class SQLiteSessionStore:
                 """,
                 (timestamp, session_id),
             )
+            if business_state is not None:
+                assert expected_revision is not None
+                self._save_business_state_row(
+                    connection, session_id, business_state,
+                    expected_revision=expected_revision,
+                )
 
         return StoredTurn(
             turn_id=turn.turn_id,
@@ -639,6 +722,83 @@ class SQLiteSessionStore:
             messages=_deserialize_messages(messages_json),
             result=_deserialize_result(result_json),
         )
+
+    @staticmethod
+    def _load_business_state_row(
+        connection: sqlite3.Connection, session_id: str,
+    ) -> SessionBusinessState | None:
+        row = connection.execute(
+            "SELECT state_json, state_schema_version, revision FROM session_business_states WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = _load_json_object(row["state_json"], "business state")
+            state = state_from_payload(payload)
+        except (TypeError, ValueError) as exc:
+            raise SessionStoreCorruptionError("Stored business state is invalid") from exc
+        if state.session_id != session_id or state.schema_version != row["state_schema_version"] or state.revision != row["revision"]:
+            raise SessionStoreCorruptionError("Stored business state metadata is inconsistent")
+        return state
+
+    @classmethod
+    def _save_business_state_row(
+        cls, connection: sqlite3.Connection, session_id: str,
+        state: SessionBusinessState, *, expected_revision: int,
+    ) -> None:
+        current = cls._load_business_state_row(connection, session_id)
+        current_revision = 0 if current is None else current.revision
+        if current_revision != expected_revision:
+            raise BusinessStateConflictError("Business state revision conflict")
+        if connection.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None:
+            raise SessionNotFoundError("Session does not exist")
+        payload = json.dumps(state_to_payload(state), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        connection.execute(
+            """
+            INSERT INTO session_business_states (
+                session_id, state_json, state_schema_version, revision, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                state_json=excluded.state_json,
+                state_schema_version=excluded.state_schema_version,
+                revision=excluded.revision,
+                updated_at=excluded.updated_at
+            """,
+            (session_id, payload, state.schema_version, state.revision, state.updated_at),
+        )
+
+    def load_business_state(self, session_id: str) -> SessionBusinessState | None:
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        connection = self._require_connection()
+        try:
+            self._require_session(connection, session_id)
+            return self._load_business_state_row(connection, session_id)
+        except SessionStoreError:
+            raise
+        except sqlite3.Error as exc:
+            raise _storage_error(exc, operation="load business state") from exc
+
+    def save_business_state(
+        self, session_id: str, state: SessionBusinessState, *, expected_revision: int,
+    ) -> SessionBusinessState:
+        state = validate_business_state(state)
+        if state.session_id != session_id:
+            raise ValueError("business state belongs to another session")
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be a nonnegative integer")
+        if state.revision != expected_revision + 1:
+            raise ValueError("business state must advance exactly one revision")
+        with self._transaction(write=True, operation="save business state") as connection:
+            self._save_business_state_row(
+                connection, session_id, state, expected_revision=expected_revision,
+            )
+            connection.execute(
+                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                (state.updated_at, session_id),
+            )
+        return state
 
     def load_turns(
         self,
@@ -935,6 +1095,7 @@ class SQLiteSessionStore:
             if updated.rowcount == 0:
                 return False
             connection.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM session_business_states WHERE session_id = ?", (session_id,))
             connection.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
         return True
 
@@ -1271,6 +1432,23 @@ def _result_to_json(result: AnswerResult) -> str:
         payload["answer_diagnostics"] = answer_diagnostics_to_storage(result.answer_diagnostics)
     if result.step_answer_diagnostics:
         payload["step_answer_diagnostics"] = step_diagnostics_to_storage(result.step_answer_diagnostics)
+    if result.dialogue is not None:
+        payload["dialogue"] = {
+            "action": result.dialogue.action,
+            "business_type": result.dialogue.business_type,
+            "execution_mode": result.dialogue.execution_mode,
+            "reason_code": result.dialogue.reason_code,
+        }
+    if result.business_state is not None:
+        payload["business_state"] = {
+            "business_type": result.business_state.business_type,
+            "phase": result.business_state.phase,
+            "waiting_for_input": result.business_state.waiting_for_input,
+            "missing_slots": list(result.business_state.missing_slots),
+            "clarification_question": result.business_state.clarification_question,
+            "parameters": result.business_state.parameters,
+            "allowed_actions": list(result.business_state.allowed_actions),
+        }
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -1294,7 +1472,7 @@ def _result_from_json(value: str) -> AnswerResult:
         "stop_reason",
     }
     _require_fields(
-        root, fields, {"trace", "routing", "assessment_state", "plan", "answer_diagnostics", "step_answer_diagnostics"}, "result_json"
+        root, fields, {"trace", "routing", "assessment_state", "plan", "answer_diagnostics", "step_answer_diagnostics", "dialogue", "business_state"}, "result_json"
     )
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
         raise ValueError(f"Unsupported result serialization version: {root['version']!r}")
@@ -1410,6 +1588,37 @@ def _result_from_json(value: str) -> AnswerResult:
         plan = validate_plan_summary(root["plan"])
     answer_diagnostics = answer_diagnostics_from_storage(root.get("answer_diagnostics"))
     step_answer_diagnostics = step_diagnostics_from_storage(root.get("step_answer_diagnostics", []))
+    dialogue = None
+    if root.get("dialogue") is not None:
+        item = root["dialogue"]
+        _require_fields(item, {"action", "business_type", "execution_mode", "reason_code"}, set(), "result_json.dialogue")
+        business_type = item["business_type"]
+        if business_type is not None:
+            business_type = _require_string(business_type, "result_json.dialogue.business_type")
+        dialogue = DialogueSummary(
+            action=_require_string(item["action"], "result_json.dialogue.action"),
+            business_type=business_type,
+            execution_mode=_require_string(item["execution_mode"], "result_json.dialogue.execution_mode"),
+            reason_code=_require_string(item["reason_code"], "result_json.dialogue.reason_code"),
+        )
+    business_state = None
+    if root.get("business_state") is not None:
+        item = root["business_state"]
+        _require_fields(item, {"business_type", "phase", "waiting_for_input", "missing_slots", "clarification_question", "parameters", "allowed_actions"}, set(), "result_json.business_state")
+        if type(item["waiting_for_input"]) is not bool or not isinstance(item["missing_slots"], list) or not all(isinstance(value, str) for value in item["missing_slots"]) or not isinstance(item["parameters"], dict) or not isinstance(item["allowed_actions"], list) or not all(isinstance(value, str) for value in item["allowed_actions"]):
+            raise ValueError("Invalid result_json.business_state")
+        state_business_type = item["business_type"]
+        if state_business_type is not None:
+            state_business_type = _require_string(state_business_type, "result_json.business_state.business_type")
+        business_state = BusinessStateSummary(
+            business_type=state_business_type,
+            phase=_require_string(item["phase"], "result_json.business_state.phase"),
+            waiting_for_input=item["waiting_for_input"],
+            missing_slots=tuple(item["missing_slots"]),
+            clarification_question=_require_string(item["clarification_question"], "result_json.business_state.clarification_question"),
+            parameters=item["parameters"],
+            allowed_actions=tuple(item["allowed_actions"]),
+        )
     return AnswerResult(
         question=question,
         answer=answer,
@@ -1425,6 +1634,8 @@ def _result_from_json(value: str) -> AnswerResult:
         plan=plan,
         answer_diagnostics=answer_diagnostics,
         step_answer_diagnostics=step_answer_diagnostics,
+        dialogue=dialogue,
+        business_state=business_state,
     )
 
 

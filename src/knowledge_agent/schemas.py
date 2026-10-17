@@ -82,6 +82,29 @@ DecisionSource = Literal["rules", "model", "fallback"]
 
 
 @dataclass(frozen=True, slots=True)
+class DialogueSummary:
+    """Display-safe description of the single dialogue decision for this turn."""
+
+    action: str
+    business_type: str | None
+    execution_mode: str
+    reason_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessStateSummary:
+    """Display-safe projection of the latest committed business state."""
+
+    business_type: str | None
+    phase: str
+    waiting_for_input: bool
+    missing_slots: tuple[str, ...] = ()
+    clarification_question: str = ""
+    parameters: dict[str, Any] = field(default_factory=dict)
+    allowed_actions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RouteSummary:
     """Stable public routing metadata for one completed turn."""
 
@@ -174,3 +197,5 @@ class AnswerResult:
     plan: dict[str, Any] | None = None
     answer_diagnostics: AnswerDiagnostics | None = None
     step_answer_diagnostics: tuple[StepAnswerDiagnostics, ...] = field(default=(), repr=False)
+    dialogue: DialogueSummary | None = None
+    business_state: BusinessStateSummary | None = None

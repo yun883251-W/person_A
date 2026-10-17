@@ -207,6 +207,8 @@ class KnowledgeAgentApplication:
             restored_assessment = (
                 assessment.validate_snapshot(snapshot) if snapshot is not None else None
             )
+            business_loader = getattr(store, "load_business_state", None)
+            restored_business = business_loader(key) if callable(business_loader) else None
             self.agent.clear_session(key)
             for turn in stored_turns:
                 self.agent.history.append(
@@ -220,6 +222,8 @@ class KnowledgeAgentApplication:
                 )
             if restored_assessment is not None:
                 self.agent.assessment_states[key] = restored_assessment
+            if restored_business is not None:
+                self.agent.restore_business_state(key, restored_business)
             self._restore_session_memory(key)
             self._session_id = key
             return key

@@ -273,6 +273,18 @@ def _display_answer(result: AnswerResult, *, json_output: bool = False) -> int:
         )
         if result.stop_reason == "index_not_built":
             print("请先运行 person-a build。", file=sys.stderr)
+        if result.business_state is not None:
+            current = result.business_state
+            if current.waiting_for_input:
+                print(
+                    f"当前业务：{current.business_type}；等待补充：{current.clarification_question}",
+                    file=sys.stderr,
+                )
+            elif current.phase in {"cancelled", "execution_unknown"}:
+                print(
+                    f"当前业务：{current.business_type or '无'}；状态：{current.phase}",
+                    file=sys.stderr,
+                )
         if result.trace is not None:
             for event in result.trace.events:
                 if event.stage == "skill_select":

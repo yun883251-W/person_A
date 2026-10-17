@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Response, status
+from datetime import datetime, timezone
+
+from ...agent.dialogue.contracts import empty_business_state, public_business_state
 
 from ..runtime import ServiceRuntime
 from ..schemas import (
@@ -13,6 +16,7 @@ from ..schemas import (
     SessionId,
     SessionListResponse,
     SessionResponse,
+    SessionBusinessStateResponse,
     SessionSummaryResponse,
     TurnListResponse,
 )
@@ -91,6 +95,34 @@ def register_routes(application: FastAPI) -> None:
                 detail="Session not found",
             )
         return _session_response(record)
+
+    @application.get(
+        "/sessions/{session_id}/business-state",
+        response_model=SessionBusinessStateResponse,
+        summary="读取当前业务状态",
+        description="读取最新已提交的当前业务与待补参数提示；不返回内部授权材料。",
+        responses={404: {"model": ErrorResponse, "description": "会话不存在"}},
+    )
+    async def get_business_state(session_id: SessionId) -> SessionBusinessStateResponse:
+        runtime: ServiceRuntime = application.state.runtime
+
+        def read_state(store):
+            if store.get_session(session_id) is None:
+                return None
+            loader = getattr(store, "load_business_state", None)
+            value = loader(session_id) if callable(loader) else None
+            if value is None:
+                value = empty_business_state(
+                    session_id, updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+            return SessionBusinessStateResponse(
+                session_id=session_id, state=public_business_state(value),
+            )
+
+        result = await runtime.run_store(read_state)
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        return result
 
     @application.get(
         "/sessions/{session_id}/summary",
