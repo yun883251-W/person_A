@@ -25,5 +25,5 @@ where = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 markers = [
-    "live: 会把工具 Schema 发给真实提供方的在线探测；默认跳过，需设置 PERSON_A_LIVE_SCHEMA_PROBE=1",
+    "live: 真实提供方在线探测；默认跳过，需由对应用例的环境变量显式开启",
 ]
