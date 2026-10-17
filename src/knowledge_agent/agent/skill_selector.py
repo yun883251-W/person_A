@@ -1,8 +1,7 @@
 """Bounded automatic Skill selection for one knowledge step.
 
 Runs after routing and before retrieval.  It sees public metadata only, executes
-no tools, and keeps selection scoped to the current knowledge step.  Validation
-TODOs 13--15 remain intentionally unexecuted.
+no tools, and keeps selection scoped to the current knowledge step.
 """
 
 from __future__ import annotations
@@ -283,9 +282,3 @@ def select_skill_for_step(question: str, *, request: SkillRequest, route: str = 
     if not execute or route != "knowledge":
         return _decision(request, None, "disabled", "skill_step_skipped" if not execute else "skill_non_knowledge_route")
     return select_skill(question, request=request, **kwargs)
-
-
-# 第三阶段：全部开发完成后统一验证，本阶段不执行。
-# TODO 13：用固定目录与假模型验证旧请求、模式、目录、规则冲突及中英文边界。
-# TODO 14：验证预算、回退、模型调用次数、元数据边界与技能正文加载范围。
-# TODO 15：验证单轮/计划知识入口及 MBTI、MCP、问候等非知识路线隔离。

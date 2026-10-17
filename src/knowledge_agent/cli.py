@@ -131,6 +131,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     delete.add_argument("session_id", type=_nonempty, help="会话 ID")
     delete.add_argument("--json", action="store_true", help="将结构化结果以 JSON 输出")
+
+    evaluate = commands.add_parser(
+        "evaluate",
+        help="执行真实批量问答评估并生成报告",
+        description="调用已配置的模型执行真实批量问答，保存来源覆盖统计和待人工复核报告。",
+    )
+    evaluate.add_argument("--questions", help="JSONL 题集路径；相对路径按项目根目录解析")
+    evaluate.add_argument("--output-dir", help="报告父目录；相对路径按项目根目录解析")
+    evaluate.add_argument("--limit", type=_positive_int, help="只执行前 N 题")
+    evaluate.add_argument("--json", action="store_true", help="将结构化汇总以 JSON 输出")
     return parser
 
 
@@ -435,6 +445,59 @@ def _run_delete_session(session_id: str, *, json_output: bool) -> int:
     return 0
 
 
+def _run_evaluate(
+    questions: str | None,
+    output_dir: str | None,
+    *,
+    limit: int | None,
+    json_output: bool,
+) -> int:
+    from .evaluation import run_evaluation
+
+    def progress(completed: int, total: int) -> None:
+        print(f"评估进度：{completed}/{total}", file=sys.stderr)
+
+    result = run_evaluation(
+        questions_path=questions,
+        output_dir=output_dir,
+        limit=limit,
+        progress=None if json_output else progress,
+    )
+    summary = result.summary
+    payload = {
+        "status": summary.run_status,
+        "summary": asdict(summary),
+        "paths": {
+            "run_dir": str(result.run_dir),
+            "results": str(result.results_path),
+            "summary": str(result.summary_path),
+            "report": str(result.report_path),
+        },
+        "quality_review": "pending",
+    }
+    if json_output:
+        _write_json(payload)
+    else:
+        print(f"运行状态：{summary.run_status}")
+        print(
+            f"计划题数：{summary.total_cases}；已结束：{summary.completed_cases}；"
+            f"执行错误：{summary.error_cases}"
+        )
+        print(f"结果明细：{result.results_path}")
+        print(f"汇总：{result.summary_path}")
+        print(f"可读报告：{result.report_path}")
+        print("人工质量评审：待复核（运行完成不代表答案质量通过）")
+    if summary.interrupted or summary.run_status == "interrupted":
+        return 130
+    if (
+        summary.run_status != "completed"
+        or summary.run_error is not None
+        or summary.error_cases > 0
+    ):
+        return 1
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch one command; importing this module never starts an application."""
     parser = build_parser()
@@ -461,6 +524,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 offset=args.offset,
                 json_output=json_output,
             )
+        if args.command == "evaluate":
+            return _run_evaluate(
+                args.questions,
+                args.output_dir,
+                limit=args.limit,
+                json_output=json_output,
+            )
         return _run_delete_session(args.session_id, json_output=json_output)
     except KeyboardInterrupt:
         if json_output:
@@ -472,57 +542,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         _report_error(exc, json_output=json_output)
         return 1
 
-
-# 评估接入开发 TODO（仅规划，以下功能尚未实现；由用户开发后统一验证）：
-#
-# TODO E01：声明 evaluate 子命令及参数。
-# 规划 person-a evaluate [--questions PATH] [--output-dir PATH] [--limit N] [--json]。
-# --questions 默认项目根目录下的 evaluation/questions.jsonl；--output-dir 默认
-# evaluation/reports，仅作为报告父目录，每次运行由评估模块创建独立 run 目录。
-# 用户传入的相对路径均按项目根目录解析，不受调用命令时的工作目录影响。
-# --limit 可省略，提供时必须是正整数；参数错误交由 argparse 返回退出码 2。
-# 不提供 API Key 命令行参数，模型配置继续由既有配置层读取。
-# 帮助中明确 evaluate 会执行真实批量问答并调用配置的模型，不能称为离线测试。
-#
-# TODO E02：通过未来评估接口进行薄适配与延迟分发。
-# 评估模块未来约定：run_evaluation(questions_path=None, output_dir=None, *,
-# limit=None, application_factory=None, progress=None) -> EvaluationRunResult。
-# 只在参数解析成功且选中 evaluate 后导入并调用评估模块；--help、非法参数和
-# 其他子命令不得提前创建评估应用、初始化模型或加载题集。
-# 在 main 中显式增加 evaluate 分支，不能落入现有 chat 默认分支。
-# CLI 只传递题集路径、报告父目录、数量限制及可选进度回调；默认应用由运行器创建。
-# 不在 CLI 重写 start_session/ask/end_session、逐题隔离、持久化或评估统计逻辑。
-# application_factory 是运行器的依赖注入接口，留给后续假运行器/假应用验证使用。
-#
-# TODO E03：展示结构化汇总及实际报告位置。
-# 未来 EvaluationRunResult 提供 run_dir、results_path、summary_path、report_path
-# 和 summary；summary 包含 run_status、run_error、interrupted、error_cases、
-# total_cases、completed_cases；CLI 复用这些结果，不重新计算评估结论。
-# 普通输出显示总题数、完成数、执行错误数及实际生成的报告路径。
-# --json 向 stdout 输出可解析的结构化汇总与报告路径，Path 显式转换为字符串；
-# 进度和必要提示写 stderr，不把进度文字混入 JSON，也不打印原始异常或凭据。
-# 区分“执行完成”“来源覆盖统计”和“人工质量评审”，不能把退出码 0 或来源命中
-# 描述为答案质量通过；报告路径以运行器返回为准，不自行推测或虚构文件已生成。
-#
-# TODO E04：统一评估退出码及中断语义。
-# summary.run_status 约定为 completed / completed_with_errors / failed / interrupted；
-# summary.run_error 表示初始化、报告写入等批次级错误，正常时为 None。
-# 优先判断 interrupted 或 run_status=interrupted，返回 130；运行器负责保留已落盘
-# 的逐题结果及可生成的中断报告，CLI 展示实际可用路径，不宣称全部题目已完成。
-# run_status=failed/completed_with_errors、run_error 非空或 error_cases>0 返回 1；
-# 逐题 service_error/limit_reached 计为执行故障，不能因批次继续运行就忽略。
-# 只有 run_status=completed 且无批次或逐题执行错误时返回 0，不代表人工质量验收通过。
-# 不得仅凭 error_cases=0 判定成功，否则初始化失败但尚未执行题目的批次会被误判。
-# 未生成运行结果即发生的异常使用固定公开错误信息并返回 1；参数错误保持 2。
-# CLI 捕获到的中断仍返回 130，不覆盖已有报告，也不在退出时重新运行未完成题目。
-#
-# TODO E05：用户开发完成后集中验证评估接入，本阶段不执行。
-# 使用假运行器覆盖默认值、相对路径、正整数 limit、evaluate 分发及帮助懒加载。
-# 覆盖普通输出、JSON 序列化、stdout/stderr 分离、报告位置展示与异常信息脱敏。
-# 覆盖 completed、completed_with_errors、failed、interrupted 与批次 run_error；
-# 尤其检查 error_cases=0 但初始化失败仍退出 1，中断退出 130，参数错误退出 2。
-# 确认 CLI 不接管会话或重复模型调用，逐题失败可记录并继续，中断前结果得以保留。
-# 真实模型评估由用户后续主动运行；本轮不运行模型、联调、测试或生成评估报告。
 
 # 后续统一验证 TODO（本阶段不执行）：
 # 01：验证帮助、子命令、空问题、非法参数和退出码；帮助及参数错误不得初始化模型。
