@@ -1,8 +1,7 @@
-"""Pure dialogue-intent resolution before retrieval and tool dispatch.
+"""在检索和工具派发之前进行纯对话意图解析。
 
-The resolver consumes caller-owned snapshots and returns a validated decision
-plus an optional state-transition proposal. It never executes a capability,
-persists state, initializes a model, or changes assessment state.
+解析器消费调用方持有的快照，返回经校验的决定以及可选的状态转换提议。
+它绝不执行能力、持久化状态、初始化模型，也不改变测评状态。
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ _ANSWER_LABELS = {
 
 @dataclass(frozen=True, slots=True)
 class DialogueResolution:
-    """A trusted routing decision and optional uncommitted state change."""
+    """可信的路由决定，以及可选的、未提交的状态变更。"""
 
     decision: DialogueDecision
     state_transition: StateTransition | None = None
@@ -257,7 +256,7 @@ def _from_classification(
     classified: IntentDecision, *, question: str, revision: int,
     session_id: str, turn_id: str,
 ) -> DialogueDecision:
-    """Accept one classifier result; do not retain an override from an earlier pass."""
+    """接受一次分类器结果；不保留更早一轮的覆盖值。"""
     source = DecisionSource(classified.decision_source)
     common = {"revision": revision, "source": source, "reason_code": classified.reason_code}
     if classified.kind in {IntentKind.GREETING, IntentKind.SCOPE}:
@@ -314,11 +313,11 @@ def resolve_dialogue(
     settings: IntentSettings | None = None,
     max_history_turns: int = 6, max_context_chars: int = 4000,
 ) -> DialogueResolution:
-    """Resolve exactly one raw user message without side effects.
+    """无副作用地解析恰好一条原始用户消息。
 
-    With no ``session_id``, complete requests still route normally, while an
-    incomplete request is clarified without creating shared pending state.
-    Callers must commit a returned transition before dispatching anything.
+    没有 ``session_id`` 时，完整请求仍正常路由；而不完整请求
+    会被澄清，但不会创建共享的待处理状态。
+    调用方必须先提交返回的转换，然后才能派发任何操作。
     """
 
     cleaned, state, assessment_snapshot, history, capabilities = _validate_inputs(
@@ -428,7 +427,7 @@ def resolve_dialogue(
             )
         return DialogueResolution(decision, transition)
 
-    # A short answer to a known missing field is handled before model classification.
+    # 对已知缺失字段的简短回答会在模型分类之前处理。
     rules = identify_intent_rules(
         cleaned, context=history, available_tools=capabilities,
         assessment_state=None, max_history_turns=max_history_turns,
@@ -441,8 +440,8 @@ def resolve_dialogue(
         and state.pending.business_type is BusinessType.BILIBILI_SEARCH
         and state.pending.missing_slots == ("query",)
     ):
-        # A title may be outside the knowledge domain and still answer the
-        # outstanding search-topic question.
+        # 标题可能不属于知识领域，但仍能回答
+        # 尚未解决的搜索主题问题。
         may_fill = rules.reason_code in {"default_knowledge", "out_of_scope_marker"}
         query = _supplemental_query(cleaned) if may_fill else None
         if query is not None:
@@ -508,8 +507,8 @@ def resolve_dialogue(
 
     def invoke_classifier(messages: Sequence[object]) -> object:
         nonlocal model_calls
-        # Reserve one call for answering/execution. General and browser
-        # classification are mutually exclusive for this input.
+        # 为回答/执行保留一次调用。通用分类和浏览器
+        # 分类对本次输入互斥。
         if model_invoker is None or model_calls >= max(0, remaining_model_calls - 1):
             raise IntentModelBudgetError()
         model_calls += 1

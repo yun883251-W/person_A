@@ -22,25 +22,24 @@ from .tools.registry import InMemoryToolRegistry
 
 
 class AgentApplicationError(RuntimeError):
-    """Base error intended for presentation by an application adapter or CLI."""
+    """应用适配器或 CLI 用于展示的错误基类。"""
 
 
 class SessionNotStartedError(AgentApplicationError):
-    """Raised when a session operation is requested before starting a session."""
+    """尚未开始会话就请求会话操作时抛出。"""
 
 
 class ApplicationBusyError(AgentApplicationError):
-    """Raised when overlapping synchronous application operations are attempted."""
+    """尝试重叠执行同步应用操作时抛出。"""
 
 
 class KnowledgeAgentApplication:
-    """Own the reusable services and one synchronous conversation lifecycle.
+    """持有可复用服务，以及一条同步对话生命周期。
 
-    A CLI only needs to call :meth:`start_session`, :meth:`ask`,
-    :meth:`clear_session`, and :meth:`refresh_index`.  The operation lock keeps
-    an index refresh from overlapping a model/tool loop, so each answer observes
-    one index snapshot.  Conversation state remains owned by this instance's
-    ``KnowledgeAgent`` rather than by a shared model client or retriever.
+    CLI 只需调用 :meth:`start_session`、:meth:`ask`、:meth:`clear_session`
+    和 :meth:`refresh_index`。操作锁确保索引刷新不会与模型/工具循环重叠，
+    因此每个回答都基于同一份索引快照。对话状态由本实例的
+    ``KnowledgeAgent`` 持有，而不是由共享的模型客户端或检索器持有。
     """
 
     def __init__(
@@ -67,18 +66,18 @@ class KnowledgeAgentApplication:
         self._operation_lock = Lock()
         self._closed = False
         self.memory_settings = memory_settings if memory_settings is not None else get_memory_settings()
-        # Summary work is auxiliary: it never increments the completed answer's
-        # model_calls/tool_calls or rewrites a successfully committed result.
+        # 摘要工作是辅助性的：它绝不增加已完成回答的 model_calls/tool_calls，
+        # 也不会重写已成功提交的结果。
         self.last_memory_update = MemoryUpdate("not_run")
 
     @property
     def config(self) -> AgentConfig:
-        """Expose the effective limits without duplicating configuration in a CLI."""
+        """直接暴露生效的上限，避免在 CLI 中重复配置。"""
         return self.agent.config
 
     @property
     def session_id(self) -> str | None:
-        """Return the active session identifier, if a session has been started."""
+        """返回当前活动的会话标识符；尚未开始会话时返回 ``None``。"""
         return self._session_id
 
     def _begin_operation(self, operation: str) -> None:
@@ -106,7 +105,7 @@ class KnowledgeAgentApplication:
         self.last_memory_update = MemoryUpdate("not_run")
 
     def _restore_session_memory(self, session_id: str) -> None:
-        """Optional memory failures must not prevent restoring saved answers."""
+        """可选的记忆功能失败不得妨碍恢复已保存的回答。"""
         self._release_session_memory(session_id)
         if not self.memory_settings.enabled:
             self.last_memory_update = MemoryUpdate("disabled")
@@ -131,7 +130,7 @@ class KnowledgeAgentApplication:
             update = update_session_summary(
                 self.agent.session_store, session_id, settings=self.memory_settings,
                 max_history_turns=self.config.max_history_turns,
-                # One attempt per batch; provider retries must not multiply it.
+                # 每批只尝试一次；提供方自身的重试不得放大该次数。
                 model_invoker=lambda messages: invoke_chat_model(self.agent.model, messages, max_retries=0),
             )
             self.last_memory_update = update
@@ -145,14 +144,14 @@ class KnowledgeAgentApplication:
                 else:
                     self.agent.session_summaries.pop(session_id, None)
         except Exception:
-            # Even a custom store's unexpected memory failure must not turn a
-            # durable answer into an application failure. Interrupts propagate.
+            # 即使是自定义存储出现意外的记忆故障，也不能把已持久化的
+            # 回答变成应用故障。中断信号仍会向上传播。
             self.last_memory_update = MemoryUpdate(
                 "failed", update.model_calls, "memory_maintenance_failed",
             )
 
     def start_session(self, session_id: str | None = None) -> str:
-        """Create and activate a new, empty session."""
+        """创建并激活一个新的空会话。"""
         self._begin_operation("start_session")
         try:
             if self._session_id is not None:
@@ -180,7 +179,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def resume_session(self, session_id: str) -> str:
-        """Restore the newest complete turns of an existing session."""
+        """恢复现有会话中最近的完整轮次。"""
         self._begin_operation("resume_session")
         try:
             if self._session_id is not None:
@@ -233,7 +232,7 @@ class KnowledgeAgentApplication:
     def ask(
         self, question: str, *, skill_id: str | None = None, skill_mode: str | None = None,
     ) -> AnswerResult:
-        """Run one complete turn in the active session."""
+        """在活动会话中执行一个完整轮次。"""
         self._begin_operation("ask")
         try:
             if self._owned_mcp_runtime is not None:
@@ -260,7 +259,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def clear_session(self) -> None:
-        """Delete persisted and retained turns while keeping the session active."""
+        """删除已持久化和保留的轮次，同时保持会话处于活动状态。"""
         self._begin_operation("clear_session")
         try:
             session_id = self._require_session()
@@ -275,7 +274,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def end_session(self) -> None:
-        """Release in-memory state while retaining all committed records."""
+        """释放内存中的状态，同时保留所有已提交记录。"""
         self._begin_operation("end_session")
         try:
             session_id = self._require_session()
@@ -286,7 +285,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a persisted session and release it if it is currently active."""
+        """删除已持久化的会话；若它当前处于活动状态，则一并释放。"""
         self._begin_operation("delete_session")
         try:
             key = ConversationHistory._session_key(session_id)
@@ -306,7 +305,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def close(self) -> None:
-        """Release the active session, storage, and explicitly owned MCP runtime."""
+        """释放活动会话、存储以及显式持有的 MCP 运行时。"""
         if self._closed:
             return
         self._begin_operation("close")
@@ -336,7 +335,7 @@ class KnowledgeAgentApplication:
         self.close()
 
     def get_session_history(self) -> tuple[ConversationTurn, ...]:
-        """Return an immutable snapshot of the active session history."""
+        """返回活动会话历史的不可变快照。"""
         self._begin_operation("get_session_history")
         try:
             return self.agent.get_session_history(self._require_session())
@@ -344,7 +343,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def refresh_index(self) -> Any:
-        """Refresh the shared retriever strictly between complete answer turns."""
+        """仅在完整回答轮次之间刷新共享检索器。"""
         self._begin_operation("refresh_index")
         try:
             return self.agent.retriever.refresh()
@@ -362,10 +361,10 @@ def create_agent_application(
     owned_mcp_runtime: Any | None = None,
     memory_settings: MemorySettings | None = None,
 ) -> KnowledgeAgentApplication:
-    """Create the shared CLI/API boundary with an already prepared tool registry.
+    """使用已准备好的工具注册器创建 CLI/API 共享边界。
 
-    Injected registries remain caller-owned. Bootstrap can transfer its runtime
-    explicitly so the application refreshes snapshots and closes it on shutdown.
+    注入的注册器仍归调用方所有。Bootstrap 可以显式移交其运行时，
+    以便应用刷新快照并在关闭时释放它。
     """
     return KnowledgeAgentApplication(
         config,

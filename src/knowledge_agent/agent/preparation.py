@@ -55,12 +55,11 @@ def create_knowledge_tools(
     search_executor: ToolExecutor,
     section_executor: ToolExecutor,
 ) -> KnowledgeTools:
-    """Create the two allowed knowledge tools with a fixed-name dispatcher.
+    """用固定名称的派发器创建两个允许的知识工具。
 
-    The supplied executors own retrieval and per-turn authorization (in
-    particular, checking that a section ``chunk_id`` is registered in the
-    current turn). No model-provided value is resolved as executable code, a
-    path, or a command.
+    提供的执行器持有检索和按轮授权（特别是检查某个章节的 ``chunk_id``
+    是否已在本轮登记）。模型提供的任何值都不会被解析为可执行代码、
+    路径或命令。
     """
     search_tool = StructuredTool.from_function(
         func=search_executor,
@@ -100,7 +99,7 @@ def create_section_executor(
     max_chunks: int = 8,
     max_chars: int = 8_000,
 ) -> ToolExecutor:
-    """Wrap bounded section reads with turn-scoped ID and version checks."""
+    """用轮次作用域的 ID 和版本检查包装有界章节读取。"""
 
     def read_knowledge_section(chunk_id: str) -> dict[str, Any]:
         anchor = state.evidence.get(chunk_id)
@@ -223,13 +222,12 @@ def prepare_evidence_context(
     max_chars: int,
     preferred_chunk_ids: Sequence[str] | None = None,
 ) -> str:
-    """Build bounded, source-preserving reference material for one turn.
+    """为单轮构建有界、保留来源的参考材料。
 
-    Results are deduplicated by their complete versioned source identity.
-    Dependency snapshots precede new retrieval results. Only complete chunks are included: a
-    chunk that does not fit is skipped rather than truncated, so its line
-    range and code remain faithful to the indexed document. ``source_map`` is
-    replaced with exactly the sources present in the returned context.
+    结果按完整的带版本来源身份去重。依赖快照排在新检索结果之前。
+    只包含完整片段：放不下的片段会被跳过而不是截断，
+    这样其行范围和代码仍与索引文档一致。``source_map`` 会被替换为
+    返回上下文中实际存在的来源。
     """
     if max_chars < 1:
         raise ValueError("max_chars must be greater than 0")
@@ -241,9 +239,9 @@ def prepare_evidence_context(
     )
     footer = "END_REFERENCE_MATERIALS"
 
-    # Reuse identifiers already exposed during this turn. This makes repeated
-    # assembly stable while still allowing the map below to contain only the
-    # material included in the latest context.
+    # 复用本轮已经公开过的标识符。这使重复组装保持稳定，
+    # 同时仍允许下面的映射只包含最新上下文中实际包含的
+    # 材料。
     previous_ids = {
         evidence_identity(result): source_id for source_id, result in state.supplied_evidence.items()
     }
@@ -315,11 +313,10 @@ def prepare_evidence_context(
 
 
 def classify_question(question: str) -> QuestionKind:
-    """Classify only intents that can safely bypass knowledge retrieval.
+    """只分类可以安全绕过知识检索的意图。
 
-    Unrecognized input deliberately defaults to ``knowledge``. This makes the
-    fail-safe behavior retrieval-first instead of allowing a brittle intent
-    heuristic to produce an unsupported factual answer.
+    无法识别的输入刻意默认归为 ``knowledge``。这让失败安全行为
+    优先走检索，而不是让脆弱的意图启发式产生无依据的事实性回答。
     """
     return identify_intent(question).kind.value  # type: ignore[return-value]
 
@@ -371,12 +368,11 @@ def prepare_question(
     dependency_context: DependencyContext | None = None,
     dependency_transform: bool = False,
 ) -> PreparedQuestion:
-    """Prepare one question and enforce retrieval before knowledge answers.
+    """准备一个问题，并在知识回答前强制执行检索。
 
-    The proactive search is a program action, so it is recorded in ``TurnState``
-    without manufacturing an AI tool call or tool-call ID. A nonterminal result
-    always contains explicitly delimited reference material for the next model
-    invocation.
+    主动搜索是程序操作，因此记录在 ``TurnState`` 中，
+    而不伪造 AI 工具调用或工具调用 ID。非终止结果始终包含
+    为下一次模型调用显式分隔的参考材料。
     """
     if not isinstance(question, str):
         raise TypeError("question must be a string")
@@ -530,8 +526,8 @@ def prepare_question(
     visible_context = (visible_context + "\n" + history_text)[:max_context_chars]
 
     def invoke_selector(messages: Sequence[BaseMessage]) -> object:
-        # Selection attempts, including failures, share the turn/plan budget.
-        # Keep one request for the eventual answer and disable hidden retries.
+        # 选择尝试（包括失败）共享轮次/计划预算。
+        # 为最终回答保留一次请求，并关闭隐藏重试。
         if max_model_calls - state.model_calls < 2:
             raise IntentModelBudgetError()
         state.model_calls += 1
@@ -564,9 +560,9 @@ def prepare_question(
             selected_skill_id=skill_id, strategy_id=state.selected_skill.strategy_id,
         )
     if state.dependency_transform:
-        # A rewrite/summary/study outline consumes the prerequisite's verified
-        # snapshots. Do not search the vague instruction "根据上一步..." or let
-        # a Skill's normal retrieval strategy reject it before the model runs.
+        # 改写/摘要/学习提纲会消费前置步骤已验证的
+        # 快照。不要检索“根据上一步……”这类含糊指令，也不要让
+        # Skill 的常规检索策略在模型运行前就拒绝它。
         handle = (
             trace_recorder.start_event("skill_retrieval", "program", step_id=step_id)
             if trace_recorder is not None else None
@@ -795,7 +791,7 @@ than inventing them. Do not claim other planned steps have completed.
 
 
 class PreparedContextLimitError(ValueError):
-    """The complete step prompt cannot retain any evidence within its budget."""
+    """完整步骤 Prompt 在其预算内无法保留任何证据。"""
 
 
 def prepare_mcp_model_turn(
@@ -807,15 +803,15 @@ def prepare_mcp_model_turn(
     max_retries: int | None = None,
     context: str = "",
 ) -> PreparedModelTurn:
-    """Bind only this route's authorized MCP tools to an isolated model turn."""
+    """只把该路由授权的 MCP 工具绑定到隔离的模型轮次。"""
     selected_registry = registry.filter_for_skill(allowed_tool_names)
     definitions = selected_registry.list_definitions()
     if not definitions:
         raise ValueError("An MCP model turn requires at least one authorized tool.")
     names = tuple(tool.name for tool in definitions)
     if SEARCH_BILIBILI_TOOL in names and names != (SEARCH_BILIBILI_TOOL,):
-        # Planned MCP steps also pass here; they must not bypass the dedicated
-        # single-action browser path by exposing another tool alongside it.
+        # 计划中的 MCP 步骤也会经过这里；它们不得通过同时暴露另一个工具
+        # 来绕过专用的单一操作浏览器路径。
         raise ValueError("Bilibili search requires its own single-tool turn.")
     retries = (
         getattr(model, "_knowledge_agent_max_retries", 0)
@@ -840,8 +836,8 @@ def prepare_mcp_model_turn(
             + "\nEND_RESOLVED_SEARCH_TOPIC_DATA"
         )
     if browser_search:
-        # The browser workflow owns its single parameter-repair attempt; do
-        # not multiply it with hidden transport retries outside the budget.
+        # 浏览器工作流拥有唯一一次参数修复尝试；不要在预算之外
+        # 再用隐藏的传输重试把它放大。
         retries = 0
     bound_model = bind_chat_tools(model, definitions)
     messages: tuple[BaseMessage, ...] = (
@@ -887,7 +883,7 @@ def prepare_model_turn(
     allow_tool_calls: bool = True,
     max_context_chars: int | None = None,
 ) -> PreparedModelTurn:
-    """Construct this turn's messages and bind its read-only knowledge tools."""
+    """构建本轮的模型消息，并绑定其只读知识工具。"""
     if prepared.terminal_result is not None:
         raise ValueError("A terminal prepared question does not require a model turn.")
     if not prepared.evidence_context:
@@ -902,8 +898,8 @@ def prepare_model_turn(
         raise ValueError("max_retries must be a non-negative integer")
 
     state = prepared.state
-    # A prepared knowledge turn owns its selection. Later callers cannot swap
-    # instructions after the retrieval strategy has already run.
+    # 已准备的知识轮次拥有自己的选择。检索策略已经运行之后，
+    # 后续调用方不能再替换指令。
     frozen = state.selected_skill
     if frozen is not None:
         if skill_id is not None and skill_id != frozen.selection.selected_skill_id:
@@ -998,9 +994,9 @@ def prepare_model_turn(
         if max_context_chars is not None:
             if type(max_context_chars) is not int or max_context_chars < 1:
                 raise ValueError("max_context_chars must be a positive integer")
-            # Count the actual wrapper, system/skill prompt and history once.
-            # Drop whole evidence chunks only; never truncate source lines or
-            # keep a citation ID for content omitted from the model request.
+            # 实际包装层、系统/Skill Prompt 和历史各计一次。
+            # 只整块丢弃证据片段；绝不截断源行，
+            # 也不为模型请求中省略的内容保留引用 ID。
             while sum(len(str(message.content)) for message in messages) > max_context_chars:
                 overflow = sum(len(str(message.content)) for message in messages) - max_context_chars
                 evidence_limit = len(evidence) - overflow

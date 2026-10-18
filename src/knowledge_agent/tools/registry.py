@@ -29,7 +29,7 @@ DEFAULT_TOOL_NAMES = frozenset({"search_knowledge", "read_knowledge_section"})
 
 
 class ToolExecutor(Protocol[ExecutionContextT]):
-    """Callable implementing a tool against one turn's execution context."""
+    """在某一轮次的执行上下文中实现工具的调用方。"""
 
     def __call__(
         self,
@@ -44,7 +44,7 @@ ArgumentValidator = Callable[[Mapping[str, Any]], dict[str, Any]]
 
 @dataclass(frozen=True, slots=True)
 class ToolRegistration(Generic[ExecutionContextT]):
-    """A model-visible tool definition paired with its server-side executor."""
+    """模型可见的工具定义与其服务端执行器的配对。"""
 
     name: str
     definition: BaseTool
@@ -57,7 +57,7 @@ ToolCallStatus = Literal["success", "error"]
 
 @dataclass(frozen=True, slots=True)
 class ToolCallResult:
-    """The outcome of one model-requested tool call, in request order."""
+    """按请求顺序排列的单次模型工具调用结果。"""
 
     tool_call_id: str | None
     name: str | None
@@ -74,7 +74,7 @@ def _tool_call_result(
     name: str | None,
     output: Any,
 ) -> ToolCallResult:
-    """Build a result while preserving non-error tool statuses such as ``empty``."""
+    """构造结果，同时保留 ``empty`` 等非错误工具状态。"""
     status: ToolCallStatus = (
         "error"
         if isinstance(output, Mapping) and output.get("status") == "error"
@@ -93,7 +93,7 @@ def _execute_registration(
     context: ExecutionContextT,
     arguments: Mapping[str, Any],
 ) -> Any:
-    """Execute a tool without exposing exception details to the model."""
+    """执行工具，但不向模型暴露异常细节。"""
     try:
         return registration.executor(context, **arguments)
     except Exception:  # noqa: BLE001 - tool failures are isolated per call
@@ -107,7 +107,7 @@ def _validate_arguments(
     registration: ToolRegistration[ExecutionContextT],
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Validate arguments without losing fields from non-Pydantic schemas."""
+    """校验参数，同时不丢失非 Pydantic schema 中的字段。"""
     validator = registration.argument_validator
     if validator is not None:
         validated = validator(arguments)
@@ -184,25 +184,25 @@ def _finish_tool_trace(
 
 @runtime_checkable
 class ToolRegistry(Protocol[ExecutionContextT]):
-    """Interface for registering, exposing, and executing approved tools."""
+    """注册、暴露并执行已批准工具的接口。"""
 
     def register(self, registration: ToolRegistration[ExecutionContextT]) -> None:
-        """Add one tool registration."""
+        """添加一个工具注册项。"""
 
     def get(self, name: str) -> ToolRegistration[ExecutionContextT] | None:
-        """Return the registration for ``name``, if present."""
+        """返回 ``name`` 对应的注册项（如果存在）。"""
 
     def list_definitions(self) -> tuple[BaseTool, ...]:
-        """Return model-visible definitions in registration order."""
+        """按注册顺序返回模型可见的定义。"""
 
     def list_registrations(self) -> tuple[ToolRegistration[ExecutionContextT], ...]:
-        """Return registrations in registration order."""
+        """按注册顺序返回注册项。"""
 
     def filter_for_skill(
         self,
         allowed_tools: Iterable[str] | None = None,
     ) -> ToolRegistry[ExecutionContextT]:
-        """Return a registry restricted to the tools available this turn."""
+        """返回仅包含本轮可用工具的注册器。"""
 
     def execute(
         self,
@@ -211,7 +211,7 @@ class ToolRegistry(Protocol[ExecutionContextT]):
         *,
         context: ExecutionContextT,
     ) -> Any:
-        """Execute a registered tool within the supplied turn-local context."""
+        """在给定的轮次局部上下文中执行已注册工具。"""
 
     def execute_tool_calls(
         self,
@@ -222,13 +222,13 @@ class ToolRegistry(Protocol[ExecutionContextT]):
         max_tool_calls: int,
         max_followup_searches: int | None = None,
     ) -> tuple[ToolCallResult, ...]:
-        """Validate and execute model-requested calls in request order."""
+        """按请求顺序校验并执行模型请求的调用。"""
 
 
 # 第一阶段：注册与执行开发。
 
 class InMemoryToolRegistry(Generic[ExecutionContextT]):
-    """Fast, insertion-ordered registry of explicitly approved tools."""
+    """显式批准工具的高速、保持插入顺序的注册器。"""
 
     __slots__ = ("_registrations",)
 
@@ -267,7 +267,7 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
         )
 
     def list_registrations(self) -> tuple[ToolRegistration[ExecutionContextT], ...]:
-        """Expose safe registration enumeration for composing registries."""
+        """暴露安全的注册项枚举，供组合注册器使用。"""
         return tuple(self._registrations.values())
 
     def filter_for_skill(
@@ -369,7 +369,7 @@ class InMemoryToolRegistry(Generic[ExecutionContextT]):
                 _finish_tool_trace(recorder, trace_handle, output, executed=False)
                 continue
 
-            # A usable ID is terminally handled even if later validation fails.
+            # 可用的 ID 即使后续校验失败，也视为已终结处理。
             completed_tool_call_ids.add(call_id)
 
             registration = self._registrations.get(name) if name else None
@@ -448,12 +448,11 @@ def create_tool_registry(
     definitions: Iterable[BaseTool],
     executors: Mapping[str, ToolExecutor[ExecutionContextT]],
 ) -> InMemoryToolRegistry[ExecutionContextT]:
-    """Build the single registry used for both model binding and execution.
+    """构建同时用于模型绑定与执行的单一注册器。
 
-    This small adapter lets existing tool factories keep returning separate
-    definitions and executors while the Agent migrates to the registry.  The
-    two collections must describe exactly the same tools, preventing a tool
-    from being exposed to the model without an executor (or vice versa).
+    这个小型适配器让现有工具工厂继续分别返回定义和执行器，
+    同时让 Agent 逐步迁移到注册器。两个集合必须描述完全相同的工具，
+    防止某个工具暴露给模型却没有执行器（或相反）。
     """
     tool_definitions = tuple(definitions)
     definition_names = [definition.name for definition in tool_definitions]
@@ -477,10 +476,10 @@ def create_tool_registry(
 def combine_tool_registries(
     *registries: ToolRegistry[ExecutionContextT],
 ) -> InMemoryToolRegistry[ExecutionContextT]:
-    """Combine complete registrations, rejecting duplicate names.
+    """合并完整注册项，并拒绝重名。
 
-    Copying registrations rather than only definitions preserves custom argument
-    validators and keeps model visibility aligned with server-side execution.
+    复制注册项而不只是定义，可保留自定义参数校验器，
+    并让模型可见性与服务端执行保持一致。
     """
     combined: InMemoryToolRegistry[ExecutionContextT] = InMemoryToolRegistry()
     for registry in registries:

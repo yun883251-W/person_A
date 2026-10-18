@@ -15,7 +15,7 @@ from ..streaming import create_progress_response
 
 
 def register_routes(application: FastAPI) -> None:
-    """Register chat routes while preserving the single-worker busy policy."""
+    """注册问答路由，同时保持单工作线程的忙碌策略。"""
     @application.post(
         "/sessions/{session_id}/messages",
         response_model=AnswerResponse,

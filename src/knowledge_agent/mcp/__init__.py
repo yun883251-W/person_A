@@ -1,4 +1,4 @@
-"""Optional MCP runtime and registry adapter public API."""
+"""可选 MCP 运行时与注册器适配器的公共 API。"""
 
 from .adapter import McpAdapterError, McpRuntimePort, create_mcp_tool_registry
 from .client import (

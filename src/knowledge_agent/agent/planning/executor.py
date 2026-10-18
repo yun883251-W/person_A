@@ -1,7 +1,7 @@
-"""Execute a validated plan with one shared budget and explicit dependencies.
+"""使用一份共享预算和显式依赖执行已校验的计划。
 
-The executor receives a leaf-step callback from runner. It does not instantiate
-models, discover tools, change assessment state, or persist intermediate turns.
+执行器从 runner 接收叶子步骤回调。它不实例化模型、不发现工具、
+不改变测评状态，也不持久化中间轮次。
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ class StepOutcome:
     result: AnswerResult
     followup_searches: int = 0
     context_chars: int = 0
-    # Runtime-only original material, never serialized into the public plan or
-    # restored from a previous chat. Downstream leaves register new source IDs.
+    # 仅运行时的原始材料，绝不序列化进公开计划，
+    # 也不从先前的聊天恢复。下游叶子会登记新的来源 ID。
     evidence: tuple[RetrievalResult, ...] = ()
 
 
@@ -46,7 +46,7 @@ _SKIPPED_MESSAGES = {
 }
 
 def _outcome_kind(result: AnswerResult) -> str:
-    """Separate evidence coverage from a failed execution or invalid answer."""
+    """把证据覆盖不足与执行失败或回答无效区分开。"""
     if result.status in {"service_error", "limit_reached"} or result.stop_reason == "partial_tool_failure":
         return "execution"
     if result.stop_reason in ANSWER_VALIDATION_REASONS:
@@ -58,7 +58,7 @@ def _outcome_kind(result: AnswerResult) -> str:
 
 
 def minimum_step_budget(step: PlanStep) -> tuple[int, int]:
-    """Reuse-only transformations need an answer but no fresh search call."""
+    """仅复用的转换需要回答，但不需要新的搜索调用。"""
     if step.kind == "knowledge" and is_dependency_transform(step.goal, bool(step.depends_on)):
         return 1, 0
     browser = step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
@@ -75,10 +75,10 @@ def execute_plan(
     trace: TraceRecorder,
     run_step: Callable[[PlanStep, StepBudget, DependencyContext, TraceRecorder], StepOutcome],
 ) -> AnswerResult:
-    """Run independent steps when possible, skipping failed dependencies.
+    """尽可能并行运行独立步骤，并跳过失败的依赖。
 
-    Results are assembled without another model rewrite, preserving each leaf's
-    verified citation rendering and keeping external tool data in its own step.
+    结果直接组装，不再让模型改写，从而保留每个叶子步骤
+    已验证的引用渲染，并把外部工具数据留在各自的步骤中。
     """
     results: dict[str, AnswerResult] = {}
     goals = {step.step_id: step.goal for step in plan.steps}
@@ -98,9 +98,9 @@ def execute_plan(
         skip_reason = None
         if any(result is None or _outcome_kind(result) != "completed" for result in dependencies):
             skip_reason = "plan_dependency_unfinished"
-        # Browser search has a program-authored receipt and can finish with a
-        # single valid proposal. Its optional repair still uses remaining budget.
-        # Generic MCP tools need a second model call to report their result.
+        # 浏览器搜索有程序生成的回执，一次有效提议即可完成。
+        # 其可选修复仍使用剩余预算。
+        # 通用 MCP 工具需要第二次模型调用来报告结果。
         minimum_calls, minimum_tools = minimum_step_budget(step)
         if skip_reason is None and config.max_model_calls - model_calls < minimum_calls:
             skip_reason = "plan_model_budget_exhausted"
@@ -126,16 +126,16 @@ def execute_plan(
             )
             continue
 
-        # Transport completed knowledge answers with their actual cited source
-        # snapshots. Tool results can gate a step, but are never KB evidence.
+        # 传输知识回答实际引用的来源快照。
+        # 工具结果可以决定步骤能否继续，但绝不是知识库证据。
         dependency_context = DependencyContext(tuple(
             dependency_step(key, goals[key], results[key], evidence_by_step.get(key, ()))
             for key in step.depends_on
             if step.kind == "knowledge" and kinds[key] == "knowledge"
         ))
 
-        # Leave a first answer/retrieval for every later viable step. Extra
-        # selection calls, supplemental reads and repairs may use only surplus.
+        # 为后续每个可行步骤保留一次回答/检索机会。额外的
+        # 选择调用、补充阅读和修复只能使用剩余预算。
         reserved_models = reserved_tools = 0
         blocked = set(unavailable)
         for later in plan.steps[position + 1:]:
@@ -151,8 +151,8 @@ def execute_plan(
             model_calls=min(remaining_models, max(minimum_calls, remaining_models - reserved_models)),
             tool_calls=min(remaining_tools, max(minimum_tools, remaining_tools - reserved_tools)),
             followup_searches=max(0, config.max_followup_searches - followup_searches),
-            # Each leaf has its own message list. Previously consumed evidence
-            # is not resident here; runner accounts for actual dependencies.
+            # 每个叶子都有自己的消息列表。之前消费过的证据
+            # 不驻留在这里；由 runner 负责实际依赖。
             context_chars=config.max_context_chars,
         )
         outcome = run_step(step, remaining, dependency_context, trace)

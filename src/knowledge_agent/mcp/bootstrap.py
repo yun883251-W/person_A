@@ -1,4 +1,4 @@
-"""Create the shared CLI/API application and own its optional MCP runtime."""
+"""创建 CLI/API 共享应用，并持有可选的 MCP 运行时。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ def create_configured_application(*, session_store: Any = None):
     runtime = McpRuntime(get_mcp_settings().config_path)
     try:
         runtime.start()
-        # A disabled/empty runtime must not import optional JSON Schema packages.
+        # 已禁用/空的运行时不得导入可选的 JSON Schema 包。
         from ..tools.registry import InMemoryToolRegistry
         registry = InMemoryToolRegistry()
         if runtime.list_tools():

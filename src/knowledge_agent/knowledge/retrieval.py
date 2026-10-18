@@ -41,7 +41,7 @@ from ..schemas import DocumentChunk, RetrievalChannel, RetrievalResult
 
 @dataclass(frozen=True, slots=True)
 class RetrievalConfig:
-    """Validated controls for loading and ranking one retrieval request."""
+    """一次检索请求的加载与排序控制参数。"""
 
     index_dir: Path
     top_k: int
@@ -74,7 +74,7 @@ class RetrievalConfig:
 
 
 def load_retrieval_config() -> RetrievalConfig:
-    """Load retrieval settings, resolve paths, and validate ranking limits."""
+    """加载检索设置、解析路径并校验排序上限。"""
     settings = get_retrieval_settings()
     index_dir = Path(settings.index_dir).expanduser()
     if not index_dir.is_absolute():
@@ -112,7 +112,7 @@ def load_retrieval_config() -> RetrievalConfig:
 
 @dataclass(frozen=True, slots=True)
 class IndexSnapshot:
-    """A complete, single-version set of in-memory retrieval artifacts."""
+    """一个完整的、单一版本的内存检索产物集合。"""
 
     index_version: str
     chunks: dict[str, DocumentChunk]
@@ -125,7 +125,7 @@ class IndexSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class PublishedIndexArtifacts:
-    """A validated manifest and the artifact files it publishes."""
+    """经校验的 manifest 及其发布的产物文件。"""
 
     index_dir: Path
     manifest_path: Path
@@ -137,13 +137,13 @@ class PublishedIndexArtifacts:
 
 
 class IndexNotBuiltError(RuntimeError):
-    """Raised when retrieval is requested before an index is published."""
+    """在索引发布之前请求检索时抛出。"""
 
 
 def load_published_index_artifacts(
     config: RetrievalConfig | None = None,
 ) -> PublishedIndexArtifacts:
-    """Read the active manifest and resolve its complete published artifact set."""
+    """读取活动 manifest，并解析其完整的已发布产物集合。"""
     config = config or load_retrieval_config()
     index_dir = config.index_dir.resolve()
     manifest_path = index_dir / "manifest.json"
@@ -201,7 +201,7 @@ def load_published_index_artifacts(
     )
 
 def load_published_chunks(artifacts: PublishedIndexArtifacts) -> dict[str, DocumentChunk]:
-    """Load and validate the source-preserving chunks in a published index."""
+    """加载并校验已发布索引中保留原文的片段。"""
     expected_count = artifacts.manifest.get("chunk_count")
     if (
         not isinstance(expected_count, int)
@@ -278,7 +278,7 @@ def load_published_chunks(artifacts: PublishedIndexArtifacts) -> dict[str, Docum
 
 
 def load_index_snapshot(config: RetrievalConfig | None = None) -> IndexSnapshot:
-    """Load and validate one complete, consistently published index snapshot."""
+    """加载并校验一个完整且一致发布的索引快照。"""
     artifacts = load_published_index_artifacts(config)
     chunks = load_published_chunks(artifacts)
 
@@ -409,11 +409,11 @@ def load_index_snapshot(config: RetrievalConfig | None = None) -> IndexSnapshot:
     )
 
 def extract_query_keywords(query_text: str) -> tuple[str, ...]:
-    """Normalize and deduplicate query terms with the indexing-time rules."""
+    """按建库时的规则规范化并去重查询词。"""
     return extract_keywords(query_text)
 
 class EmbeddingCompatibilityError(RuntimeError):
-    """Raised when the active embedding model cannot query a stored index."""
+    """当前 Embedding 模型无法查询已存索引时抛出。"""
 
 
 _TEXT_STRATEGY_PAIRS = {
@@ -433,7 +433,7 @@ def create_compatible_embedding_model(
     adapter: Any | None = None,
     model_identity_checker: Callable[..., OllamaEmbeddingModel] | None = None,
 ) -> OllamaEmbeddingModel:
-    """Create the query adapter and verify it exactly matches *snapshot*."""
+    """创建查询适配器，并校验它与 *snapshot* 完全匹配。"""
     config = config or load_retrieval_config()
     manifest = snapshot.manifest
     if not isinstance(manifest, dict):
@@ -513,7 +513,7 @@ def create_compatible_embedding_model(
 
 @dataclass(frozen=True, slots=True)
 class PreparedQuery:
-    """The original question, actual embedding input, and validated vector."""
+    """原始问题、实际 Embedding 输入以及经校验的向量。"""
 
     original_question: str
     query_text: str
@@ -529,7 +529,7 @@ def prepare_query(
     retry_delay: float | None = None,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> PreparedQuery:
-    """Validate and embed one user question using the index query strategy."""
+    """使用索引查询策略校验并嵌入一个用户问题。"""
     if not isinstance(question, str):
         raise TypeError("用户问题必须是字符串")
     if not question.strip():
@@ -608,7 +608,7 @@ def prepare_query(
 
 @dataclass(frozen=True, slots=True)
 class VectorCandidate:
-    """One vector-channel candidate, before cross-channel fusion."""
+    """一条向量通道候选，位于跨通道融合之前。"""
 
     chunk_id: str
     score: float
@@ -620,7 +620,7 @@ def retrieve_vector_candidates(
     snapshot: IndexSnapshot,
     config: RetrievalConfig,
 ) -> tuple[VectorCandidate, ...]:
-    """Return the highest-cosine vector candidates from one index snapshot."""
+    """从单个索引快照返回余弦相似度最高的向量候选。"""
     if not isinstance(query, PreparedQuery):
         raise TypeError("query 必须是 PreparedQuery")
     if not isinstance(snapshot, IndexSnapshot):
@@ -677,7 +677,7 @@ def retrieve_vector_candidates(
 
 @dataclass(frozen=True, slots=True)
 class KeywordCandidate:
-    """One keyword-channel candidate, before cross-channel fusion."""
+    """一条关键词通道候选，位于跨通道融合之前。"""
 
     chunk_id: str
     score: int
@@ -690,11 +690,10 @@ def retrieve_keyword_candidates(
     snapshot: IndexSnapshot,
     config: RetrievalConfig,
 ) -> tuple[KeywordCandidate, ...]:
-    """Rank meaningful topic matches, using the existing index for candidate lookup.
+    """对有意义的主题匹配排序，并复用现有索引做候选查找。
 
-    Chinese postings contain individual characters. Intersect them to discover
-    candidates, then require the original consecutive pair in the source text;
-    single-character/question-word overlap is not a meaningful keyword hit.
+    中文倒排项是单个字符。先求交集发现候选，再要求原文中出现
+    连续的原始二元组；单字/疑问词重叠不构成有意义的关键词命中。
     """
     if not isinstance(query, PreparedQuery):
         raise TypeError("query 必须是 PreparedQuery")
@@ -744,7 +743,7 @@ def retrieve_keyword_candidates(
 
 @dataclass(frozen=True, slots=True)
 class RetrievalDiagnostics:
-    """Per-call signals, safe to retain without sharing mutable request state."""
+    """单次调用的信号，可安全保留，不共享可变请求状态。"""
 
     reason_code: str
     candidate_count: int
@@ -764,13 +763,12 @@ def filter_relevant_candidates(
     keyword_candidates: tuple[KeywordCandidate, ...],
     config: RetrievalConfig,
 ) -> tuple[tuple[VectorCandidate, ...], tuple[KeywordCandidate, ...], RetrievalDiagnostics]:
-    """Gate raw candidates before fusion, never interpreting RRF as confidence.
+    """在融合之前对原始候选做闸门过滤，绝不把 RRF 解释为置信度。
 
-    Keep candidates supported by both cosine and topic coverage, high-cosine
-    paraphrases without lexical overlap, or an exact match of all topic hints
-    from the keyword channel. These are relevance heuristics, not proof that a
-    passage answers every requested detail. The answering stage still checks
-    evidence sufficiency. All-rejected candidates are a normal empty retrieval.
+    保留同时满足余弦与主题覆盖的候选、没有词法重叠但余弦较高的改写，
+    或关键词通道中命中全部主题提示的精确匹配。这些是相关性启发式，
+    并不证明某段文字回答了所有请求细节。回答阶段仍会检查证据充分性。
+    全部候选被拒绝属于正常的空检索。
     """
     terms = extract_topic_terms(query.original_question)
     vectors = {candidate.chunk_id: candidate for candidate in vector_candidates}
@@ -816,7 +814,7 @@ def filter_relevant_candidates(
 
 @dataclass(frozen=True, slots=True)
 class FusedCandidate:
-    """One chunk deduplicated across retrieval channels and ranked by RRF."""
+    """一个跨检索通道去重并按 RRF 排序的片段。"""
 
     chunk_id: str
     channels: tuple[RetrievalChannel, ...]
@@ -832,7 +830,7 @@ def fuse_candidates(
     keyword_candidates: tuple[KeywordCandidate, ...],
     config: RetrievalConfig,
 ) -> tuple[FusedCandidate, ...]:
-    """Fuse ranked channels with RRF, deduplicate by chunk ID, and apply top-k."""
+    """用 RRF 融合各排序通道，按片段 ID 去重，并应用 top-k。"""
     if not isinstance(config, RetrievalConfig):
         raise TypeError("config 必须是 RetrievalConfig")
     if config.top_k <= 0:
@@ -840,8 +838,8 @@ def fuse_candidates(
     if config.rrf_k <= 0:
         raise ValueError("rrf_k 必须大于 0")
 
-    # Each channel contributes at most once per chunk.  Keeping the best entry
-    # also makes this safe for externally supplied candidate sequences.
+    # 每个通道对每个片段至多贡献一次。保留最佳条目
+    # 也使本函数对外部传入的候选序列同样安全。
     merged: dict[str, list[VectorCandidate | KeywordCandidate | None]] = {}
     for candidate in vector_candidates:
         entry = merged.setdefault(candidate.chunk_id, [None, None])
@@ -893,7 +891,7 @@ def organize_retrieval_results(
     snapshot: IndexSnapshot,
     candidates: tuple[FusedCandidate, ...],
 ) -> tuple[RetrievalResult, ...]:
-    """Resolve ranked candidates to source-preserving chunks in one snapshot."""
+    """将排序候选解析为同一快照中保留原文的片段。"""
     if not isinstance(snapshot, IndexSnapshot):
         raise TypeError("snapshot 必须是 IndexSnapshot")
 
@@ -923,7 +921,7 @@ def organize_retrieval_results(
 
 @dataclass(frozen=True, slots=True)
 class ContextReadResult:
-    """Source-preserving context assembled from one index snapshot."""
+    """从单个索引快照组装的、保留原文的上下文。"""
 
     source_path: str
     heading_path: tuple[str, ...]
@@ -935,7 +933,7 @@ class ContextReadResult:
 
 
 def _merge_context_text(chunks: tuple[DocumentChunk, ...]) -> str:
-    """Join ordered chunks while removing their line-aligned overlap."""
+    """拼接有序片段，同时移除按行对齐的重叠部分。"""
     if not chunks:
         return ""
 
@@ -950,7 +948,7 @@ def _merge_context_text(chunks: tuple[DocumentChunk, ...]) -> str:
             if previous_lines[-overlap:] == current_lines[:overlap]:
                 parts.append("".join(current_lines[overlap:]))
             else:
-                # Never discard text from an inconsistent externally-built snapshot.
+                # 绝不从外部构建的不一致快照中丢弃文本。
                 parts.append(chunk.text)
         else:
             parts.append(chunk.text)
@@ -960,7 +958,7 @@ def _merge_context_text(chunks: tuple[DocumentChunk, ...]) -> str:
 
 
 def _starts_heading_section(chunk: DocumentChunk) -> bool:
-    """Return whether a chunk starts with the heading represented by its path."""
+    """返回片段是否以其标题路径所表示的标题开头。"""
     if not chunk.heading_path:
         return False
     first_line = chunk.text.splitlines()[0].lstrip() if chunk.text else ""
@@ -986,11 +984,11 @@ def read_context(
     max_chunks: int | None = None,
     max_chars: int | None = None,
 ) -> ContextReadResult:
-    """Read adjacent chunks or the hit's related section from *snapshot*.
+    """从 *snapshot* 读取相邻片段或命中片段所属的相关章节。
 
-    A section is the contiguous run of chunks with the same full source path
-    and heading path. This keeps repeated same-named sections distinct. The hit
-    is always returned, even when it alone exceeds the character budget.
+    章节是具有相同完整源路径和标题路径的连续片段集合。
+    这样可区分重复的同名章节。即使命中片段单独就超出字符预算，
+    也始终返回该片段。
     """
     if not isinstance(snapshot, IndexSnapshot):
         raise TypeError("snapshot must be an IndexSnapshot")
@@ -1047,7 +1045,7 @@ def read_context(
         stop = min(len(file_chunks), hit_index + adjacent_after + 1)
     candidates = file_chunks[start:stop]
 
-    # Nearest-first selection keeps the hit and its closest context under tight budgets.
+    # 最近优先的选择方式，能在紧张预算下保留命中片段及其最近的上下文。
     ordered_indexes = sorted(
         range(len(candidates)),
         key=lambda index: (abs(start + index - hit_index), start + index),
@@ -1089,7 +1087,7 @@ def read_adjacent_chunks(
     max_chunks: int | None = None,
     max_chars: int | None = None,
 ) -> ContextReadResult:
-    """Read a bounded source-order window around one indexed chunk."""
+    """读取某个已索引片段周围有界、按源顺序排列的窗口。"""
     return read_context(
         snapshot,
         chunk_id,
@@ -1107,7 +1105,7 @@ def read_related_section(
     max_chunks: int | None = None,
     max_chars: int | None = None,
 ) -> ContextReadResult:
-    """Read available indexed chunks belonging to the hit's exact section."""
+    """读取命中片段精确所属章节内可用的已索引片段。"""
     return read_context(
         snapshot,
         chunk_id,
@@ -1117,7 +1115,7 @@ def read_related_section(
     )
 
 class IndexRefreshError(RuntimeError):
-    """Raised when refresh fails while an earlier snapshot remains active."""
+    """刷新失败且仍保留旧快照处于活动状态时抛出。"""
 
     def __init__(self, retained_index_version: str | None, cause: BaseException) -> None:
         self.retained_index_version = retained_index_version
@@ -1135,7 +1133,7 @@ class _RetrievalRuntime:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalOutcome:
-    """Results and relevance diagnostics captured from the same index/request."""
+    """从同一索引/请求捕获的结果与相关性诊断。"""
 
     results: tuple[RetrievalResult, ...]
     diagnostics: RetrievalDiagnostics
@@ -1143,7 +1141,7 @@ class RetrievalOutcome:
 
 
 class KnowledgeRetriever:
-    """Thread-safe, reusable entry point for index retrieval and context reads."""
+    """线程安全、可复用的索引检索与上下文读取入口。"""
 
     def __init__(
         self,
@@ -1167,7 +1165,7 @@ class KnowledgeRetriever:
         return _RetrievalRuntime(snapshot, embedding_model)
 
     def load(self) -> IndexSnapshot:
-        """Load the active index once; subsequent calls reuse the same snapshot."""
+        """只加载一次活动索引；后续调用复用同一快照。"""
         runtime = self._runtime
         if runtime is not None:
             return runtime.snapshot
@@ -1183,24 +1181,24 @@ class KnowledgeRetriever:
     def _current_runtime(self) -> _RetrievalRuntime:
         self.load()
         runtime = self._runtime
-        if runtime is None:  # Defensive: load either publishes a runtime or raises.
+        if runtime is None:  # 防御性检查：load 要么发布运行时，要么抛出异常。
             raise RuntimeError("Retrieval runtime was not loaded")
         return runtime
 
     @property
     def index_version(self) -> str:
-        """Return the version of the snapshot currently serving queries."""
+        """返回当前提供查询服务的快照版本。"""
         return self._current_runtime().snapshot.index_version
 
     def retrieve(self, question: str) -> tuple[RetrievalResult, ...]:
-        """Return relevant source-preserving results; an empty tuple is valid."""
+        """返回相关的、保留原文的结果；空元组是合法结果。"""
         return self.retrieve_with_diagnostics(question).results
 
     def retrieve_with_diagnostics(self, question: str) -> RetrievalOutcome:
-        """Run both channels and relevance filtering against one captured snapshot.
+        """针对同一份捕获的快照运行两个通道并进行相关性过滤。
 
-        No mutable ``last_stats`` are stored, so concurrent callers cannot read
-        each other's diagnostics. Technical failures still propagate as errors.
+        不保存可变的 ``last_stats``，因此并发调用方不会读到彼此的诊断。
+        技术性故障仍会作为错误向上传播。
         """
         runtime = self._current_runtime()
         snapshot = runtime.snapshot
@@ -1216,25 +1214,24 @@ class KnowledgeRetriever:
         )
 
     def read_context(self, chunk_id: str, **kwargs: Any) -> ContextReadResult:
-        """Read context from the snapshot active when this call begins."""
+        """从本次调用开始时活动的快照读取上下文。"""
         snapshot = self._current_runtime().snapshot
         return read_context(snapshot, chunk_id, **kwargs)
 
     def read_adjacent_chunks(self, chunk_id: str, **kwargs: Any) -> ContextReadResult:
-        """Read adjacent chunks from the snapshot active when this call begins."""
+        """从本次调用开始时活动的快照读取相邻片段。"""
         snapshot = self._current_runtime().snapshot
         return read_adjacent_chunks(snapshot, chunk_id, **kwargs)
 
     def read_related_section(self, chunk_id: str, **kwargs: Any) -> ContextReadResult:
-        """Read a section from the snapshot active when this call begins."""
+        """从本次调用开始时活动的快照读取一个章节。"""
         snapshot = self._current_runtime().snapshot
         return read_related_section(snapshot, chunk_id, **kwargs)
 
     def refresh(self, _published: Any = None) -> IndexSnapshot:
-        """Atomically publish a newly loaded runtime, or retain and report the old one.
+        """原子地发布新加载的运行时；失败时保留并报告旧运行时。
 
-        The optional argument makes this method directly usable as ingest's
-        ``refresh_callback``.
+        可选参数使本方法可直接用作 ingest 的 ``refresh_callback``。
         """
         with self._refresh_lock:
             previous = self._runtime

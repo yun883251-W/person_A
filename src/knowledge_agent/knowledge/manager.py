@@ -60,7 +60,7 @@ OperationErrorCategory = Literal[
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeBaseConfig:
-    """Filesystem locations and hard limits used by the management service."""
+    """管理服务使用的文件系统位置和硬性限制。"""
 
     docs_dir: Path
     index_dir: Path
@@ -76,7 +76,7 @@ class KnowledgeBaseConfig:
 
 @dataclass(frozen=True, slots=True)
 class DocumentSummary:
-    """Current disk and synchronization state of one managed document."""
+    """一个受管文档当前的磁盘与同步状态。"""
 
     path: str
     exists: bool
@@ -89,7 +89,7 @@ class DocumentSummary:
 
 @dataclass(frozen=True, slots=True)
 class DocumentPreview:
-    """A source-preserving, line-addressed slice of a Markdown document."""
+    """Markdown 文档中保留原文、带行号定位的切片。"""
 
     path: str
     content: str
@@ -102,7 +102,7 @@ class DocumentPreview:
 
 @dataclass(frozen=True, slots=True)
 class DocumentChanges:
-    """Document changes waiting to be reflected in the published index."""
+    """等待反映到已发布索引中的文档变更。"""
 
     added: int | None = None
     modified: int | None = None
@@ -119,7 +119,7 @@ class DocumentChanges:
 
 @dataclass(frozen=True, slots=True)
 class IndexStatus:
-    """Published-index metadata and current document synchronization state."""
+    """已发布索引的元数据与当前文档同步状态。"""
 
     disk_status: IndexDiskStatus
     published_version: str | None
@@ -134,7 +134,7 @@ class IndexStatus:
 
 @dataclass(frozen=True, slots=True)
 class IndexOperationResult:
-    """The independently observable stages of an index operation."""
+    """一次索引操作中可独立观测的各个阶段。"""
 
     operation: IndexOperation
     ingest_result: IngestRunResult | None
@@ -162,10 +162,10 @@ ProgressCallback = Callable[[int, int], None]
 
 
 class KnowledgeBaseService:
-    """Interface for knowledge-base management operations.
+    """知识库管理操作的接口。
 
-    Construction only records dependencies; it deliberately performs no file
-    access, directory creation, ingestion, or runtime refresh.
+    构造时只记录依赖；它刻意不执行任何文件访问、目录创建、
+    摄取或运行时刷新。
     """
 
     def __init__(
@@ -230,7 +230,7 @@ class KnowledgeBaseService:
 
 
 def _resolve_configured_path(project_root: Path, configured_path: str) -> Path:
-    """Resolve one server-controlled path independently of the process CWD."""
+    """独立于进程工作目录解析一个由服务端控制的路径。"""
     path = Path(configured_path).expanduser()
     if not path.is_absolute():
         path = project_root / path
@@ -238,7 +238,7 @@ def _resolve_configured_path(project_root: Path, configured_path: str) -> Path:
 
 
 def load_knowledge_base_config() -> KnowledgeBaseConfig:
-    """Load only knowledge-base paths, without validating writes or models."""
+    """只加载知识库路径，不校验写入或模型。"""
     settings = get_knowledge_base_settings()
     project_root = settings.project_root.resolve(strict=False)
     return KnowledgeBaseConfig(
@@ -248,7 +248,7 @@ def load_knowledge_base_config() -> KnowledgeBaseConfig:
 
 
 def _require_readable_directory(path: Path, *, description: str) -> Path:
-    """Validate a directory for a read operation without creating or changing it."""
+    """为读取操作校验目录，但不创建或修改它。"""
     if not path.exists():
         raise FileNotFoundError(f"{description}不存在: {path}")
     if not path.is_dir():
@@ -258,17 +258,17 @@ def _require_readable_directory(path: Path, *, description: str) -> Path:
     return path
 
 class InvalidDocumentPathError(ValueError):
-    """Raised when a requested path is outside the managed document namespace."""
+    """请求的路径超出受管文档命名空间时抛出。"""
 
 
 def resolve_document_path(docs_dir: Path, document_path: str) -> Path:
-    """Resolve a relative Markdown path without allowing access outside *docs_dir*."""
+    """解析相对 Markdown 路径，不允许访问 *docs_dir* 之外。"""
     if not isinstance(document_path, str) or not document_path or "\x00" in document_path:
         raise InvalidDocumentPathError("文档路径无效")
 
-    # PureWindowsPath detects drive-relative and UNC paths even when the service
-    # is tested or deployed on a non-Windows host. Treat both slash styles as
-    # separators so a path cannot change meaning between platforms.
+    # 即使服务在非 Windows 主机上测试或部署，PureWindowsPath 也能识别
+    # 盘符相对路径和 UNC 路径。两种斜杠都视为分隔符，
+    # 以免同一路径在不同平台上含义发生变化。
     windows_path = PureWindowsPath(document_path)
     normalized = document_path.replace("\\", "/")
     parts = normalized.split("/")
@@ -308,7 +308,7 @@ def resolve_document_path(docs_dir: Path, document_path: str) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class PublishedManifestFile:
-    """One validated document record from the published manifest."""
+    """已发布 manifest 中一条经校验的文档记录。"""
 
     path: str
     content_hash: str
@@ -317,7 +317,7 @@ class PublishedManifestFile:
 
 @dataclass(frozen=True, slots=True)
 class PublishedIndexManifest:
-    """Validated public metadata and local paths for one published index."""
+    """某个已发布索引经校验的公开元数据和本地路径。"""
 
     version: str
     built_at: str
@@ -330,15 +330,15 @@ class PublishedIndexManifest:
 
 
 class IndexManifestNotFoundError(FileNotFoundError):
-    """Raised when no published index manifest exists."""
+    """不存在任何已发布索引 manifest 时抛出。"""
 
 
 class InvalidIndexManifestError(ValueError):
-    """Raised when a published index manifest is malformed or incomplete."""
+    """已发布索引 manifest 格式错误或不完整时抛出。"""
 
 
 class IncompleteIndexError(InvalidIndexManifestError):
-    """Raised when a valid manifest references an absent index artifact."""
+    """有效 manifest 引用了缺失的索引产物时抛出。"""
 
 
 def _manifest_file(value: object, position: int) -> PublishedManifestFile:
@@ -382,7 +382,7 @@ def _manifest_artifact(index_dir: Path, artifacts: dict[str, Any], key: str) -> 
 
 
 def read_published_index_manifest(index_dir: Path) -> PublishedIndexManifest:
-    """Read and validate published-index metadata without loading index contents."""
+    """读取并校验已发布索引的元数据，不加载索引内容。"""
     root = Path(index_dir).resolve(strict=False)
     manifest_path = root / "manifest.json"
     try:
@@ -449,7 +449,7 @@ def _list_documents(
     ]
     | None = None,
 ) -> tuple[DocumentSummary, ...]:
-    """Return a deterministic snapshot of disk and published documents."""
+    """返回磁盘文档与已发布文档的确定性快照。"""
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
         raise ValueError("offset must be a non-negative integer")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
@@ -581,11 +581,11 @@ def _list_documents(
     return tuple(summaries)
 
 class DocumentReferenceMismatchError(RuntimeError):
-    """Raised when current source text no longer matches a cited document."""
+    """当前源文本不再匹配被引用文档时抛出。"""
 
 
 class DocumentTooLargeError(ValueError):
-    """Raised when a source document exceeds the configured read limit."""
+    """源文档超过配置的读取上限时抛出。"""
 
 
 def _read_document(
@@ -596,7 +596,7 @@ def _read_document(
     limit: int,
     content_hash: str | None,
 ) -> DocumentPreview:
-    """Read a bounded, source-preserving slice from one managed document."""
+    """从一个受管文档中读取有界、保留原文的切片。"""
     if not isinstance(start_line, int) or isinstance(start_line, bool) or start_line < 1:
         raise ValueError("start_line must be a positive integer")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
@@ -665,7 +665,7 @@ def _read_document(
     )
 
 def _missing_manifest_disk_status(index_dir: Path) -> tuple[IndexDiskStatus, str | None]:
-    """Distinguish a clean, unbuilt directory from an interrupted publication."""
+    """区分干净但尚未建库的目录与中断的发布过程。"""
     try:
         with os.scandir(index_dir) as entries:
             has_artifacts = next(entries, None) is not None
@@ -679,7 +679,7 @@ def _missing_manifest_disk_status(index_dir: Path) -> tuple[IndexDiskStatus, str
 
 
 def _get_index_status(config: KnowledgeBaseConfig) -> IndexStatus:
-    """Return one consistent snapshot of published metadata and source changes."""
+    """返回已发布元数据与源变更的一致快照。"""
     manifest: PublishedIndexManifest | None
     manifest_exception: InvalidIndexManifestError | None
     try:
@@ -743,7 +743,7 @@ def _get_index_status(config: KnowledgeBaseConfig) -> IndexStatus:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedMarkdownUpload:
-    """A bounded upload that is safe to publish under the document root."""
+    """有界的上传内容，可安全发布到文档根目录下。"""
 
     filename: str
     target_path: Path
@@ -752,19 +752,19 @@ class ValidatedMarkdownUpload:
 
 
 class InvalidUploadFilenameError(ValueError):
-    """Raised when an upload name is not one safe Markdown leaf name."""
+    """上传名称不是单个安全的 Markdown 文件名时抛出。"""
 
 
 class UploadTooLargeError(ValueError):
-    """Raised when upload content exceeds the configured byte limit."""
+    """上传内容超过配置的字节上限时抛出。"""
 
 
 class InvalidUploadEncodingError(ValueError):
-    """Raised when upload content is not valid UTF-8 (optionally with BOM)."""
+    """上传内容不是有效 UTF-8（可带 BOM）时抛出。"""
 
 
 class DocumentAlreadyExistsError(FileExistsError):
-    """Raised when an upload would overwrite an existing directory entry."""
+    """上传会覆盖已存在的目录项时抛出。"""
 
 
 _WINDOWS_RESERVED_NAMES = {
@@ -829,7 +829,7 @@ def validate_markdown_upload(
     filename: str,
     content: bytes | BinaryIO,
 ) -> ValidatedMarkdownUpload:
-    """Validate one non-overwriting Markdown upload without changing the filesystem."""
+    """在不修改文件系统的情况下校验一次不覆盖的 Markdown 上传。"""
     safe_filename = _validate_upload_filename(filename)
     docs_root = _require_readable_directory(
         Path(config.docs_dir).resolve(strict=True), description="文档目录"
@@ -857,7 +857,7 @@ def _upload_document(
     filename: str,
     content: bytes | BinaryIO,
 ) -> DocumentSummary:
-    """Validate and atomically publish one new Markdown document."""
+    """校验并原子地发布一个新的 Markdown 文档。"""
     upload = validate_markdown_upload(config, filename, content)
     temp_path: Path | None = None
     published = False
@@ -910,10 +910,10 @@ def _run_index_operation(
     refresh_callback: RefreshCallback | None,
     progress: ProgressCallback | None,
 ) -> IndexOperationResult:
-    """Run one ingestion entry point and report its actual publication result.
+    """运行一个摄取入口，并报告其实际发布结果。
 
-    ``progress`` is forwarded unchanged and therefore represents embedding-batch
-    progress (done/total), not an invented percentage for the complete operation.
+    ``progress`` 原样转发，因此表示的是 Embedding 批次进度（已完成/总数），
+    而不是为整个操作虚构的百分比。
     """
     if callback is None:
         from . import ingest
@@ -946,8 +946,8 @@ def _run_index_operation(
     try:
         published_version = read_published_index_manifest(config.index_dir).version
     except (IndexManifestNotFoundError, InvalidIndexManifestError):
-        # The ingestion result is authoritative for publication.  A separately
-        # unreadable status snapshot must not cause this layer to alter artifacts.
+        # 摄取结果才是发布的权威依据。单独读取状态快照失败，
+        # 不得导致本层修改任何产物。
         pass
 
     if refresh_callback is None:

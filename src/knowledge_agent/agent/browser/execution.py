@@ -24,11 +24,11 @@ from knowledge_agent.agent.state import ModelTurnResult, PreparedModelTurn, Tool
 
 
 class _TopicBindingMismatch(ValueError):
-    """The model proposed a different subject than the host-resolved user topic."""
+    """模型提出的主题与宿主解析出的用户主题不同。"""
 
 
 def is_browser_search_turn(turn: PreparedModelTurn) -> bool:
-    """The special workflow owns exactly one approved browser capability."""
+    """该专用工作流只拥有一个获批的浏览器能力。"""
     return (
         turn.route is RouteKind.MCP
         and tuple(tool.name for tool in turn.tools.definitions) == (SEARCH_BILIBILI_TOOL,)
@@ -60,7 +60,7 @@ def _finish(
 
 
 def _reject_parameters(state: TurnState, code: str) -> None:
-    """Record a rejected proposal, never the raw arguments or provider content."""
+    """记录被拒绝的提议，绝不记录原始参数或 provider 内容。"""
     if state.trace_recorder is not None:
         handle = state.trace_recorder.start_event(
             "tool", "model", tool_name=SEARCH_BILIBILI_TOOL, step_id=state.step_id,
@@ -69,8 +69,8 @@ def _reject_parameters(state: TurnState, code: str) -> None:
 
 
 def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, Any], dict[str, str]]:
-    # A malformed JSON call may be placed in invalid_tool_calls by LangChain.
-    # Never silently ignore it and execute a different valid call in the batch.
+    # LangChain 可能把格式错误的 JSON 调用放进 invalid_tool_calls。
+    # 绝不静默忽略它，却在同一批中执行另一个有效调用。
     if message.invalid_tool_calls or len(message.tool_calls) != 1:
         raise ValueError("one_valid_tool_call_required")
     call = message.tool_calls[0]
@@ -86,7 +86,7 @@ def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, 
 
 
 def _verified_payload(output: object, arguments: Mapping[str, str]) -> dict[str, Any] | None:
-    """Accept only this tool's exact result contract for the submitted query."""
+    """只接受该工具针对所提交查询的精确结果契约。"""
     if not isinstance(output, Mapping) or output.get("status") != "success" or output.get("truncated"):
         return None
     if output.get("tool_name") != SEARCH_BILIBILI_TOOL or output.get("server_name") != "browser":
@@ -124,7 +124,7 @@ def run_browser_search(
     max_tool_calls: int,
     max_context_chars: int,
 ) -> ModelTurnResult:
-    """Generate one schema-valid search request and make at most one dispatch."""
+    """生成一个符合 schema 的搜索请求，并且最多派发一次。"""
     initial_messages = tuple(state.messages)
     arguments: dict[str, str] | None = None
     proposal: ModelTurnResult | None = None
@@ -141,8 +141,8 @@ def run_browser_search(
         except (TypeError, ValueError) as exc:
             code = "browser_search_topic_mismatch" if isinstance(exc, _TopicBindingMismatch) else "browser_invalid_tool_arguments"
             _reject_parameters(state, code)
-            # Drop malformed assistant calls rather than send an orphan call ID
-            # back to the provider or persist them as a completed conversation.
+            # 丢弃格式错误的助手调用，而不是把孤立的调用 ID 发回 provider，
+            # 也不把它们持久化为已完成的对话。
             state.messages[:] = initial_messages
             if attempt == 0 and state.model_calls < max_model_calls:
                 topic_repair = (
@@ -178,8 +178,8 @@ def run_browser_search(
             state, "本轮工具调用预算不足，尚未请求打开浏览器。",
             status="limit_reached", code="tool_budget_exhausted",
         )
-    # Bound the stored tool message before an external action. The canonical
-    # result is small and the final answer needs no further model context.
+    # 在执行外部操作前限制存储的工具消息大小。规范结果很小，
+    # 最终回答也不需要更多模型上下文。
     canonical = {
         "status": "success", "action": "browser_launch_requested", "site": "bilibili",
         "query": arguments["query"], "url": url,
@@ -192,8 +192,8 @@ def run_browser_search(
             status="limit_reached", code="context_budget_exhausted",
         )
 
-    # Retain the actual accepted proposal and matching result, not internal
-    # repair prompts. All rejected model attempts remain counted in the trace.
+    # 保留实际被接受的提议和匹配结果，而不是内部修复 Prompt。
+    # 所有被拒绝的模型尝试仍会计入 trace。
     state.messages[:] = [*initial_messages, proposal.message]
     results = execute_tools(
         proposal.message, turn.tools, state,

@@ -30,7 +30,7 @@ from .schemas import (
 _LOGGER = logging.getLogger(__name__)
 
 def _source_response(source: AnswerSource) -> AnswerSourceResponse:
-    """Copy only the source metadata that belongs to the public API."""
+    """只复制属于公开 API 的来源元数据。"""
     return AnswerSourceResponse(
         chunk_id=source.chunk_id,
         source_path=source.source_path,
@@ -44,7 +44,7 @@ def _source_response(source: AnswerSource) -> AnswerSourceResponse:
 
 
 def _session_response(record: SessionRecord) -> SessionResponse:
-    """Convert persisted session metadata to its stable public shape."""
+    """将已持久化的会话元数据转换为稳定的公开结构。"""
     return SessionResponse(
         session_id=record.session_id,
         title=record.title,
@@ -54,14 +54,14 @@ def _session_response(record: SessionRecord) -> SessionResponse:
 
 
 def _trace_response(trace: TurnTrace | None) -> TurnTraceResponse | None:
-    """Use the trace allow-list; a malformed optional summary cannot hide an answer."""
+    """按 trace 白名单提取；格式异常的可选摘要不能导致回答被隐藏。"""
     if trace is None:
         return None
     try:
         return TurnTraceResponse.model_validate(trace_to_dict(trace))
     except (TypeError, ValueError, AttributeError):
-        # This conversion has no business side effects. Do not log trace content,
-        # retry a turn, or turn a usable answer into an HTTP failure.
+        # 此转换没有业务副作用。不要记录 trace 内容，
+        # 不要重试本轮，也不要把可用回答变成 HTTP 失败。
         _LOGGER.warning("trace_response_unavailable")
         return None
 
@@ -69,7 +69,7 @@ def _trace_response(trace: TurnTrace | None) -> TurnTraceResponse | None:
 def _assessment_response(
     snapshot: dict[str, Any] | None,
 ) -> AssessmentResponse | None:
-    """Expose only the assessment allow-list, never the stored answer payload."""
+    """只暴露测评白名单字段，绝不暴露已存储的答案载荷。"""
     if snapshot is None:
         return None
     from ..agent.assessment import public_assessment
@@ -81,7 +81,7 @@ def _assessment_response(
 
 
 def _plan_response(snapshot: dict[str, Any] | None) -> PlanSummaryResponse | None:
-    """Validate and expose the plan's public fields for answers and history."""
+    """校验并暴露计划中供回答与历史使用的公开字段。"""
     if snapshot is None:
         return None
     from knowledge_agent.agent.planning.planner import validate_plan_summary
@@ -90,7 +90,7 @@ def _plan_response(snapshot: dict[str, Any] | None) -> PlanSummaryResponse | Non
 
 
 def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
-    """Convert an answer without serializing any Agent or model state."""
+    """转换回答，不序列化任何 Agent 或模型状态。"""
     return AnswerResponse(
         session_id=session_id,
         question=result.question,
@@ -122,7 +122,7 @@ def _answer_response(session_id: str, result: AnswerResult) -> AnswerResponse:
 
 
 def _turn_response(turn: StoredTurn) -> TurnResponse:
-    """Expose a stored result as-is while omitting its internal messages."""
+    """原样暴露已存储的结果，同时省略其内部消息。"""
     result = turn.result
     return TurnResponse(
         turn_id=turn.turn_id,

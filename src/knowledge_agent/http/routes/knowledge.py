@@ -25,7 +25,7 @@ from ..serialization import _document_response, _index_operation_response, _inde
 
 
 def register_routes(application: FastAPI) -> None:
-    """Register document and index operations on the shared service runtime."""
+    """在共享服务运行时上注册文档与索引操作路由。"""
     @application.get(
         "/knowledge/documents",
         response_model=DocumentListResponse,

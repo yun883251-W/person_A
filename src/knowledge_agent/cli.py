@@ -74,7 +74,7 @@ def _add_skill_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Declare commands without importing model or retrieval dependencies."""
+    """声明命令，但不导入模型或检索依赖。"""
     parser = argparse.ArgumentParser(
         prog="person-a",
         description="基于本地 Markdown 知识库的 Python / LangChain 学习助手。",
@@ -149,7 +149,7 @@ def _write_json(payload: dict[str, Any], *, error: bool = False) -> None:
 
 
 def _error_details(exc: Exception) -> tuple[str, str]:
-    """Use fixed public messages; exception text may contain credentials or URLs."""
+    """使用固定的公开消息；异常文本可能包含凭据或 URL。"""
     messages = {
         "McpConfigurationError": ("mcp_configuration_failed", "MCP 配置无效，请检查 MCP_CONFIG_PATH 和对应 JSON 文件。"),
         "McpAdapterError": ("mcp_adapter_failed", "MCP 工具定义无法接入，请检查工具服务和 mcp 可选依赖。"),
@@ -245,7 +245,7 @@ def _run_ingest(command: str, *, json_output: bool) -> int:
 
 
 def _public_answer_payload(result: AnswerResult) -> dict[str, Any]:
-    """Serialize CLI answers with the same public assessment boundary as HTTP."""
+    """使用与 HTTP 相同的公开测评边界序列化 CLI 回答。"""
     from .agent.assessment import public_assessment
     from knowledge_agent.agent.answering.diagnostics import public_answer_result_dict
     from knowledge_agent.agent.planning.planner import validate_plan_summary
@@ -299,7 +299,7 @@ def _display_answer(result: AnswerResult, *, json_output: bool = False) -> int:
 
 
 def _create_session_store() -> Any:
-    """Create storage without constructing model or retrieval services."""
+    """创建存储，但不构造模型或检索服务。"""
     from .config import get_session_store_settings
     from knowledge_agent.session.store import SQLiteSessionStore
 
@@ -511,7 +511,7 @@ def _run_evaluate(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Dispatch one command; importing this module never starts an application."""
+    """分发一个命令；导入本模块永远不会启动应用。"""
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command in {"ask", "chat"}:

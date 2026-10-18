@@ -1,7 +1,7 @@
-"""Bounded synchronous facade over optional local stdio MCP servers.
+"""可选的本地 stdio MCP server 之上的有界同步门面。
 
-The MCP SDK is imported only when an enabled runtime starts, so ordinary
-knowledge queries do not depend on the optional MCP packages.
+只有在启用运行时启动时才导入 MCP SDK，因此普通知识问答
+不依赖可选的 MCP 包。
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ _DRAFT_2020_12_URIS = frozenset({
 
 
 class McpConfigurationError(ValueError):
-    """Safe configuration error which never includes configuration contents."""
+    """安全的配置错误，绝不包含配置内容。"""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -88,7 +88,7 @@ class McpServerStatus:
 
     @property
     def status(self) -> McpServerState:
-        """Compatibility alias for callers that describe the field as status."""
+        """供将字段称为 status 的调用方使用的兼容别名。"""
         return self.state
 
 
@@ -142,7 +142,7 @@ def _only_keys(value: Mapping[str, Any], allowed: set[str], location: str) -> No
 
 
 def load_mcp_config(config_path: Path | str) -> tuple[McpServerConfig, ...]:
-    """Read and strictly validate a version-1 MCP configuration."""
+    """读取并严格校验 version 1 的 MCP 配置。"""
     path = Path(config_path).expanduser().resolve(strict=False)
     if not path.is_file():
         raise _config_error("config_not_found", "MCP 配置文件不存在")
@@ -331,7 +331,7 @@ def _checked_arguments(schema: Mapping[str, Any], arguments: Mapping[str, Any]) 
 
 
 class McpRuntime:
-    """Own enabled MCP subprocesses and expose a safe synchronous interface."""
+    """持有已启用的 MCP 子进程，并暴露安全的同步接口。"""
 
     def __init__(self, config_path: Path | str | None = None) -> None:
         self._configs = () if config_path is None else load_mcp_config(config_path)

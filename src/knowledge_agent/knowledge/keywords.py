@@ -1,4 +1,4 @@
-"""Shared keyword normalization for indexing and retrieval."""
+"""索引与检索共享的关键词规范化。"""
 
 from __future__ import annotations
 
@@ -11,5 +11,5 @@ _KEYWORD_TOKEN = re.compile(
 
 
 def extract_keywords(text: str) -> tuple[str, ...]:
-    """Return unique normalized keywords in their first-seen order."""
+    """按首次出现顺序返回去重后的规范化关键词。"""
     return tuple(dict.fromkeys(token.lower() for token in _KEYWORD_TOKEN.findall(text)))

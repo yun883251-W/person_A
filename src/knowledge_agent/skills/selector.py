@@ -1,7 +1,7 @@
-"""Bounded automatic Skill selection for one knowledge step.
+"""针对单个知识步骤的有界自动 Skill 选择。
 
-Runs after routing and before retrieval.  It sees public metadata only, executes
-no tools, and keeps selection scoped to the current knowledge step.
+在路由之后、检索之前运行。它只看到公开元数据，不执行任何工具，
+并将选择范围限定在当前知识步骤内。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ class SkillSelection:
 
 @dataclass(frozen=True, slots=True)
 class SkillCatalogEntry:
-    """Path-free public metadata supplied to rules or the optional model."""
+    """提供给规则或可选模型的、无路径的公开元数据。"""
 
     skill_id: str
     name: str
@@ -94,7 +94,7 @@ class _InvalidModelOutput(ValueError):
 
 
 def normalize_skill_request(skill_mode: str | None = None, skill_id: str | None = None) -> SkillRequest:
-    """Normalize explicit and legacy requests without silently changing them."""
+    """规范化显式请求和旧版请求，但不静默改变其含义。"""
     if skill_mode is not None and not isinstance(skill_mode, str):
         raise TypeError("skill_mode must be a string or None")
     if skill_id is not None and not isinstance(skill_id, str):
@@ -114,7 +114,7 @@ def normalize_skill_request(skill_mode: str | None = None, skill_id: str | None 
 
 
 def snapshot_skill_catalog(catalog: Sequence[object], *, settings: SkillSelectionSettings | None = None) -> tuple[SkillCatalogEntry, ...]:
-    """Copy only bounded public fields; reject malformed or duplicate entries."""
+    """只复制有界的公开字段；拒绝格式错误或重复的条目。"""
     cfg = settings or SkillSelectionSettings()
     allowed, seen, result = frozenset(cfg.allowed_skill_ids), set(), []
     used = 0
@@ -217,7 +217,7 @@ def _messages(question: str, context: Sequence[object], catalog: tuple[SkillCata
 
 
 def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[object] | None = None, context: Sequence[object] = (), visible_context: str = "", model_invoker: Callable[[Sequence[object]], object] | None = None, remaining_model_calls: int = 0, settings: SkillSelectionSettings | None = None) -> SkillSelection:
-    """Select once; hybrid classification reserves one model call for answering."""
+    """只选择一次；混合分类为回答保留一次模型调用。"""
     if not isinstance(request, SkillRequest) or not isinstance(question, str):
         raise TypeError("invalid selection request")
     if not isinstance(remaining_model_calls, int) or isinstance(remaining_model_calls, bool) or remaining_model_calls < 0:
@@ -227,7 +227,7 @@ def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[obje
         return _decision(request, None, "disabled", "skill_disabled")
     if request.mode == "manual":
         assert request.skill_id is not None
-        # Validation/loading occurs once in load_selected_skill, before retrieval.
+        # 校验/加载在 load_selected_skill 中只执行一次，且在检索之前。
         return _decision(request, request.skill_id, "manual", "skill_manual")
     try:
         candidates = discover_skill_catalog(settings=cfg) if catalog is None else snapshot_skill_catalog(catalog, settings=cfg)
@@ -258,12 +258,12 @@ def select_skill(question: str, *, request: SkillRequest, catalog: Sequence[obje
 
 
 def strategy_id_for_skill(selected_skill_id: str | None) -> StrategyId:
-    """Use a fixed mapping; skill text can never provide executable strategy code."""
+    """使用固定映射；技能文本永远不能提供可执行策略代码。"""
     return _STRATEGIES.get(selected_skill_id, "default")
 
 
 def load_selected_skill(selection: SkillSelection) -> SelectedSkillSnapshot:
-    """Freeze the selected instructions before retrieval."""
+    """在检索之前冻结选中的指令。"""
     try:
         loaded = load_skill(selection.selected_skill_id) if selection.selected_skill_id else None
     except Exception:
@@ -278,7 +278,7 @@ def load_selected_skill(selection: SkillSelection) -> SelectedSkillSnapshot:
 
 
 def select_skill_for_step(question: str, *, request: SkillRequest, route: str = "knowledge", execute: bool = True, **kwargs: Any) -> SkillSelection:
-    """Gate selection per step so skipped, direct, and MCP work has no side effects."""
+    """按步骤控制选择，使跳过、直接回答和 MCP 操作没有副作用。"""
     if not execute or route != "knowledge":
         return _decision(request, None, "disabled", "skill_step_skipped" if not execute else "skill_non_knowledge_route")
     return select_skill(question, request=request, **kwargs)

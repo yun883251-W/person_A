@@ -48,7 +48,7 @@ PageOffset = Annotated[
 
 
 class _PublicModel(BaseModel):
-    """Base for the deliberately small, stable HTTP JSON contract."""
+    """刻意保持精简、稳定的 HTTP JSON 契约基类。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -98,8 +98,8 @@ class AskRequest(_PublicModel):
 
     @model_validator(mode="after")
     def validate_skill_request(self) -> AskRequest:
-        # Validate the same contract as CLI/Agent without loading skill files or
-        # turning an omitted mode into an implicit request for automatic routing.
+        # 与 CLI/Agent 校验同一套契约，但不加载技能文件，
+        # 也不把省略的 mode 变成隐式自动路由请求。
         normalize_skill_request(self.skill_mode, self.skill_id)
         return self
 
@@ -139,7 +139,7 @@ class AnswerSourceResponse(_PublicModel):
 
 
 class TraceEventResponse(_PublicModel):
-    """One observable execution stage, without messages or tool payloads."""
+    """一个可观测的执行阶段，不包含消息或工具载荷。"""
 
     sequence: int = Field(ge=0, strict=True)
     stage: TraceStage
@@ -173,7 +173,7 @@ class TraceEventResponse(_PublicModel):
 
 
 class AnswerDiagnosticsResponse(_PublicModel):
-    """Public status/validation facts only; private model text has no API field."""
+    """只包含公开的状态/校验事实；私有模型文本没有对应 API 字段。"""
 
     declared_status: DeclaredAnswerStatus | None = None
     validation_status: AnswerValidationStatus
@@ -183,7 +183,7 @@ class AnswerDiagnosticsResponse(_PublicModel):
 
 
 class TurnTraceResponse(_PublicModel):
-    """Completed turn summary shared by answers and persisted history."""
+    """回答与持久化历史共用的已完成轮次执行摘要。"""
 
     schema_version: Literal[1] = 1
     trace_id: str
@@ -242,7 +242,7 @@ class SessionBusinessStateResponse(_PublicModel):
 
 
 class AssessmentQuestionResponse(_PublicModel):
-    """The current question only; the stored questionnaire stays private."""
+    """只包含当前题目；已存储的问卷保持私有。"""
 
     id: int = Field(ge=0, le=47, strict=True)
     number: int = Field(ge=1, strict=True)
@@ -255,7 +255,7 @@ class AssessmentOptionResponse(_PublicModel):
 
 
 class AssessmentResponse(_PublicModel):
-    """Public progress and result, without submitted answers or cached pages."""
+    """公开的进度与结果，不包含已提交答案或缓存题目页。"""
 
     test_id: str
     status: Literal["active", "paused", "ready", "completed", "cancelled"]
@@ -267,14 +267,14 @@ class AssessmentResponse(_PublicModel):
 
 
 class TopicBindingResponse(_PublicModel):
-    """Same-request user-topic reference, distinct from an answer dependency."""
+    """同一请求内的用户主题引用，与答案依赖不同。"""
 
     topic: str = Field(min_length=1, max_length=200)
     source_step_id: Literal["P1", "P2"]
 
 
 class PlanStepResponse(_PublicModel):
-    """Observable work and outcome for one bounded task step."""
+    """单个有界任务步骤的可观测工作与结果。"""
 
     step_id: str
     goal: str
@@ -292,7 +292,7 @@ class PlanStepResponse(_PublicModel):
 
 
 class PlanSummaryResponse(_PublicModel):
-    """Final task summary; excludes internal prompts and model reasoning."""
+    """最终任务摘要；不包含内部提示词或模型推理。"""
 
     version: Literal[1]
     status: Literal["completed", "partial", "failed", "needs_clarification"]

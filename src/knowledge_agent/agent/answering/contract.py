@@ -1,8 +1,8 @@
-"""Parse a small answer-status protocol without trusting self-reported evidence.
+"""解析一个小的回答状态协议，但不信任模型自报的证据。
 
-This is a formatting contract, not a factual entailment checker. A status label
-never exempts a substantive answer from the current-turn citation checks. Only
-short, entirely non-factual refusals/questions can be published without sources.
+这是格式契约，不是事实蕴含检查器。状态标签绝不能让实质性回答
+豁免当前轮次的引用检查。只有简短、完全非事实性的拒答/提问
+才能在没有来源的情况下发布。
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ _HEADER_START = re.compile(r"^ANSWER_STATUS\b", re.IGNORECASE | re.MULTILINE)
 _SENTENCE_END = re.compile(r"(?<=[。！？!?])\s*|\n+|(?<=[.])\s+(?=[A-Z])")
 _DECORATION = re.compile(r"^\s*(?:[-*]\s+|\*\*|#+\s*)|\*\*$")
 
-# Deliberately anchored to statements about this response/material, rather than
-# tutorial words such as “部分”, “没有” or “请说明” appearing anywhere in prose.
+# 刻意只锚定关于本回答/材料的陈述，而不是散落在正文任意位置的
+# 教程词汇，例如“部分”“没有”或“请说明”。
 _EVIDENCE_REFUSAL = re.compile(
     r"^(?:(?:抱歉|很抱歉|对不起)[，,：:]?\s*)?(?:"
     r"(?:当前|本轮|现有|上述|这些|所给|提供的|检索到的|当前提供的|目前提供的)?"
@@ -114,7 +114,7 @@ class ParsedAnswer:
 
 
 def parse_answer_contract(text: str) -> ParsedAnswer:
-    """Read one leading header; retain legacy unmarked answers for validation."""
+    """读取一个开头头部；保留旧式无标记回答以供校验。"""
     cleaned = text.lstrip("\ufeff").strip()
     first, _, remainder = cleaned.partition("\n")
     header = _HEADER.fullmatch(first.strip())
@@ -143,12 +143,11 @@ def _sentence_kind(sentence: str) -> RefusalKind | None:
 
 
 def plain_refusal_kind(text: str) -> RefusalKind | None:
-    """Accept only a bounded refusal/question, never a labelled factual essay.
+    """只接受有界的拒答/提问，绝不接受带标签的事实性长文。
 
-    Every sentence must describe a refusal, request needed input, or state the
-    assistant's scope. Unknown extra prose makes the entire response ineligible
-    for the citation exemption. This intentionally favors a safe explanation
-    over publishing an unverified answer from a nonconforming model.
+    每句话都必须描述拒答、请求所需输入，或说明助手的能力范围。
+    出现未知的额外文字会使整个回答失去引用豁免资格。
+    这里刻意优先给出安全的说明，而不是发布不符合格式的模型回答。
     """
     if len(text) > 600 or _UNSAFE_REFUSAL_CONTENT.search(text):
         return None
@@ -159,8 +158,8 @@ def plain_refusal_kind(text: str) -> RefusalKind | None:
     for sentence in sentences:
         kind = _sentence_kind(sentence)
         if kind is not None:
-            # A refusal followed by “，RAG 是……” is still a factual answer;
-            # do not let its opening clause grant a citation exemption.
+            # 拒答后接“，RAG 是……”仍属于事实性回答；
+            # 不得让其开头从句获得引用豁免。
             if kind != "needs_clarification":
                 clauses = re.split(r"[，,；;]", sentence)
                 for clause in clauses[1:]:
@@ -180,7 +179,7 @@ def plain_refusal_kind(text: str) -> RefusalKind | None:
 
 
 def has_evidence_gap(text: str) -> bool:
-    """Recognize a dedicated gap sentence, not incidental tutorial vocabulary."""
+    """识别专门的缺口句，而不是偶然出现的教程词汇。"""
     return any(
         _EVIDENCE_REFUSAL.fullmatch(_DECORATION.sub("", sentence)) is not None
         for sentence in _sentences(text)
@@ -188,7 +187,7 @@ def has_evidence_gap(text: str) -> bool:
 
 
 def has_scope_refusal(text: str) -> bool:
-    """A scope refusal mixed with substantive prose must not become success."""
+    """混入实质性文字的越界拒答不得被视为成功。"""
     return any(
         _SCOPE_REFUSAL.fullmatch(clause.strip()) is not None
         for sentence in _sentences(text)

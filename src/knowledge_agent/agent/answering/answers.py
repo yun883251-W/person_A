@@ -29,7 +29,7 @@ from knowledge_agent.observability.trace import finish_trace_safely
 
 
 def _attach_completed_trace(result: AnswerResult, state: TurnState) -> AnswerResult:
-    """Finalize and attach this turn's optional execution trace."""
+    """完成并附加本轮可选的执行 trace。"""
     if state.trace_recorder is None:
         return result
     failed = (
@@ -46,7 +46,7 @@ def _attach_completed_trace(result: AnswerResult, state: TurnState) -> AnswerRes
 
 
 def _attach_routing(result: AnswerResult, decision: RouteDecision) -> AnswerResult:
-    """Attach the validated route without exposing prompts or tool payloads."""
+    """附加已验证的路由，但不暴露 Prompt 或工具载荷。"""
     return replace(
         result,
         routing=RouteSummary(
@@ -58,7 +58,7 @@ def _attach_routing(result: AnswerResult, decision: RouteDecision) -> AnswerResu
     )
 
 
-# MCP clarification remains separate from the knowledge answer/evidence contract.
+# MCP 澄清与知识回答/证据契约相互独立。
 _CLARIFICATION_MARKERS = (
     "请说明",
     "请明确",
@@ -71,7 +71,7 @@ _CLARIFICATION_MARKERS = (
 
 
 def _public_failure_answer(status: AnswerStatus, stop_reason: str | None) -> str:
-    """Return a stable public message without leaking exception details."""
+    """返回稳定的公开消息，不泄露异常细节。"""
     if status == "limit_reached":
         return "已达到本轮处理上限，当前未能生成完整可验证的回答。"
     if stop_reason == "model_empty_response":
@@ -88,7 +88,7 @@ def finalize_mcp_answer(
     result: ModelTurnResult | None,
     state: TurnState,
 ) -> AnswerResult:
-    """Build the public result for an MCP turn without knowledge citations."""
+    """构建 MCP 轮次的公开结果，不含知识库引用。"""
     if state.browser_action_result is not None:
         return state.browser_action_result
     if state.status in {"service_error", "limit_reached"}:
@@ -178,7 +178,7 @@ def finalize_answer(
     result: ModelTurnResult | None,
     state: TurnState,
 ) -> AnswerResult:
-    """Finalize an answer and record the citation-validation outcome."""
+    """完成回答，并记录引用校验结果。"""
     recorder = state.trace_recorder
     finalize_event = (
         recorder.start_event("finalize", "program", step_id=state.step_id) if recorder is not None else None
@@ -222,12 +222,11 @@ def _finalize_answer(
     result: ModelTurnResult | None,
     state: TurnState,
 ) -> AnswerResult:
-    """Validate and resolve the final answer's citations.
+    """校验并解析最终回答中的引用。
 
-    Only ``[S<n>]`` tokens registered in this turn are accepted. Their public
-    rendering is generated from immutable index metadata, and only sources
-    actually cited by the answer are returned. A response requiring evidence
-    is never published as successful when its citations cannot be verified.
+    只接受本轮已注册的 ``[S<n>]`` 标记。其公开渲染由不可变的索引元数据
+    生成，且只返回回答实际引用的来源。需要证据的回答若无法核验引用，
+    绝不作为成功结果发布。
     """
     if state.status in {"service_error", "limit_reached"}:
         status = state.status
@@ -316,17 +315,15 @@ def _finalize_answer(
         )
 
     cited_sources = tuple(state.source_map[source_id] for source_id in cited_ids)
-    # A refusal must never decorate unrelated documents with apparently valid
-    # citations. Check source IDs first, then remove them from a pure refusal's
-    # display text and return no source objects. Historical answers receive this
-    # same validated public body, without the protocol header.
+    # 拒答绝不能给无关文档配上看似有效的引用。先检查来源 ID，
+    # 再从纯拒答的展示文本中移除它们并返回空的来源集合。
+    # 历史回答也会收到同样经过校验的公开正文，只是不带协议头。
     uncited_answer = _SOURCE_TOKEN_RE.sub("", answer).strip()
     refusal = plain_refusal_kind(uncited_answer)
     non_factual_kinds = {"insufficient_evidence", "needs_clarification", "out_of_scope"}
     if refusal is not None:
-        # A verified, purely non-factual refusal is safe to preserve even when
-        # the model picked the wrong header. Its body determines the outcome;
-        # a self-reported “supported” must never turn a refusal green.
+        # 已核验的纯非事实性拒答即使模型选错头部也可以保留。
+        # 其正文决定最终结果；模型自称“supported”绝不能把拒答变成成功。
         status = refusal
         stop_reason = {
             "insufficient_evidence": "model_reported_insufficient_evidence",
@@ -351,10 +348,9 @@ def _finalize_answer(
         )
 
     if parsed.kind in non_factual_kinds:
-        # A malformed refusal is a formatting warning, not evidence that the
-        # request failed technically. Preserve the model's stated business
-        # outcome, but publish only program-authored text. Unknown references
-        # and hand-written metadata were already rejected above this boundary.
+        # 格式错误的拒答是格式警告，不代表请求在技术上失败。
+        # 保留模型声明的业务结果，但只发布程序生成的文本。
+        # 未知引用和手写元数据已在上面的边界处被拒绝。
         status = parsed.kind
         stop_reason = {
             "insufficient_evidence": "model_reported_insufficient_evidence",

@@ -1,7 +1,7 @@
-"""Share bounded extraction of code that is already visible in a conversation.
+"""共享“仅从对话中已可见内容提取有界代码”的能力。
 
-This module only scans text. It never reads paths, imports a named module, or
-executes the user's code. Selection and retrieval use the same extraction rule.
+本模块只扫描文本。它绝不读取路径、导入指定模块或执行用户代码。
+选择器和检索使用同一套提取规则。
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ def _extract(text: str) -> str:
     if fenced:
         return "\n\n".join(fenced)[:MAX_VISIBLE_CODE_CHARS]
 
-    # Unknown language fences do not become Python merely because they contain
-    # parentheses. Outside fences, accept imports, definitions and visible calls.
+    # 未知语言的围栏不会仅仅因为包含括号就被当成 Python。
+    # 在围栏之外，接受 import、定义以及可见的调用。
     plain = _ANY_FENCE.sub("\n", bounded)
     selected: list[str] = []
     active = False
@@ -53,11 +53,11 @@ def _extract(text: str) -> str:
 
 
 def extract_visible_code(question: str, visible_context: str = "") -> tuple[str, str]:
-    """Return visible code plus ``question``/``visible_context`` provenance.
+    """返回可见代码，以及 ``question``/``visible_context`` 的来源标记。
 
-    Current-question code takes precedence over context, whether fenced or bare.
-    A file path alone is not visible code. The output remains capped at 12,000
-    characters and is an analysis subject, never executable authorization.
+    无论是否使用围栏，当前问题中的代码都优先于上下文。
+    仅凭文件路径不算可见代码。输出仍上限为 12,000 个字符，
+    且只作为分析对象，绝不构成可执行授权。
     """
     if not isinstance(question, str) or not isinstance(visible_context, str):
         raise TypeError("question and visible_context must be strings")

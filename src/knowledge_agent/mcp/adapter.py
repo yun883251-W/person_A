@@ -1,7 +1,7 @@
-"""Adapt one immutable MCP tool snapshot to the shared tool registry.
+"""将一个不可变的 MCP 工具快照适配到共享工具注册器。
 
-The adapter borrows an already configured runtime. It never starts, closes, or
-rediscovers that runtime, so each registry is the tool snapshot for one turn.
+适配器借用已配置好的运行时。它绝不启动、关闭或重新发现该运行时，
+因此每个注册器都是某一轮次的工具快照。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ ExecutionContextT = TypeVar("ExecutionContextT")
 
 
 class McpRuntimePort(Protocol):
-    """The synchronous runtime surface used by this adapter."""
+    """该适配器使用的同步运行时接口。"""
 
     def list_tools(self) -> Sequence[McpToolSpec]: ...
 
@@ -48,7 +48,7 @@ class McpRuntimePort(Protocol):
 
 
 class McpAdapterError(ValueError):
-    """Stable, safe registration error without remote schema contents."""
+    """稳定、安全的注册错误，不包含远端 schema 内容。"""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -69,7 +69,7 @@ def _copy_bounded_json(
     max_chars: int,
     invalid_code: str,
 ) -> Any:
-    """Return a type-preserving JSON copy after size/depth/value checks."""
+    """在大小/深度/取值检查后返回保留类型的 JSON 副本。"""
 
     def visit(item: Any, depth: int) -> None:
         if depth > _MAX_JSON_DEPTH:
@@ -124,7 +124,7 @@ def _reject_external_references(value: Any) -> None:
 
 
 def _compile_argument_validator(raw_schema: Mapping[str, Any]):
-    """Compile a Draft 2020-12 validator with network-free local references."""
+    """编译 Draft 2020-12 校验器，仅使用无网络的本地引用。"""
     try:
         schema = _copy_bounded_json(
             raw_schema,
@@ -222,7 +222,7 @@ def _registration_for_spec(
     schema, validate = _compile_argument_validator(spec.input_schema)
 
     def invoke_definition(**arguments: Any) -> dict[str, Any]:
-        """Direct invocation uses the same validation and runtime path."""
+        """直接调用使用与注册器相同的校验和运行时路径。"""
         try:
             checked = validate(arguments)
         except Exception:
@@ -258,11 +258,10 @@ def _registration_for_spec(
 def create_mcp_tool_registry(
     runtime: McpRuntimePort,
 ) -> InMemoryToolRegistry[ExecutionContextT]:
-    """Create a registry from the runtime's current approved-tool snapshot.
+    """根据运行时当前已批准工具的快照创建注册器。
 
-    This performs no lifecycle operation. An unconfigured, disabled, closed, or
-    not-yet-ready runtime naturally yields an empty snapshot. Runtime changes
-    require the caller to build a new registry for the next turn.
+    此过程不执行任何生命周期操作。未配置、已禁用、已关闭或尚未就绪的
+    运行时自然产生空快照。运行时变化后，调用方需为下一轮重新构建注册器。
     """
     try:
         snapshot = tuple(runtime.list_tools())

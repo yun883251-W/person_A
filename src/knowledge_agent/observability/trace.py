@@ -75,7 +75,7 @@ _PROGRESS_OBSERVER: ContextVar[Callable[[dict[str, Any]], None] | None] = Contex
 
 @contextmanager
 def observe_trace_progress(observer: Callable[[dict[str, Any]], None] | None) -> Iterator[None]:
-    """Subscribe only the current worker operation, and always restore its context."""
+    """只订阅当前工作线程操作，并始终恢复原有上下文。"""
     token = _PROGRESS_OBSERVER.set(observer)
     try:
         yield
@@ -90,14 +90,14 @@ def _publish_progress(payload: dict[str, Any]) -> None:
     try:
         observer(payload)
     except Exception:
-        # A disconnected UI or failed optional subscriber must not retry work or
-        # discard an otherwise useful answer. Do not log any payload content.
+        # 断开的 UI 或失败的可选订阅者不得触发重试，
+        # 也不得丢弃本来可用的回答。不要记录任何载荷内容。
         _LOGGER.warning("trace_progress_unavailable")
 
 
 @dataclass(frozen=True, slots=True)
 class TraceEvent:
-    """One observable stage in a turn, ordered by when it started."""
+    """轮次中的一个可观测阶段，按开始时间排序。"""
 
     sequence: int
     stage: TraceStage
@@ -128,7 +128,7 @@ class TraceEvent:
 
 @dataclass(frozen=True, slots=True)
 class TurnTrace:
-    """Immutable summary of the observable execution of one turn."""
+    """单个轮次可观测执行过程的不可变摘要。"""
 
     schema_version: int
     trace_id: str
@@ -160,7 +160,7 @@ class _PendingEvent:
 
 
 class TraceRecorder:
-    """Collect the bounded, observable execution history of exactly one turn."""
+    """收集恰好一个轮次的有界、可观测执行历史。"""
 
     DEFAULT_MAX_EVENTS = 128
     MAX_DISPLAY_STRING_LENGTH = 256
@@ -232,7 +232,7 @@ class TraceRecorder:
         strategy_id: str | None = None,
         step_id: str | None = None,
     ) -> int:
-        """Start an event and return its recorder-local opaque handle."""
+        """开始一个事件并返回记录器内部的不透明句柄。"""
 
         self._ensure_active()
         handle = self._next_handle
@@ -253,8 +253,8 @@ class TraceRecorder:
             strategy_id=self._bounded(strategy_id),
             step_id=self._bounded(step_id),
         )
-        # Deliberately enumerate safe public fields rather than forward caller
-        # kwargs; prompts, raw tool arguments and evidence never enter this API.
+        # 刻意枚举安全的公开字段，而不是转发调用方的
+        # kwargs；提示词、原始工具参数和证据绝不进入此 API。
         _publish_progress({
             "sequence": handle, "stage": stage, "initiator": initiator,
             "status": "running",
@@ -291,7 +291,7 @@ class TraceRecorder:
         business_type: str | None = None,
         execution_mode: str | None = None,
     ) -> TraceEvent | None:
-        """Finish one event; events omitted by the cap return ``None``."""
+        """结束一个事件；因上限被省略的事件返回 ``None``。"""
 
         self._ensure_active()
         if handle in self._finished_handles:
@@ -342,8 +342,8 @@ class TraceRecorder:
         except (TypeError, ValueError):
             _LOGGER.warning("trace_progress_unavailable")
             return
-        # Tool call IDs and index fingerprints are useful in the final trace,
-        # but unnecessary for the live stage indicator.
+        # 工具调用 ID 和索引指纹对最终 trace 有用，
+        # 但实时阶段指示器不需要它们。
         payload.pop("tool_call_id", None)
         payload.pop("index_version", None)
         _publish_progress(payload)
@@ -362,7 +362,7 @@ class TraceRecorder:
         *,
         error_code: str | None = None,
     ) -> TurnTrace:
-        """Finalize the turn and return the stable immutable snapshot."""
+        """结束轮次并返回稳定的不可变快照。"""
 
         if self._snapshot is not None:
             return self._snapshot
@@ -410,7 +410,7 @@ class TraceRecorder:
         return self._snapshot
 
     def snapshot(self) -> TurnTrace:
-        """Return the finalized snapshot without rebuilding or mutating it."""
+        """返回已定稿的快照，不重建也不修改它。"""
 
         if self._snapshot is None:
             raise RuntimeError("trace has not been finalized")
@@ -558,7 +558,7 @@ def _event_to_dict(event: TraceEvent, label: str) -> dict[str, Any]:
 
 
 def trace_to_dict(trace: TurnTrace) -> dict[str, Any]:
-    """Serialize the allow-listed public fields of a turn trace."""
+    """序列化轮次 trace 中已列入白名单的公开字段。"""
 
     if not isinstance(trace, TurnTrace):
         raise TypeError("trace must be a TurnTrace")
@@ -588,7 +588,7 @@ def trace_to_dict(trace: TurnTrace) -> dict[str, Any]:
 
 
 def trace_from_dict(value: Any) -> TurnTrace:
-    """Validate and deserialize a public turn-trace mapping."""
+    """校验并反序列化公开的轮次 trace 映射。"""
 
     if not isinstance(value, dict):
         raise ValueError("trace must be an object")
@@ -695,11 +695,10 @@ def finish_trace_safely(
     *,
     error_code: str | None = None,
 ) -> TurnTrace | None:
-    """Finalize recording without allowing an expected trace fault to mask a result.
+    """结束记录，同时不让可预期的 trace 故障掩盖业务结果。
 
-    This boundary performs no business work.  In particular, it never retries a
-    model/tool call or persists a turn.  Process-control exceptions such as
-    ``KeyboardInterrupt`` are deliberately not caught.
+    该边界不执行任何业务工作。特别地，它绝不重试模型/工具调用，
+    也不持久化轮次。``KeyboardInterrupt`` 等进程控制异常刻意不捕获。
     """
 
     try:

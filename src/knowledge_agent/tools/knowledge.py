@@ -29,7 +29,7 @@ KnowledgeToolResult = dict[str, Any]
 
 
 class SectionReadResult(Protocol):
-    """Source-preserving section data required by the section reader."""
+    """小节读取器所需的、保留来源信息的片段数据。"""
 
     source_path: str
     heading_path: tuple[str, ...]
@@ -41,7 +41,7 @@ class SectionReadResult(Protocol):
 
 
 class KnowledgeRetrieverPort(Protocol):
-    """Retrieval operations consumed by the two knowledge tools."""
+    """两个知识工具共同使用的检索操作。"""
 
     @property
     def index_version(self) -> str: ...
@@ -58,7 +58,7 @@ class KnowledgeRetrieverPort(Protocol):
 
 
 class KnowledgeTurnState(Protocol):
-    """The minimal mutable per-turn state shared by the knowledge tools."""
+    """知识工具共享的最小可变轮次内状态。"""
 
     evidence: MutableMapping[str, RetrievalResult]
     retrieval_status: RetrievalStatus
@@ -67,26 +67,26 @@ class KnowledgeTurnState(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeToolDependencies:
-    """Explicit dependencies passed to executors without importing the Agent."""
+    """显式传入执行器的依赖，避免导入 Agent。"""
 
     retriever: KnowledgeRetrieverPort
     state: KnowledgeTurnState
 
 
 class SearchKnowledgeExecutor(Protocol):
-    """Input/output contract for ``search_knowledge``."""
+    """``search_knowledge`` 的输入/输出契约。"""
 
     def __call__(self, query: str) -> KnowledgeToolResult: ...
 
 
 class ReadKnowledgeSectionExecutor(Protocol):
-    """Input/output contract for ``read_knowledge_section``."""
+    """``read_knowledge_section`` 的输入/输出契约。"""
 
     def __call__(self, chunk_id: str) -> KnowledgeToolResult: ...
 
 
 class SearchKnowledgeInput(BaseModel):
-    """Arguments accepted by the knowledge search tool."""
+    """知识搜索工具接受的参数。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -97,7 +97,7 @@ class SearchKnowledgeInput(BaseModel):
 
 
 class ReadKnowledgeSectionInput(BaseModel):
-    """Arguments accepted by the section-reading tool."""
+    """小节读取工具接受的参数。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -124,7 +124,7 @@ def create_search_executor(
     retriever: KnowledgeRetrieverPort,
     state: KnowledgeTurnState,
 ) -> SearchKnowledgeExecutor:
-    """Wrap hybrid retrieval as a structured, turn-scoped tool executor."""
+    """将混合检索包装为结构化、限定于当前轮次的工具执行器。"""
 
     def search_knowledge(query: str) -> KnowledgeToolResult:
         try:
@@ -221,7 +221,7 @@ def create_section_executor(
     max_chunks: int = 8,
     max_chars: int = 8_000,
 ) -> ReadKnowledgeSectionExecutor:
-    """Wrap bounded section reads with turn-scoped ID and version checks."""
+    """包装有界小节读取，并执行轮次内 ID 与版本校验。"""
 
     def read_knowledge_section(chunk_id: str) -> KnowledgeToolResult:
         anchor = state.evidence.get(chunk_id)
@@ -342,7 +342,7 @@ def create_knowledge_tool_registry(
     max_section_chunks: int = 8,
     max_section_chars: int = 8_000,
 ) -> InMemoryToolRegistry[KnowledgeToolDependencies]:
-    """Create the two knowledge-tool registrations without doing any I/O."""
+    """创建两个知识工具注册项，不执行任何 I/O。"""
 
     def search_definition(query: str) -> KnowledgeToolResult:
         raise RuntimeError("knowledge tools must be executed through the registry")

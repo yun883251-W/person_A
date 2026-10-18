@@ -14,7 +14,7 @@ from ..schemas import HealthResponse, SkillListResponse, SkillResponse
 
 
 def register_routes(application: FastAPI, *, web_directory: Path) -> None:
-    """Register stateless system endpoints and the local UI assets."""
+    """注册无状态系统端点与本地网页静态资源。"""
     # 只公开网页资源目录；仓库、配置、文档和数据库不通过静态路由暴露。
     application.mount(
         "/assets",

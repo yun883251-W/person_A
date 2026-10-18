@@ -1,11 +1,9 @@
-"""Bounded task planning; execution and budgets belong to the owning Agent.
+"""有界的任务规划；执行和预算属于所属 Agent。
 
-The planner may describe two or three requested tasks, but cannot call a tool or
-grant permission to one. MCP steps copy their operational goal from the current
-user request. Questionnaire controls remain in the deterministic MBTI session.
-Only the public execution summary may be persisted; it may include a literal
-user-topic binding, but no full tool payload, intermediate answers, model
-reasoning, or questionnaire answers.
+规划器可以描述两到三个请求的任务，但不能调用工具或授予工具权限。
+MCP 步骤从当前用户请求复制其操作目标。问卷控制仍留在确定性的 MBTI 会话中。
+只有公开执行摘要可以持久化；它可以包含字面的用户主题绑定，
+但不能包含完整工具载荷、中间回答、模型推理或问卷答案。
 """
 
 from __future__ import annotations
@@ -30,23 +28,23 @@ class PlanStep:
     kind: Literal["knowledge", "mcp"]
     depends_on: tuple[str, ...] = ()
     allowed_tool_names: tuple[str, ...] = ()
-    # Host-owned classification of the original clause; never model JSON or
-    # persisted plan data. Reusing it avoids a second semantic classification.
+    # 宿主对原始从句的分类；绝不来自模型 JSON 或
+    # 持久化计划数据。复用它可避免第二次语义分类。
     intent: IntentDecision | None = None
-    # A topic copied from another user clause is not an answer dependency.
+    # 从另一个用户从句复制的主题不是回答依赖。
     topic_binding: TopicBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class TaskPlan:
     steps: tuple[PlanStep, ...]
-    # Runtime provenance only: public/stored plan summaries keep version 1.
+    # 仅运行时来源信息：公开/存储的计划摘要保持 version 1。
     decision_source: Literal["rules", "model", "fallback"] = "rules"
     reason_code: str = "plan_explicit_clauses"
 
 
 class PlanValidationError(ValueError):
-    """Expose a fixed failure code, never a raw model response."""
+    """暴露固定的失败码，绝不暴露原始模型响应。"""
 
     def __init__(
         self, code: str, *, reason_code: str | None = None,
@@ -128,9 +126,9 @@ _STEP_STATUSES = frozenset({
     "service_error", "limit_reached", "out_of_scope", "skipped",
 })
 
-# A temporal order is not a data dependency. Only these explicit references to
-# this request's earlier steps can introduce edges. Quoted/code examples never
-# enter this parser; history and a model response are not dependency sources.
+# 时间顺序不是数据依赖。只有下列对本请求更早步骤的显式引用
+# 才能引入边。被引用/代码示例绝不进入此解析器；
+# 历史和模型响应不是依赖来源。
 _STEP_REFERENCE = re.compile(
     r"(?P<previous>上一步|前一步|前一项|前一个步骤|前一个任务|\bprevious\s+step\b)|"
     r"(?P<count>(?:上述|以上|前面|上面|前)(?:的)?\s*(?P<count_number>[123一二两三])\s*(?:步|个步骤|个任务|项任务))|"
@@ -166,10 +164,10 @@ _AMBIGUOUS_REFERENCE = re.compile(
 
 
 def _operational_text(question: str) -> str:
-    """Ignore quoted examples while retaining a formatted single identifier.
+    """忽略被引用的示例，但保留格式化后的单个标识符。
 
-    A quoted tool name or parameter such as `INTJ` is data in an outer command;
-    an entire quoted command never contributes an action or task separator.
+    被引用的工具名或参数（如 `INTJ`）在外层命令中是数据；
+    完整的引用命令绝不贡献动作或任务分隔符。
     """
     def unquote_identifier(match: re.Match[str]) -> str:
         inner = match.group(0)[1:-1]
@@ -179,7 +177,7 @@ def _operational_text(question: str) -> str:
 
 
 def _is_browser_task_clause(clause: str) -> bool:
-    """Select a possible site action for classification, without authorizing it."""
+    """选择一个可能的站点操作用于分类，但不授权它。"""
     text = _PREFIX.sub("", _operational_text(clause)).strip()
     return bool(_BROWSER_SITE.search(text) and _BROWSER_TASK_LEAD.match(text))
 
@@ -200,7 +198,7 @@ def _masked_plan_text(question: str) -> str:
 
 
 def _numbered_parts(question: str) -> tuple[tuple[int, ...], tuple[str, ...]] | None:
-    """Read a whole numbered request, never a numbered example inside a question."""
+    """读取完整的编号请求，绝不读取问题内部的编号示例。"""
     matches = list(_NUMBERED_TASK.finditer(_masked_plan_text(question)))
     if len(matches) < 2:
         return None
@@ -220,11 +218,11 @@ def _numbered_parts(question: str) -> tuple[tuple[int, ...], tuple[str, ...]] | 
 
 
 def raw_plan_clauses(question: str) -> tuple[str, ...]:
-    """Split task boundaries while retaining exact quoted titles and arguments.
+    """拆分任务边界，同时保留精确的引用标题和参数。
 
-    Quotes and code are masked with equal-length spaces only while locating
-    separators. The returned strings always come from the user's original
-    input. Commas inside an argument description do not create a new task.
+    引号和代码只在定位分隔符时用等长空格遮蔽。
+    返回的字符串始终来自用户的原始输入。
+    参数描述内部的逗号不会创建新任务。
     """
     if not isinstance(question, str) or not question.strip():
         return ()
@@ -255,7 +253,7 @@ def _clauses(question: str) -> tuple[str, ...]:
 
 
 def should_plan(question: str) -> bool:
-    """Choose planning only for explicitly separated, imperative task requests."""
+    """只为显式分隔的命令式任务请求选择规划。"""
     if not isinstance(question, str) or not question.strip():
         return False
     text = _operational_text(question).strip()
@@ -274,7 +272,7 @@ def should_plan(question: str) -> bool:
 
 
 def _reference_is_negated(prefix: str) -> bool:
-    """Recognize a local negative qualifier, never a negation in another clause."""
+    """识别局部否定限定语，绝不识别其他从句中的否定。"""
     segment = re.split(r"[，,；;。\n]", prefix)[-1]
     if re.search(r"(?:不要|不能|不应|别)\s*(?:不|忽略|跳过)", segment):
         raise PlanValidationError("plan_ambiguous_dependency")
@@ -412,10 +410,10 @@ def _has_stateful_assessment(question: str) -> bool:
 
 
 def plan_response_schema() -> dict[str, Any]:
-    """Retain the previous public schema helper for external integrations.
+    """为外部集成保留先前的公开 schema 辅助函数。
 
-    The bounded Agent path now constructs its plan from explicit user clauses
-    and does not generate a dependency graph with a model.
+    有界的 Agent 路径现在从显式用户从句构建计划，
+    不再用模型生成依赖图。
     """
     return {
         "type": "object",
@@ -470,11 +468,11 @@ def _clause_authorizations(
     resolver: Callable[[str], IntentDecision] | None,
     topic_bindings: Mapping[str, TopicBinding] | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, IntentDecision]]:
-    """Classify only possible browser actions, never ordinary knowledge clauses.
+    """只分类可能的浏览器操作，绝不分类普通知识从句。
 
-    Exact tool-name invocations retain their deterministic authorization path.
-    The optional resolver belongs to runner, including all classification costs.
-    Neither a planner response nor an earlier answer can produce authorization.
+    精确工具名调用保留其确定性授权路径。
+    可选解析器属于 runner，并承担所有分类成本。
+    规划器响应或先前的回答都不能产生授权。
     """
     from knowledge_agent.agent.dialogue.intent_types import IntentDecision, IntentKind
 
@@ -504,8 +502,8 @@ def _clause_authorizations(
                 raise PlanValidationError("plan_invalid_clause_intent")
             if decision.kind is IntentKind.NEEDS_CLARIFICATION:
                 if decision.decision_source == "fallback" or decision.reason_code == "browser_bilibili_unavailable":
-                    # A timeout, invalid response or service failure is not an
-                    # unclear user request. Preserve the actual diagnostic.
+                    # 超时、无效响应或服务故障不是
+                    # 不清楚的用户请求。保留实际的诊断信息。
                     raise PlanValidationError(
                         decision.reason_code or "plan_clause_intent_failed",
                         decision_source=decision.decision_source,
@@ -516,12 +514,12 @@ def _clause_authorizations(
                     decision_source=decision.decision_source,
                 )
             if decision.kind is IntentKind.KNOWLEDGE:
-                # Mentioning a site in an explanatory request grants no tool
-                # permission, but should not reject the other knowledge tasks.
+                # 在解释性请求中提及站点不授予工具权限，
+                # 但也不应拒绝其他知识任务。
                 names = ()
             elif decision.kind is not IntentKind.MCP_TOOL:
-                # A discussion, negative command or unresolved target must not
-                # be promoted to execution by the later planning model.
+                # 讨论、否定命令或未解析的目标不得
+                # 被后续规划模型提升为执行。
                 raise PlanValidationError("plan_unconfirmed_clause_action")
             else:
                 names = decision.allowed_tool_names
@@ -546,11 +544,11 @@ def build_plan(
     max_steps: int = 3, max_context_chars: int = 24000,
     clause_intent_resolver: Callable[[str], IntentDecision] | None = None,
 ) -> TaskPlan:
-    """Construct an explicit bounded plan without a model-generated graph.
+    """不借助模型生成的依赖图，构建显式的有界计划。
 
-    The compatibility parameters ``context`` and ``model_invoker`` cannot
-    influence this graph. Browser clause classification can still call its
-    resolver; that caller owns the exact model budget and error provenance.
+    兼容参数 ``context`` 和 ``model_invoker`` 不能影响此依赖图。
+    浏览器从句分类仍可调用其解析器；该调用方持有精确的模型预算
+    和错误来源信息。
     """
     if not isinstance(question, str) or not question.strip():
         raise PlanValidationError("plan_invalid_question")
@@ -595,7 +593,7 @@ def build_plan(
     clause_tools, clause_intents = _clause_authorizations(
         clauses, capabilities, clause_intent_resolver, topic_bindings,
     )
-    # Reject duplicate tool execution before any planned action is dispatched.
+    # 在派发任何计划操作之前，拒绝重复的工具执行。
     requested_names = [name for names in clause_tools.values() for name in names]
     if len(requested_names) != len(set(requested_names)):
         raise PlanValidationError("plan_repeated_tool")
@@ -604,11 +602,11 @@ def build_plan(
         names = clause_tools[goal]
         dependencies = dependencies_by_step[index - 1]
         if names and dependencies:
-            # Tool arguments may use a bound user topic, never another answer.
+            # 工具参数可以使用绑定的用户主题，绝不能使用另一个回答。
             raise PlanValidationError("plan_tool_dependency_unsupported")
         if not names and any(steps[int(key[1:]) - 1].kind != "knowledge" for key in dependencies):
-            # A browser receipt / MCP answer is not a source document. Refuse
-            # this unsupported handoff before executing the external action.
+            # 浏览器回执 / MCP 回答不是来源文档。在执行外部操作
+            # 之前拒绝这种不受支持的交接。
             raise PlanValidationError("plan_knowledge_tool_dependency_unsupported")
         steps.append(PlanStep(
             f"P{index}", goal, "mcp" if names else "knowledge",
@@ -618,7 +616,7 @@ def build_plan(
 
 
 def validate_plan_summary(value: object) -> dict[str, Any]:
-    """Validate and copy the sole plan shape exposed by API, CLI and storage."""
+    """校验并复制 API、CLI 和存储暴露的唯一计划形状。"""
     if not isinstance(value, dict) or set(value) != {"version", "status", "steps"}:
         raise PlanValidationError("plan_invalid_summary")
     if type(value["version"]) is not int or value["version"] != 1:

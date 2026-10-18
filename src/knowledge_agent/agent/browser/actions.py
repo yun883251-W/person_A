@@ -1,10 +1,10 @@
-"""Recognize one current Bilibili search request and its literal topic.
+"""识别当前轮次的一个 B 站搜索请求及其字面主题。
 
-The browser MCP tool owns navigation. This module supplies a narrow routing
-boundary and can extract a literal topic after that same boundary accepts it.
-The caller must validate provenance and arguments at the execution boundary.
-Quoted commands, explanations, hypothetical requests and compound work do not
-authorize browser actions. A quoted search topic is ordinary input data.
+浏览器 MCP 工具负责导航。本模块提供一条狭窄的路由边界，
+并能在同一边界接受请求后提取字面主题。
+调用方必须在执行边界校验来源和参数。
+被引用的命令、解释、假设性请求和复合任务都不授权浏览器操作。
+被引用的搜索主题只是普通输入数据。
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ _GENERIC_TOPIC_RE = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class BrowserActionDecision:
-    """A routing result with optional verbatim topic evidence, not tool args."""
+    """携带可选逐字主题证据的路由结果，而不是工具参数。"""
 
     kind: Literal["search", "needs_clarification", "knowledge", "semantic_candidate"]
     reason_code: str
@@ -99,7 +99,7 @@ def _topic_text(value: str) -> str:
 
 
 def _matched_topic(match: re.Match[str]) -> str:
-    """Trim only request framing and leave the topic as a literal substring."""
+    """只裁掉请求的框定语，主题保留为字面子串。"""
     raw_topic = match.group("topic").strip()
     if match.group("action").startswith(("找", "看")) or match.group("action") == "观看":
         raw_topic = _QUANTITY_PREFIX_RE.sub("", raw_topic, count=1)
@@ -107,7 +107,7 @@ def _matched_topic(match: re.Match[str]) -> str:
 
 
 def is_explicit_bilibili_topic(topic: str) -> bool:
-    """Require a named topic from this input, not history or generic video words."""
+    """要求本次输入给出明确主题，而不是依赖历史或泛化的视频词。"""
     if not isinstance(topic, str):
         return False
     value = _topic_text(topic)
@@ -125,11 +125,11 @@ def is_explicit_bilibili_topic(topic: str) -> bool:
 
 
 def _unknown_bilibili_request(text: str) -> BrowserActionDecision:
-    """Separate genuinely unknown wording from blocked quotes and discussions.
+    """把真正未知的措辞与被引用的命令、讨论区分开。
 
-    This gate never authorizes a tool. It admits only one current, explicit
-    request to a pure classifier, which must still establish a named topic.
-    Quoted titles can be data, but the destination and request must be unquoted.
+    这个闸门绝不授权工具。它只把当前的一条显式请求交给纯分类器，
+    分类器仍必须确认明确主题。被引用的标题可以是数据，
+    但目标站点和请求本身不得带引号。
     """
     discussion = BrowserActionDecision("knowledge", "browser_bilibili_discussion")
     unquoted = _QUOTED_RE.sub(" ", text).strip().rstrip("。.!！?？")
@@ -151,14 +151,13 @@ def _unknown_bilibili_request(text: str) -> BrowserActionDecision:
 
 
 def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
-    """Recognize only a complete site-specific command in the current turn.
+    """只识别当前轮次中完整的站点专用命令。
 
-    None leaves unrelated requests to existing intent handling. Unknown wording
-    with an explicit current request can be classified once in hybrid mode.
-    Definite discussions, negations and quoted commands never enter that path.
-    Topic evidence alone is not an execution grant; the executor checks provenance.
-    A missing-topic result is specific to a single positive search request;
-    generic semantic ambiguity must not be promoted to this result by callers.
+    None 会把这之外的请求留给现有意图处理。显式的当前请求若措辞未知，
+    可以在混合模式下做一次分类。明确的讨论、否定和被引用的命令
+    绝不进入该路径。主题证据本身不是执行许可；执行器会校验来源。
+    缺少主题的结果只对应单条正向搜索请求；
+    调用方不得把泛化的语义歧义提升为该结果。
     """
     if not isinstance(question, str) or not question.strip():
         return None
@@ -178,21 +177,21 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
         return _unknown_bilibili_request(text)
 
     raw_topic = match.group("topic")
-    # Do not treat learning/viewing questions or a discussion of the sentence as
-    # an instruction to navigate. Search topics may legitimately contain words
-    # such as 教程、实现、代码、工具, so those are not global execution blockers.
+    # 不要把学习/观看类问题或对这句话的讨论当作导航指令。
+    # 搜索主题里可以合法出现“教程、实现、代码、工具”等词，
+    # 因此这些不是全局执行阻断词。
     unquoted_topic = _QUOTED_RE.sub(" ", raw_topic).strip().rstrip("。.!！?？")
     if _META_REFERENCE_RE.search(unquoted_topic):
         return discussion
     action = match.group("action")
     if action.startswith(("找", "看")) or action == "观看":
-        # 找不到/看不了 describes a problem, and question wording may omit
-        # punctuation. Quoted work titles remain ordinary search topics.
+        # 找不到/看不了描述的是问题，问句措辞可能省略
+        # 标点。被引用的作品标题仍属于普通搜索主题。
         if re.search(r"^不(?:了|到|见|成)|怎么|如何|是否|为什么|是什么意思|什么意思", unquoted_topic):
             return discussion
     if action.startswith(("学", "看", "找")) or action == "观看":
-        # Viewing intent means searching for the named content, not selecting
-        # or playing a video. Keep the same explicit-request boundary as 学习.
+        # 观看意图指搜索指定内容，而不是选择
+        # 或播放视频。保持与“学习”相同的显式请求边界。
         if (
             not action.startswith("找")
             and not match.group("browser")
@@ -235,6 +234,6 @@ def extract_bilibili_topic(question: str) -> str | None:
 
 
 def is_bilibili_search_request(question: str) -> bool:
-    """Whether this turn authorizes the single natural-language search action."""
+    """本轮是否授权这个唯一的自然语言搜索操作。"""
     decision = classify_bilibili_request(question)
     return decision is not None and decision.kind == "search"

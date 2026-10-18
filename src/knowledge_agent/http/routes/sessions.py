@@ -24,7 +24,7 @@ from ..serialization import _session_response, _turn_response
 
 
 def register_routes(application: FastAPI) -> None:
-    """Register session and persisted-history endpoints."""
+    """注册会话与持久化历史相关端点。"""
     @application.post(
         "/sessions",
         response_model=SessionResponse,

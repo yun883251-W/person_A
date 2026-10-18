@@ -22,7 +22,7 @@ from typing import Any
 
 
 class DialogueIntent(str, Enum):
-    """The user's conversation-level intent, independent of business routing."""
+    """用户的会话级意图，与业务路由无关。"""
 
     NEW_BUSINESS = "new_business"
     CONTINUE_BUSINESS = "continue_business"
@@ -35,7 +35,7 @@ class DialogueIntent(str, Enum):
 
 
 class BusinessType(str, Enum):
-    """The business domain for a request; unknown domains are represented by None."""
+    """请求的业务领域；未知领域用 None 表示。"""
 
     KNOWLEDGE = "knowledge"
     BILIBILI_SEARCH = "bilibili_search"
@@ -44,7 +44,7 @@ class BusinessType(str, Enum):
 
 
 class ExecutionMode(str, Enum):
-    """How a request is executed, independently of its business domain."""
+    """请求的执行方式，与业务领域无关。"""
 
     SINGLE = "single"
     PLAN = "plan"
@@ -59,7 +59,7 @@ _SLOT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
 
 
 class DialogueContractError(ValueError):
-    """A stable validation failure that never embeds private input in its message."""
+    """稳定的校验失败，其消息绝不嵌入私有输入。"""
 
     def __init__(self, code: str, message: str = "Invalid dialogue contract") -> None:
         super().__init__(message)
@@ -141,10 +141,10 @@ def _slot_names(value: Sequence[str], code: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class IntentProposal:
-    """Legacy proposal DTO kept for compatibility, never execution authority.
+    """为兼容性保留的旧提议 DTO，绝不具有执行权限。
 
-    The unified runtime uses intent_types.IntentDecision plus host lifecycle
-    rules; it does not run a second model to emit this conversation schema.
+    统一运行时使用 intent_types.IntentDecision 加宿主生命周期规则；
+    它不会运行第二个模型来输出这个对话 schema。
     """
 
     intent: DialogueIntent
@@ -177,7 +177,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def parse_intent_proposal(value: str | Mapping[str, Any]) -> IntentProposal:
-    """Parse exactly the five model-owned fields and reject duplicate JSON keys."""
+    """精确解析五个模型自有字段，并拒绝重复的 JSON 键。"""
 
     if type(value) is str:
         if not value or len(value) > MAX_MODEL_JSON_LENGTH:
@@ -297,7 +297,7 @@ def validate_business_slots(
     *,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate confirmed arguments without treating declared missing values as confirmed."""
+    """校验已确认参数，但不把声明的缺失值当作已确认。"""
 
     if not isinstance(business_type, BusinessType):
         _fail("invalid_business_type")
@@ -377,7 +377,7 @@ class SlotSource(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class SlotBinding:
-    """Host-created provenance for one confirmed parameter."""
+    """宿主为某个已确认参数创建的来源信息。"""
 
     slot_name: str
     value: Any
@@ -413,7 +413,7 @@ class DecisionSource(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class DialogueDecision:
-    """Program-validated decision. Only this type may cross into execution routing."""
+    """经程序校验的决定。只有该类型可以进入执行路由。"""
 
     intent: DialogueIntent
     business_type: BusinessType | None
@@ -427,8 +427,8 @@ class DialogueDecision:
     expected_revision: int = 0
     allowed_tool_names: tuple[str, ...] = ()
     raw_plan_request: str = ""
-    # Accepted routing data only. Never retain an earlier classifier decision:
-    # it must not override this decision after semantic clarification.
+    # 只保留已接受的路由数据。绝不保留更早的分类器决定：
+    # 语义澄清之后，它不得覆盖当前决定。
     retrieval_query: str = ""
     direct_response_kind: str = ""
     authorized_user_input: str = ""
@@ -495,7 +495,7 @@ class DialogueDecision:
 def validate_dialogue_decision(
     decision: DialogueDecision, *, tool_schema: Mapping[str, Any] | None = None
 ) -> DialogueDecision:
-    """Revalidate a trusted decision at the execution boundary."""
+    """在执行边界重新校验可信决定。"""
 
     if not isinstance(decision, DialogueDecision):
         _fail("invalid_dialogue_decision")
@@ -504,9 +504,9 @@ def validate_dialogue_decision(
             _fail("slots_without_business")
         return decision
     if decision.intent in {DialogueIntent.NEW_BUSINESS, DialogueIntent.CONTINUE_BUSINESS}:
-        # Generic, already-authorized MCP requests keep their existing executor
-        # contract in phase one. They are deliberately not made resumable and
-        # therefore have no cross-turn argument payload to validate here.
+        # 第一阶段中，通用且已获授权的 MCP 请求保持既有执行器
+        # 契约。它们刻意不做成可恢复的，因此这里没有
+        # 需要校验的跨轮参数载荷。
         if (
             decision.business_type is BusinessType.MCP_TOOL
             and not decision.confirmed_slots and not decision.missing_slots
@@ -525,7 +525,7 @@ def validate_dialogue_decision(
 
 @dataclass(frozen=True, slots=True)
 class PendingBusiness:
-    """The sole resumable, not-yet-dispatched request for a session."""
+    """一个会话中唯一可恢复、尚未派发的请求。"""
 
     session_id: str
     business_type: BusinessType
@@ -677,7 +677,7 @@ def _validate_timestamp(value: object) -> None:
 
 
 def validate_business_state(state: SessionBusinessState) -> SessionBusinessState:
-    """Validate all persisted invariants without repairing or resetting state."""
+    """校验所有持久化不变量，但不修复或重置状态。"""
 
     if not isinstance(state, SessionBusinessState):
         _fail("invalid_business_state")
@@ -770,7 +770,7 @@ def _pending_to_payload(pending: PendingBusiness) -> dict[str, Any]:
 
 
 def state_to_payload(state: SessionBusinessState) -> dict[str, Any]:
-    """Return the complete, strict persistence payload (not safe for clients)."""
+    """返回完整、严格的持久化载荷（不适合直接给客户端）。"""
 
     state = validate_business_state(state)
     focus = None
@@ -835,7 +835,7 @@ def _pending_from_payload(value: object) -> PendingBusiness:
 
 
 def state_from_payload(value: Mapping[str, Any]) -> SessionBusinessState:
-    """Decode only the current schema; unknown or corrupt states fail closed."""
+    """只解码当前 schema；未知或损坏状态按失败关闭处理。"""
 
     item = _exact_mapping(
         value, {"schema_version", "session_id", "revision", "focus", "pending", "updated_at"},
@@ -860,7 +860,7 @@ def state_from_payload(value: Mapping[str, Any]) -> SessionBusinessState:
 
 
 def public_business_state(state: SessionBusinessState) -> dict[str, Any]:
-    """Project only display-safe, non-authorizing state for HTTP/CLI consumers."""
+    """只为 HTTP/CLI 消费者投影可安全展示、不授予权限的状态。"""
 
     state = validate_business_state(state)
     if state.focus is None:

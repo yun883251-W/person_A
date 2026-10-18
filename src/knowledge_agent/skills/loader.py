@@ -26,7 +26,7 @@ from knowledge_agent.tools.registry import InMemoryToolRegistry
 
 @dataclass(frozen=True, slots=True)
 class SkillMetadata:
-    """Lightweight metadata for a discovered skill."""
+    """已发现技能的轻量元数据。"""
 
     skill_id: str
     name: str
@@ -36,7 +36,7 @@ class SkillMetadata:
 
 @dataclass(frozen=True, slots=True)
 class LoadedSkill:
-    """A selected skill together with its complete instruction body."""
+    """选中的技能及其完整指令正文。"""
 
     metadata: SkillMetadata
     instructions: str
@@ -47,7 +47,7 @@ ExecutionContextT = TypeVar("ExecutionContextT")
 
 @dataclass(frozen=True, slots=True)
 class PreparedSkill(Generic[ExecutionContextT]):
-    """Prompt guidance and the closed tool registry for one selected skill."""
+    """某个选中技能的提示词指引和封闭工具注册器。"""
 
     metadata: SkillMetadata
     instructions: str
@@ -60,7 +60,7 @@ _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 def _parse_skill_file(skill_file: Path) -> tuple[str, str]:
-    """Parse dependency-free ``key: scalar`` YAML front matter."""
+    """解析无依赖的 ``key: scalar`` YAML front matter。"""
     raw = skill_file.read_bytes()
     if len(raw) > MAX_SKILL_FILE_SIZE:
         raise ValueError(
@@ -108,7 +108,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[str, str]:
 
 
 def discover_skills(skills_root: Path | None = None) -> list[SkillMetadata]:
-    """Discover immediate child skills in deterministic ``skill_id`` order."""
+    """按稳定的 ``skill_id`` 顺序发现直接子目录中的技能。"""
     root = (skills_root or SKILLS_ROOT).resolve()
     if not root.exists():
         return []
@@ -147,7 +147,7 @@ def discover_skills(skills_root: Path | None = None) -> list[SkillMetadata]:
     return discovered
 
 def load_skill(skill_id: str, skills_root: Path | None = None) -> LoadedSkill:
-    """Load one discovered skill without accepting a caller-supplied path."""
+    """加载一个已发现的技能，不接受调用方提供的路径。"""
     root = (skills_root or SKILLS_ROOT).resolve()
     if not root.exists():
         raise KeyError(f"未知技能: {skill_id}")
@@ -190,7 +190,7 @@ END_SELECTED_SKILL"""
 
 
 def _instruction_body(instructions: str) -> str:
-    """Remove front matter, which is metadata rather than model guidance."""
+    """移除 front matter；它属于元数据，不是模型指引。"""
     lines = instructions.splitlines()
     if lines and lines[0].strip() == "---":
         closing_index = next(
@@ -214,7 +214,7 @@ def prepare_skill(
     skills_root: Path | None = None,
     loaded_skill: LoadedSkill | None = None,
 ) -> PreparedSkill[ExecutionContextT]:
-    """Prepare frozen skill content and restrict it to read-only tools."""
+    """准备冻结的技能内容，并将其限制为只读工具。"""
     loaded = loaded_skill if loaded_skill is not None else load_skill(skill_id, skills_root)
     if loaded.metadata.skill_id != skill_id:
         raise ValueError("Loaded skill does not match the selected skill_id")

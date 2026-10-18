@@ -1,9 +1,9 @@
-"""Bounded background summaries of old, committed knowledge conversations.
+"""对已提交的旧知识对话生成有界后台摘要。
 
-Memory is lossy context, never evidence, tool permission, or assessment state.
-Only public questions and answers enter the summarizer; raw model/tool messages,
-retrieval payloads, traces, and questionnaire snapshots are never included.
-Maintenance runs after the answer transaction and never changes its call counts.
+记忆是有损上下文，绝不是证据、工具权限或测评状态。
+只有公开问题和回答会进入摘要器；原始模型/工具消息、
+检索载荷、trace 和问卷快照一律不包含。
+维护在回答事务之后运行，且绝不改变该事务的调用计数。
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class MemorySettings:
 
 @dataclass(frozen=True, slots=True)
 class MemoryUpdate:
-    """Auxiliary usage, separate from AnswerResult.model_calls and tool_calls."""
+    """辅助性用量，独立于 AnswerResult.model_calls 和 tool_calls。"""
 
     status: Literal["not_run", "disabled", "unavailable", "unchanged", "updated", "failed", "conflict"]
     model_calls: int = 0
@@ -85,7 +85,7 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 def safe_summary_text(text: str, *, max_chars: int) -> str:
-    """Remove credentials and old citations before bounding input or restoration."""
+    """在限界输入或恢复之前移除凭据和旧引用。"""
     cleaned = _PRIVATE_KEY_RE.sub("[私钥已省略]", text)
     cleaned = _CODE_BLOCK_RE.sub("[代码块已省略]", cleaned)
     cleaned = _CREDENTIAL_RE.sub("[凭据已省略]", cleaned)
@@ -112,7 +112,7 @@ def _response_summary(response: object, settings: MemorySettings) -> str:
     if getattr(response, "tool_calls", None) or getattr(response, "invalid_tool_calls", None):
         raise ValueError("summary must not call tools")
     content = getattr(response, "content", response)
-    # JSON may escape one Unicode character with six ASCII characters.
+    # JSON 可能把一个 Unicode 字符转义成六个 ASCII 字符。
     if not isinstance(content, str) or not content.strip() or len(content) > settings.max_chars * 6 + 64:
         raise ValueError("invalid summary response size")
     value = json.loads(content, object_pairs_hook=_json_object, parse_constant=_reject_constant)
@@ -128,12 +128,11 @@ def update_session_summary(
     store: SessionStore | None, session_id: str, *, settings: MemorySettings,
     max_history_turns: int, model_invoker: Callable[[Sequence[BaseMessage]], object],
 ) -> MemoryUpdate:
-    """Maintain at most one batch and make at most one auxiliary model call.
+    """至多维护一批，并至多发起一次辅助模型调用。
 
-    The caller must invoke this only after a completed answer has been committed.
-    No new old turns means no model invocation. Non-knowledge turns advance the
-    watermark without entering the prompt. Failed maintenance preserves storage;
-    interrupts are intentionally not caught. No retry occurs inside this function.
+    调用方只能在一份已完成回答提交之后调用本函数。
+    没有新的旧轮次就不调用模型。非知识轮次会推进水位线但不进入提示词。
+    维护失败不会破坏存储；中断按设计不被捕获。本函数内部不做重试。
     """
     if not settings.enabled:
         return MemoryUpdate("disabled")
@@ -186,7 +185,7 @@ def update_session_summary(
         )
         return MemoryUpdate("updated", model_calls=model_calls, record=saved)
     except (SessionSummaryConflictError, SessionNotFoundError):
-        # A clear/delete or competing maintenance must not restore stale memory.
+        # 清空/删除或并发的维护操作不得恢复过期记忆。
         try:
             current = store.load_session_summary(session_id)
         except Exception:

@@ -1,11 +1,9 @@
-"""Bind a Bilibili topic reference to text in this request, never an answer.
+"""把 B 站主题引用绑定到本请求中的文本，绝不绑定到回答。
 
-This module is deliberately narrower than general intent recognition. A full
-positive search/watch request with an otherwise implicit topic may reuse one
-unambiguous subject of earlier knowledge clauses. It cannot authorize a tool,
-consult conversation history, choose between different subjects, or use a
-previous step's generated result. The caller still owns tool availability,
-authorization, argument validation and execution.
+本模块刻意比通用意图识别更窄。一个完整、正向的搜索/观看请求若主题
+隐含，可以复用一个先前知识从句中无歧义的主体。它不能授权工具、
+查询对话历史、在多个不同主体间选择，或使用先前步骤生成的结果。
+调用方仍负责工具可用性、授权、参数校验和执行。
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class TopicBinding:
-    """Runtime provenance copied exclusively from the current user request."""
+    """仅从当前用户请求复制的运行时来源信息。"""
 
     original_clause: str
     topic: str
@@ -25,7 +23,7 @@ class TopicBinding:
 
 
 class TopicReferenceError(ValueError):
-    """A fixed clarification code; do not copy arbitrary input into errors."""
+    """固定的澄清码；不要把任意输入复制进错误消息。"""
 
     def __init__(self, code: str) -> None:
         if code not in {
@@ -36,9 +34,9 @@ class TopicReferenceError(ValueError):
         self.code = code
 
 
-# Entire clauses, not keywords found inside quotations, questions, conditions,
-# or negative instructions, must match this grammar. In particular, no optional
-# arbitrary text may occur between the platform, action and referenced object.
+# 必须由完整从句匹配此语法，而不是引文、问题、条件或否定指令
+# 内部出现的关键词。特别地，平台、操作和引用对象之间
+# 不得出现任意的可选文本。
 _LEAD = (
     r"(?:(?:首先|然后|随后|接着|最后|其次|先|再|请帮我|请你|请|"
     r"麻烦你|麻烦|帮我|替我|为我|给我|我想要|我想|我要|我需要)\s*)*"
@@ -120,11 +118,11 @@ _NO_SUBJECT = frozenset({
 
 
 def _subject_candidate(clause: str) -> tuple[str | None, bool]:
-    """Return a literal subject and whether a knowledge clause is unresolved.
+    """返回字面主体，以及是否存在未解析的知识从句。
 
-    An unsupported/compound knowledge clause remains an ambiguity signal. It
-    must not be silently dropped in favor of another convenient earlier topic.
-    A non-knowledge clause contributes no candidate to this narrow resolver.
+    不受支持/复合的知识从句仍是歧义信号。它不得被静默丢弃，
+    转而采用另一个方便的早期主题。
+    非知识从句不为这个狭窄解析器贡献候选。
     """
     match = _KNOWLEDGE_LEAD.fullmatch(clause) or _KNOWLEDGE_QUESTION.fullmatch(clause)
     if match is None:
@@ -141,8 +139,8 @@ def _subject_candidate(clause: str) -> tuple[str | None, bool]:
         or not any(character.isalnum() for character in subject)
     ):
         return None, True
-    # All transformations remove prefixes/suffixes only. This explicit check
-    # prevents a future extraction change from manufacturing a search topic.
+    # 所有转换只移除前缀/后缀。这个显式检查
+    # 可防止未来的提取逻辑变更凭空制造搜索主题。
     if subject not in clause:
         return None, True
     return subject, False
@@ -151,13 +149,12 @@ def _subject_candidate(clause: str) -> tuple[str | None, bool]:
 def resolve_topic_reference(
     clause: str, previous_clauses: tuple[str, ...],
 ) -> TopicBinding | None:
-    """Resolve only a full positive Bilibili request with an implicit topic.
+    """只解析带隐式主题的完整正向 B 站请求。
 
-    ``None`` means this special path does not apply; normal intent/dependency
-    rules retain ownership. Once this grammar matches, missing or ambiguous
-    source topics request clarification rather than guessing from history or
-    generated answers. Repeated identical topic text is one candidate;
-    provenance always points to its first occurrence, never the nearest result.
+    ``None`` 表示此特殊路径不适用；普通意图/依赖规则仍保有所有权。
+    一旦该语法匹配，缺失或歧义的来源主题会请求澄清，
+    而不是从历史或生成的回答中猜测。重复的相同主题文本算一个候选；
+    来源始终指向其首次出现，绝不是最近的结果。
     """
     if not isinstance(clause, str):
         raise TypeError("clause must be a string")
@@ -186,14 +183,14 @@ def resolve_topic_reference(
 def validate_topic_binding(
     binding: TopicBinding, original_question_clauses: tuple[str, ...],
 ) -> bool:
-    """Re-derive topic provenance for execution or read-only summary display.
+    """为执行或只读摘要展示重新推导主题来源。
 
-    An execution caller must supply freshly split clauses of the actual current
-    request, never clauses reconstructed from a stored plan or model response.
-    A display validator may check stored summary consistency using this helper;
-    that does not make stored data executable. Equality with a fresh resolution
-    checks the exact original action, source position and literal topic together.
-    This helper grants no tool permission by itself.
+    执行调用方必须提供实际当前请求重新拆分出的从句，
+    绝不能提供从存储计划或模型响应重建的从句。
+    展示校验器可以用此辅助函数检查存储摘要的一致性；
+    这不会让存储数据变得可执行。与新鲜解析结果做相等比较，
+    会同时校验确切的原始操作、来源位置和字面主题。
+    此辅助函数本身不授予任何工具权限。
     """
     if (
         not isinstance(binding, TopicBinding)

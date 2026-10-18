@@ -1,9 +1,9 @@
-"""Classify one unknown Bilibili request without tools, history or side effects.
+"""在没有工具、历史和副作用的情况下分类一次未知的 B 站请求。
 
-The deterministic gate in browser_actions decides which inputs may enter here.
-The caller supplies a turn-owned model invoker so this one attempt shares the
-same model-call budget as planning and answering. Its topic is evidence for the
-decision only; executable arguments are still produced by the MCP workflow.
+browser_actions 中的确定性闸门决定哪些输入可以进入这里。
+调用方提供本轮私有的模型调用器，使这次尝试与规划和回答共享
+同一份模型调用预算。其主题仅作为判断证据；
+可执行参数仍由 MCP 工作流生成。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ Never return tool names, tool arguments, URLs, explanations or additional fields
 
 
 class BrowserSemanticValidationError(ValueError):
-    """Carry a fixed public code without exposing provider output."""
+    """携带固定的公开错误码，不暴露 provider 输出。"""
 
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
@@ -72,12 +72,12 @@ def classify_bilibili_semantics(
     model: BaseChatModel | None = None,
     model_invoker: Callable[[Sequence[BaseMessage]], object] | None = None,
 ) -> BrowserActionDecision:
-    """Make at most one classification attempt and strictly validate its JSON.
+    """最多做一次分类尝试，并严格校验其 JSON。
 
-    Reuse the deterministic boundary even when invoked directly. A broad
-    semantic needs_clarification result cannot establish a pending search:
-    it also covers compound, unsupported and ambiguous actions. Only the
-    deterministic browser_bilibili_missing_topic result has that meaning.
+    即使被直接调用，也要复用确定性边界。宽泛的语义
+    needs_clarification 结果不能确立待处理搜索：
+    它同样覆盖复合、不支持和歧义的操作。只有确定性的
+    browser_bilibili_missing_topic 结果才表示该含义。
     """
     boundary = classify_bilibili_request(question)
     if boundary is None:
@@ -129,8 +129,8 @@ def classify_bilibili_semantics(
         raise BrowserSemanticValidationError("browser_bilibili_semantic_invalid_fields")
     if kind == "knowledge":
         return BrowserActionDecision("knowledge", "browser_bilibili_semantic_discussion")
-    # Keep this distinct from browser_bilibili_missing_topic. The two-field
-    # classifier contract cannot prove that a topic is the only missing item.
+    # 与 browser_bilibili_missing_topic 保持区分。两字段的
+    # 分类器契约无法证明“主题”是唯一缺失项。
     return BrowserActionDecision(
         "needs_clarification", "browser_bilibili_semantic_needs_clarification",
         "请说明你想在 B 站搜索的具体主题或作品名称；当前功能只打开搜索结果页。",

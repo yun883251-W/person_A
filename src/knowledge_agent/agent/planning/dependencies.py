@@ -1,8 +1,8 @@
-"""Pass verified answers and immutable source snapshots between plan steps.
+"""在计划步骤之间传递已验证的回答和不可变的来源快照。
 
-Previous prose is background, never a substitute for source text. Each receiving
-step assigns new local citation IDs to the complete snapshots it actually sends
-to its model. No tools, tool receipts, or old citation IDs cross this boundary.
+先前的正文只是背景，绝不能替代来源文本。每个接收步骤都会为其实际
+发送给模型的完整快照分配新的本地引用 ID。
+工具、工具回执或旧引用 ID 都不跨越此边界。
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class DependencyContext:
 
 
 def source_identity(source: AnswerSource) -> tuple[object, ...]:
-    """A citation's complete snapshot identity, excluding its ranking score."""
+    """引用对应的完整快照身份，不含其排序分数。"""
     return (
         source.index_version, source.chunk_id, source.content_hash,
         source.source_path, source.heading_path, source.start_line, source.end_line,
@@ -42,14 +42,14 @@ def source_identity(source: AnswerSource) -> tuple[object, ...]:
 
 
 def evidence_identity(result: RetrievalResult) -> tuple[object, ...]:
-    # Include the actual bytes as well as the declared hash. A malformed or
-    # stale snapshot must not alias different text under a shared chunk ID.
+    # 同时包含实际字节和声明的哈希。格式错误或过期的快照
+    # 不得在共享 chunk ID 下指向不同文本。
     digest = hashlib.sha256(result.chunk.text.encode("utf-8", errors="surrogatepass")).hexdigest()
     return (*source_identity(AnswerSource.from_retrieval_result(result)), digest)
 
 
 def unique_evidence(results: Iterable[RetrievalResult]) -> tuple[RetrievalResult, ...]:
-    """Deduplicate full snapshots; discard conflicting records within a version."""
+    """对完整快照去重；丢弃同一版本内相互冲突的记录。"""
     retained: dict[tuple[object, ...], RetrievalResult] = {}
     snapshot_ids: dict[tuple[str, str], tuple[object, ...]] = {}
     conflicts: set[tuple[str, str]] = set()
@@ -69,7 +69,7 @@ def unique_evidence(results: Iterable[RetrievalResult]) -> tuple[RetrievalResult
 def cited_evidence(
     result: AnswerResult, supplied: Mapping[str, RetrievalResult],
 ) -> tuple[RetrievalResult, ...]:
-    """Export only source snapshots actually supplied and accepted as citations."""
+    """只导出实际提供并被接受为引用的来源快照。"""
     if result.status != "success" or (result.routing is not None and result.routing.route != "knowledge"):
         return ()
     cited = {source_identity(source) for source in result.sources}
@@ -83,7 +83,7 @@ def dependency_step(
     step_id: str, goal: str, result: AnswerResult,
     evidence: tuple[RetrievalResult, ...],
 ) -> DependencyStep:
-    """Create the read-only handoff after the executor checks step success."""
+    """在执行器检查步骤成功后创建只读交接数据。"""
     if result.status != "success" or (result.routing is not None and result.routing.route != "knowledge"):
         raise ValueError("Only completed knowledge answers may supply dependency context")
     snapshots = cited_evidence(result, {str(index): item for index, item in enumerate(evidence)})
@@ -110,10 +110,10 @@ _NEW_FACTS = re.compile(
 
 
 def is_dependency_transform(goal: str, has_dependencies: bool = True) -> bool:
-    """Conservatively identify reshaping of explicitly referenced prior answers.
+    """保守地识别对显式引用的先前回答的改写。
 
-    This rule only decides whether a new search is mandatory. It never grants
-    an operation, changes a dependency, or exempts the answer from citations.
-    Requests for new facts retain the ordinary retrieval path.
+    该规则只决定是否必须发起新搜索。它绝不授予操作权限、
+    改变依赖关系，或让回答豁免引用检查。
+    请求新事实的输入仍走普通检索路径。
     """
     return bool(has_dependencies and _TRANSFORM.search(goal) and not _NEW_FACTS.search(goal))

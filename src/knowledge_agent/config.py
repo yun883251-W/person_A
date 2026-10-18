@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _dotenv_values(path: Path) -> dict[str, str]:
-    """Read the small, dependency-free subset of dotenv syntax used here."""
+    """读取本项目用到的少量、无第三方依赖的 dotenv 语法子集。"""
     if not path.is_file():
         return {}
 
@@ -51,7 +51,7 @@ class IngestSettings:
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeBaseSettings:
-    """Path-only settings shared by read-only knowledge-base operations."""
+    """只读知识库操作共享的、仅包含路径的设置。"""
 
     docs_dir: str
     index_dir: str
@@ -86,7 +86,7 @@ class ChatSettings:
 
 @dataclass(frozen=True, slots=True)
 class IntentSettings:
-    """Select deterministic intent rules or optional model assistance."""
+    """选择确定性的意图规则，或可选启用模型辅助。"""
 
     mode: Literal["rules", "hybrid"] = "rules"
     browser_mode: Literal["rules", "hybrid"] = "hybrid"
@@ -94,7 +94,7 @@ class IntentSettings:
 
 @dataclass(frozen=True, slots=True)
 class McpSettings:
-    """Location of the optional MCP server configuration."""
+    """可选的 MCP 服务器配置文件位置。"""
 
     config_path: Path | None = None
     project_root: Path = PROJECT_ROOT
@@ -102,7 +102,7 @@ class McpSettings:
 
 @dataclass(frozen=True, slots=True)
 class SessionStoreSettings:
-    """Validated SQLite session-store configuration."""
+    """经过校验的 SQLite 会话存储配置。"""
 
     db_path: Path
     lock_timeout: float = 5.0
@@ -111,7 +111,7 @@ class SessionStoreSettings:
 
 @dataclass(frozen=True, slots=True)
 class AgentConfig:
-    """Hard limits for one answer and for retained conversation history."""
+    """单次回答及保留对话历史的硬性上限。"""
 
     max_model_calls: int = 4
     max_tool_calls: int = 6
@@ -133,7 +133,7 @@ class AgentConfig:
 
 
 def get_chat_settings() -> ChatSettings:
-    """Return chat settings without falling back to embedding configuration."""
+    """返回对话模型设置，不回退到 Embedding 配置。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 
     def value(name: str, default: str = "") -> str:
@@ -171,7 +171,7 @@ def get_chat_settings() -> ChatSettings:
 
 
 def get_intent_settings() -> IntentSettings:
-    """Return intent settings without initializing or contacting a model."""
+    """返回意图设置，期间不初始化、也不调用模型。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
     mode = os.environ.get("INTENT_MODE", dotenv.get("INTENT_MODE", "rules"))
     normalized_mode = mode.strip().lower()
@@ -186,7 +186,7 @@ def get_intent_settings() -> IntentSettings:
 
 
 def get_memory_settings():
-    """Read optional conversation-summary limits without loading a model."""
+    """读取可选的对话摘要限制，不加载模型。"""
     from knowledge_agent.session.memory import MemorySettings
 
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
@@ -207,8 +207,8 @@ def get_memory_settings():
 
 
 def get_skill_selection_settings():
-    """Read bounded auto-selection options without initializing a model."""
-    # Local import avoids a config -> loader -> config import cycle.
+    """读取有界的自动选择选项，不初始化模型。"""
+    # 局部导入可避免 config -> loader -> config 的循环导入。
     from knowledge_agent.skills.selector import SkillSelectionSettings
 
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
@@ -229,7 +229,7 @@ def get_skill_selection_settings():
 
 
 def get_mcp_settings() -> McpSettings:
-    """Resolve MCP_CONFIG_PATH without reading the referenced configuration."""
+    """解析 MCP_CONFIG_PATH，但不读取该路径指向的配置。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
     default_path = PROJECT_ROOT / "config" / "mcp_servers.json"
     raw_path = os.environ.get(
@@ -250,7 +250,7 @@ def get_mcp_settings() -> McpSettings:
 
 
 def get_ingest_settings() -> IngestSettings:
-    """Return raw ingestion settings; path and range checks happen at ingestion."""
+    """返回原始摄取设置；路径和范围校验在摄取阶段进行。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 
     def value(name: str, default: str) -> str:
@@ -272,7 +272,7 @@ def get_ingest_settings() -> IngestSettings:
 
 
 def get_knowledge_base_settings() -> KnowledgeBaseSettings:
-    """Return document/index paths without parsing unrelated ingest settings."""
+    """返回文档/索引路径，不解析无关的摄取设置。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 
     def value(name: str, default: str) -> str:
@@ -286,7 +286,7 @@ def get_knowledge_base_settings() -> KnowledgeBaseSettings:
 
 
 def get_retrieval_settings() -> RetrievalSettings:
-    """Return raw retrieval settings; path and range checks happen at retrieval."""
+    """返回原始检索设置；路径和范围校验在检索阶段进行。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 
     def value(name: str, default: str) -> str:
@@ -306,7 +306,7 @@ def get_retrieval_settings() -> RetrievalSettings:
 
 
 def get_session_store_settings() -> SessionStoreSettings:
-    """Resolve and validate SQLite settings without touching the database."""
+    """解析并校验 SQLite 设置，不接触数据库。"""
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 
     def value(name: str, default: str) -> str:

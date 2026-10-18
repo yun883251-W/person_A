@@ -28,7 +28,7 @@ from .state import KnowledgeTools, ModelTurnResult, PreparedModelTurn, ToolCallR
 
 
 def _message_text(message: AIMessage) -> str:
-    """Return only user-visible text content, excluding reasoning metadata."""
+    """只返回用户可见的文本内容，排除推理元数据。"""
     content = message.content
     if isinstance(content, str):
         return content.strip()
@@ -50,7 +50,7 @@ def invoke_model_turn(
     turn: PreparedModelTurn,
     state: TurnState,
 ) -> ModelTurnResult:
-    """Synchronously invoke the model and choose the next agent action."""
+    """同步调用模型，并选择智能体的下一个动作。"""
     state.model_calls += 1
     model_event = (
         state.trace_recorder.start_event(
@@ -109,11 +109,11 @@ def execute_tool_calls(
     max_tool_calls: int,
     max_followup_searches: int | None = None,
 ) -> tuple[ToolCallResult, ...]:
-    """Validate and sequentially execute the tool calls in one model message."""
+    """校验并依次执行一条模型消息中的工具调用。"""
     registry = tools.registry
     if registry is None:
-        # Compatibility for callers that still instantiate KnowledgeTools
-        # directly through the old two-field API.
+        # 兼容仍通过旧的双字段 API 直接实例化 KnowledgeTools
+        # 的调用方。
         contextual_executors = {
             name: (
                 lambda _context, _executor=executor, **arguments: _executor(
@@ -145,7 +145,7 @@ def _register_new_sources(
     state: TurnState,
     tool_results: Sequence[ToolCallResult],
 ) -> dict[str, str]:
-    """Register newly retrieved chunks and return their source IDs by chunk ID."""
+    """登记新检索到的片段，并按 chunk ID 返回其来源 ID。"""
     source_ids: dict[str, str] = {}
     registered_ids = {
         evidence_identity(item): source_id for source_id, item in state.supplied_evidence.items()
@@ -207,7 +207,7 @@ def _register_new_sources(
 
 
 def _tool_message_output(output: Any, source_ids: Mapping[str, str]) -> Any:
-    """Copy a tool result while annotating returned chunks with citable IDs."""
+    """复制工具结果，同时为返回的片段标注可引用的 ID。"""
     if isinstance(output, Mapping):
         copied = {key: _tool_message_output(value, source_ids) for key, value in output.items()}
         chunk_id = copied.get("chunk_id")
@@ -231,7 +231,7 @@ def continue_model_loop(
     max_followup_searches: int = 2,
     max_context_chars: int = 24_000,
 ) -> ModelTurnResult:
-    """Backfill tool results and continue invoking the model until it stops."""
+    """回填工具结果，并继续调用模型，直到它停止。"""
     if isinstance(max_model_calls, bool) or not isinstance(max_model_calls, int):
         raise TypeError("max_model_calls must be an integer")
     if max_model_calls < 1:
@@ -256,8 +256,8 @@ def continue_model_loop(
             state.status = "limit_reached"
             state.stop_reason = "tool_budget_exhausted"
             return result
-        # A tool result requires another model call to turn it into an answer.
-        # Stop before executing more tools when that final call cannot be made.
+        # 工具结果需要再调用一次模型才能变成回答。
+        # 若无法进行这次最终调用，应在执行更多工具之前停止。
         if state.model_calls >= max_model_calls:
             state.status = "limit_reached"
             state.stop_reason = "model_call_budget_exhausted"
@@ -328,8 +328,8 @@ def continue_model_loop(
             return result
         next_turn = turn
         if turn.answer_model is not None and max_model_calls - state.model_calls == 1:
-            # Complete the pending tool exchange, then spend the reserved last
-            # call on an answer. No retry or additional tool execution occurs.
+            # 完成待处理的工具交换，然后把预留的最后一次调用
+            # 用于回答。不会重试，也不会执行额外工具。
             state.messages.append(SystemMessage(content=(
                 "这是当前知识步骤的最后一次模型调用。请根据已经取得的资料直接回答，"
                 "不要再请求工具。只引用本步骤实际提供的来源："
@@ -362,7 +362,7 @@ def continue_model_loop(
     return result
 
 def _model_error_code(exc: ChatModelInvocationError) -> str:
-    """Return the stable, non-sensitive public category for a model failure."""
+    """返回模型失败的稳定、非敏感公开类别。"""
     if isinstance(exc, ChatModelOutputError):
         return "model_output_invalid"
     if isinstance(exc, ChatModelAuthenticationError):
@@ -379,7 +379,7 @@ def _model_error_code(exc: ChatModelInvocationError) -> str:
 
 
 def _record_model_failure(state: TurnState, exc: ChatModelInvocationError) -> None:
-    """Record a stable, non-sensitive public category for a model failure."""
+    """记录模型失败的稳定、非敏感公开类别。"""
     state.status = "service_error"
     state.stop_reason = _model_error_code(exc)
 
@@ -393,7 +393,7 @@ def run_model_loop(
     max_followup_searches: int = 2,
     max_context_chars: int = 24_000,
 ) -> ModelTurnResult | None:
-    """Run one bounded model/tool loop, returning failures through ``state``."""
+    """运行一次有界的模型/工具循环，通过 ``state`` 返回失败。"""
     try:
         if isinstance(max_model_calls, bool) or not isinstance(max_model_calls, int):
             raise TypeError

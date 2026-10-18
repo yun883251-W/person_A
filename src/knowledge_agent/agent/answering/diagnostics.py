@@ -1,4 +1,4 @@
-"""Bounded private answer diagnostics with explicit public/storage projections."""
+"""有界的私有回答诊断，并提供明确的公开/存储投影。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _SECRET = re.compile(
 
 
 def final_answer_excerpt(text: str) -> tuple[str | None, bool]:
-    """Capture only bounded final prose, excluding explicit reasoning blocks."""
+    """只捕获有界的最终正文，排除显式的推理块。"""
     cleaned = _THINKING.sub("", text)
     opening = _OPEN_THINKING.search(cleaned)
     if opening is not None:
@@ -43,7 +43,7 @@ def final_answer_excerpt(text: str) -> tuple[str | None, bool]:
 
 
 def validate_public_answer_diagnostics(value: Any) -> dict[str, Any] | None:
-    """Validate the exact public allow-list; private text is never accepted."""
+    """校验精确的公开允许列表；私有文本一律不接受。"""
     if value is None:
         return None
     if not isinstance(value, dict) or set(value) != _PUBLIC_FIELDS:
@@ -82,7 +82,7 @@ def answer_diagnostics_trace_fields(value: AnswerDiagnostics | None) -> dict[str
     public = public_answer_diagnostics(value)
     if public is None:
         return {}
-    # result_count is the already-existing accepted-source count on final events.
+    # result_count 是最终事件上已有的已接受来源计数。
     return {key: public[key] for key in (
         "declared_status", "validation_status", "validation_reason", "supplied_source_count",
     )}
@@ -140,10 +140,10 @@ def step_diagnostics_from_storage(value: Any) -> tuple[StepAnswerDiagnostics, ..
 
 
 def public_answer_result_dict(result: AnswerResult) -> dict[str, Any]:
-    """CLI projection; explicitly omit private excerpts and future private fields.
+    """CLI 投影；显式省略私有片段和未来的私有字段。
 
-    The CLI further projects assessment/trace/plan through their own validators.
-    This allow-list must never grow automatically with AnswerResult fields.
+    CLI 还会通过各自的校验器进一步投影 assessment/trace/plan。
+    该允许列表绝不能随 AnswerResult 字段自动扩张。
     """
     return {
         "question": result.question,

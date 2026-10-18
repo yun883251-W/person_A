@@ -18,7 +18,7 @@ LOCAL_API_PORT = 8000
 LOCAL_API_WORKERS = 1
 
 def _validated_cors_origins(origins: tuple[str, ...]) -> tuple[str, ...]:
-    """Return unique, explicit browser origins suitable for local web clients."""
+    """返回去重后的显式浏览器来源，供本机网页客户端使用。"""
     normalized: list[str] = []
     for raw_origin in origins:
         origin = raw_origin.strip().rstrip("/")
@@ -46,7 +46,7 @@ def create_app(
     *,
     cors_origins: tuple[str, ...] = (),
 ) -> FastAPI:
-    """Serve the local UI and API; additional browser origins are opt-in."""
+    """提供本机网页与 API 服务；额外的浏览器来源需显式开启。"""
 
     allowed_origins = _validated_cors_origins(cors_origins)
 

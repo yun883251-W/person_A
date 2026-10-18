@@ -17,7 +17,7 @@ ApplicationFactory = Callable[[Any], Any]
 
 
 class ServiceBusyError(RuntimeError):
-    """Raised when a business operation is already running."""
+    """已有业务操作正在运行时抛出。"""
 
     code = "service_busy"
     status_code = 503
@@ -27,7 +27,7 @@ class ServiceBusyError(RuntimeError):
 
 
 class ServiceRuntime:
-    """Run all stateful service work on one long-lived worker thread."""
+    """所有有状态服务操作都在同一条长期存活的工作线程上执行。"""
 
     def __init__(
         self,
@@ -70,7 +70,7 @@ class ServiceRuntime:
         return create_configured_application(session_store=store)
 
     def initialize(self) -> None:
-        """Construct and initialize storage in the dedicated worker thread."""
+        """在专用工作线程中构造并初始化存储。"""
         with self._state_lock:
             if self._closed or self._closing:
                 raise RuntimeError("service runtime is closed")
@@ -107,7 +107,7 @@ class ServiceRuntime:
 
     @property
     def store(self) -> Any:
-        """Return worker-owned storage while executing a submitted task."""
+        """在执行已提交任务时返回归工作线程所有的存储实例。"""
         self._require_worker_thread()
         if self._store is None:
             raise RuntimeError("service runtime is not initialized")
@@ -115,7 +115,7 @@ class ServiceRuntime:
 
     @property
     def application(self) -> Any:
-        """Lazily create the agent application on its owning worker thread."""
+        """在所属工作线程上延迟创建 Agent 应用。"""
         self._require_worker_thread()
         if self._store is None:
             raise RuntimeError("service runtime is not initialized")
@@ -125,7 +125,7 @@ class ServiceRuntime:
 
     @property
     def knowledge_service(self) -> KnowledgeBaseService:
-        """Lazily construct the filesystem service on its owning worker."""
+        """在所属工作线程上延迟构造文件系统服务。"""
         self._require_worker_thread()
         if self._knowledge_service is None:
             self._knowledge_service = KnowledgeBaseService(
@@ -141,7 +141,7 @@ class ServiceRuntime:
     def submit(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Future[Any]:
-        """Submit one complete business operation to the dedicated worker."""
+        """向专用工作线程提交一个完整的业务操作。"""
         with self._state_lock:
             if not self._initialized:
                 raise RuntimeError("service runtime is not initialized")
@@ -157,8 +157,8 @@ class ServiceRuntime:
                 self._busy = False
                 raise
 
-        # A very short operation may already be complete here. Register outside
-        # the state lock because Future then invokes the callback immediately.
+        # 极短的操作此时可能已经完成。在状态锁之外注册回调，
+        # 因为 Future 随后会立即调用回调。
         future.add_done_callback(self._operation_finished)
         return future
 
@@ -168,20 +168,20 @@ class ServiceRuntime:
 
     @property
     def busy(self) -> bool:
-        """Return whether a submitted business operation is still running."""
+        """返回已提交的业务操作是否仍在运行。"""
         with self._state_lock:
             return self._busy
 
     @property
     def closing(self) -> bool:
-        """Return whether runtime shutdown has started."""
+        """返回运行时是否已开始关闭。"""
         with self._state_lock:
             return self._closing
 
     async def run(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Any:
-        """Submit and asynchronously wait for one complete business operation."""
+        """提交一个完整的业务操作并异步等待其完成。"""
         future = self.submit(function, *args, **kwargs)
         return await self._wait_for_future(future)
 
@@ -189,11 +189,11 @@ class ServiceRuntime:
     async def _wait_for_future(future: Future[Any]) -> Any:
         wrapped = asyncio.wrap_future(future)
         try:
-            # Cancelling an HTTP waiter must not cancel work already handed to the
-            # dedicated worker. Its completion callback owns the busy transition.
+            # 取消 HTTP 等待方不得取消已经交给专用工作线程的任务。
+            # 忙碌状态由任务的完成回调负责切换。
             return await asyncio.shield(wrapped)
         except asyncio.CancelledError:
-            # Retrieve a later exception when there is no longer an HTTP waiter.
+            # 当 HTTP 等待方已不存在时，稍后取回异常。
             wrapped.add_done_callback(ServiceRuntime._consume_future_exception)
             raise
 
@@ -205,13 +205,13 @@ class ServiceRuntime:
     def submit_store(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Future[Any]:
-        """Submit an operation whose first argument is the session store."""
+        """提交一个首个参数为会话存储的操作。"""
         return self.submit(self._call_with_store, function, args, kwargs)
 
     async def run_store(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Any:
-        """Run and asynchronously wait for a session-store operation."""
+        """执行会话存储操作并异步等待其完成。"""
         return await self._wait_for_future(
             self.submit_store(function, *args, **kwargs)
         )
@@ -227,13 +227,13 @@ class ServiceRuntime:
     def submit_application(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Future[Any]:
-        """Submit an operation and lazily supply the agent application."""
+        """提交操作，并按需传入 Agent 应用。"""
         return self.submit(self._call_with_application, function, args, kwargs)
 
     async def run_application(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Any:
-        """Run and asynchronously wait for an agent-application operation."""
+        """执行 Agent 应用操作并异步等待其完成。"""
         return await self._wait_for_future(
             self.submit_application(function, *args, **kwargs)
         )
@@ -249,7 +249,7 @@ class ServiceRuntime:
     async def run_knowledge(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Any:
-        """Run one knowledge-base operation on the shared service worker."""
+        """在共享服务工作线程上执行一次知识库操作。"""
         return await self.run(self._call_with_knowledge, function, args, kwargs)
 
     def _call_with_knowledge(
@@ -284,7 +284,7 @@ class ServiceRuntime:
         skill_id: str | None = None,
         skill_mode: TraceSkillMode | None = None,
     ) -> Any | None:
-        """Ask one question in an existing persisted session."""
+        """在已有的持久化会话中提出一个问题。"""
         return await self._wait_for_future(self.submit_ask_session(
             session_id, question, skill_id=skill_id, skill_mode=skill_mode,
         ))
@@ -295,7 +295,7 @@ class ServiceRuntime:
         skill_mode: TraceSkillMode | None = None,
         progress_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> Future[Any]:
-        """Submit exactly once; JSON and SSE share worker ownership and locking."""
+        """只提交一次；JSON 与 SSE 共用工作线程归属和加锁策略。"""
         return self.submit(
             self._ask_session_on_worker, session_id, question, skill_id, skill_mode,
             progress_observer,
@@ -324,7 +324,7 @@ class ServiceRuntime:
     async def load_turns(
         self, session_id: str, *, limit: int, offset: int
     ) -> Any | None:
-        """Load one chronological page, or return ``None`` if absent."""
+        """按时间顺序加载一页；会话不存在时返回 ``None``。"""
         return await self.run(
             self._load_turns_on_worker,
             session_id,
@@ -341,7 +341,7 @@ class ServiceRuntime:
         return self.store.load_turns(session_id, limit=limit, offset=offset)
 
     async def clear_session(self, session_id: str) -> bool:
-        """Clear persisted turns and release matching in-memory history."""
+        """清空已持久化的问答轮，并释放对应的内存历史。"""
         return await self.run(self._clear_session_on_worker, session_id)
 
     def _clear_session_on_worker(self, session_id: str) -> bool:
@@ -353,7 +353,7 @@ class ServiceRuntime:
         return cleared
 
     async def delete_session(self, session_id: str) -> bool:
-        """Delete a persisted session and release matching in-memory history."""
+        """删除已持久化的会话，并释放对应的内存历史。"""
         return await self.run(self._delete_session_on_worker, session_id)
 
     def _delete_session_on_worker(self, session_id: str) -> bool:
@@ -365,7 +365,7 @@ class ServiceRuntime:
         return deleted
 
     def close(self) -> None:
-        """Drain pending work, close owned resources, and stop the worker."""
+        """等待在途任务结束、关闭自有资源并停止工作线程。"""
         with self._state_lock:
             if self._closed or self._closing:
                 return
@@ -390,7 +390,7 @@ class ServiceRuntime:
         self._knowledge_service = None
         self._store = None
         if application is not None:
-            # The application owns the injected store and closes it itself.
+            # 应用持有注入的存储实例，并由其自行关闭。
             application.close()
         elif store is not None:
             store.close()

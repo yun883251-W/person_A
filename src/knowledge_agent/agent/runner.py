@@ -158,7 +158,7 @@ _PLAN_REQUEST_MESSAGES = {
 
 
 def _plan_validation_failure(code: str) -> tuple[AnswerStatus, str]:
-    """Separate model contract failures from requests needing clarification."""
+    """把模型契约失败与需要澄清的请求区分开。"""
     if code in {"plan_model_budget_exhausted", "browser_bilibili_semantic_budget_exhausted"}:
         return "limit_reached", "本轮模型调用预算不足以识别并执行任务，尚未执行任何步骤。请拆成单独问题。"
     if code == "browser_bilibili_semantic_timeout":
@@ -184,7 +184,7 @@ def resolve_followup_question(
     max_history_turns: int = 6,
     max_context_chars: int = 4000,
 ) -> str:
-    """Resolve a referential follow-up into a self-contained retrieval query."""
+    """把指代性追问解析为自包含的检索查询。"""
     decision = identify_intent(
         question,
         context=turns,
@@ -195,7 +195,7 @@ def resolve_followup_question(
 
 
 class KnowledgeAgent:
-    """Connect the chat client, system prompt, and lazy retrieval service."""
+    """连接聊天客户端、系统 Prompt 和惰性检索服务。"""
 
     def __init__(
         self,
@@ -235,7 +235,7 @@ class KnowledgeAgent:
         return current
 
     def restore_business_state(self, session_id: str, state: SessionBusinessState) -> None:
-        """Install an already validated state loaded by the application lifecycle."""
+        """安装应用生命周期已加载并通过校验的状态。"""
         if state.session_id != session_id:
             raise ValueError("business state belongs to another session")
         self.business_states[session_id] = state
@@ -277,7 +277,7 @@ class KnowledgeAgent:
         return transition.next_state
 
     def _summary_messages(self, session_id: str | None) -> tuple[BaseMessage, ...]:
-        """Provide bounded background only; callers never pass this to MCP."""
+        """只提供有界背景；调用方绝不把它传给 MCP。"""
         if session_id is None:
             return ()
         summary = self.session_summaries.get(session_id, "")
@@ -290,7 +290,7 @@ class KnowledgeAgent:
         )),)
 
     def _mcp_capabilities(self) -> tuple[dict[str, object], ...]:
-        """Return the safe metadata snapshot used by intent and routing."""
+        """返回供意图识别和路由使用的安全元数据快照。"""
         capabilities: list[dict[str, object]] = []
         for definition in self.mcp_registry.list_definitions():
             schema: object = {}
@@ -324,7 +324,7 @@ class KnowledgeAgent:
         intent_model_calls: int = 0,
         conversation_summary: str = "",
     ) -> PreparedQuestion:
-        """Validate and classify a question, proactively retrieving when required."""
+        """校验并分类问题，在需要时主动执行检索。"""
         prepared = prepare_question(
             question,
             retriever=self.retriever,
@@ -354,7 +354,7 @@ class KnowledgeAgent:
         history: Sequence[BaseMessage] = (),
         skill_id: str | None = None,
     ) -> PreparedModelTurn:
-        """Build the messages and tool-bound runnable for a prepared question."""
+        """为已准备的问题构建消息和绑定工具的可运行对象。"""
         return prepare_model_turn(
             prepared,
             model=self.model,
@@ -369,7 +369,7 @@ class KnowledgeAgent:
         turn: PreparedModelTurn,
         state: TurnState,
     ) -> ModelTurnResult:
-        """Invoke one prepared model turn and classify its complete response."""
+        """调用一次已准备的模型轮次，并分类其完整响应。"""
         return invoke_model_turn(turn, state)
 
     def run_model_loop(
@@ -377,7 +377,7 @@ class KnowledgeAgent:
         turn: PreparedModelTurn,
         state: TurnState,
     ) -> ModelTurnResult | None:
-        """Run a complete model/tool loop within this agent's configured limits."""
+        """在本智能体配置的限制内运行完整的模型/工具循环。"""
         return run_model_loop(
             turn,
             state,
@@ -395,7 +395,7 @@ class KnowledgeAgent:
         skill_id: str | None = None,
         skill_mode: str | None = None,
     ) -> AnswerResult:
-        """Resolve one dialogue action, then dispatch it through the existing executors."""
+        """解析一个对话动作，然后通过现有执行器派发。"""
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be a non-empty string")
         request = normalize_skill_request(skill_mode, skill_id)
@@ -426,8 +426,8 @@ class KnowledgeAgent:
             max_history_turns=self.config.max_history_turns,
             max_context_chars=self.config.max_context_chars,
         )
-        # The resolver reports its own bounded classifier call count. The local
-        # counter is authoritative for provider budget accounting.
+        # 解析器报告自己的有界分类器调用次数。本地
+        # 计数器才是 provider 预算核算的权威来源。
         model_calls = max(model_calls, resolution.model_calls)
         decision = resolution.decision
 
@@ -436,8 +436,8 @@ class KnowledgeAgent:
             and decision.business_type is BusinessType.BILIBILI_SEARCH
             and decision.intent in {DialogueIntent.NEW_BUSINESS, DialogueIntent.CONTINUE_BUSINESS}
         ):
-            # Apply the same Skill boundary as resolve_route before committing
-            # a pending task or entering the host-controlled browser executor.
+            # 在提交待处理任务或进入宿主控制的浏览器执行器
+            # 之前，应用与 resolve_route 相同的 Skill 边界。
             blocked = DialogueDecision(
                 intent=DialogueIntent.UNCLEAR, business_type=None,
                 clarification_question=(
@@ -569,12 +569,12 @@ class KnowledgeAgent:
         summary_text = str(summary_messages[0].content) if summary_messages else ""
 
         def resolve_clause(clause: str) -> IntentDecision:
-            # Resolve only original user clauses. The planner cannot create
-            # permissions by rewriting a goal or consulting conversation memory.
+            # 只解析原始用户从句。规划器不能通过改写目标
+            # 或查询对话记忆来创造权限。
             def invoke_clause_model(messages: Sequence[BaseMessage]) -> object:
                 nonlocal planning_calls
-                # Plans are constructed by the host. Only semantic clause
-                # classification and leaf execution spend model calls.
+                # 计划由宿主构建。只有语义从句分类和
+                # 叶子执行会消耗模型调用。
                 reserved = 0
                 for requested_goal in planner.raw_plan_clauses(question):
                     names = planner.authorized_tool_names(requested_goal, capabilities)
@@ -721,12 +721,12 @@ class KnowledgeAgent:
         conversation_summary: str = "",
         knowledge_history: Sequence[object] = (),
     ) -> StepOutcome:
-        """Execute one leaf with the remaining budget; never commit a child turn."""
+        """用剩余预算执行一个叶子；绝不提交子轮次。"""
         state = TurnState(original_question=step.goal, trace_recorder=trace, step_id=step.step_id)
         try:
             if step.kind == "knowledge":
-                # Each step sees only its own question, relevant knowledge
-                # history and explicit dependencies, never sibling instructions.
+                # 每个步骤只看到自己的问题、相关知识
+                # 历史和显式依赖，绝不看到兄弟步骤的指令。
                 background_limit = min(2000, max(1, budget.context_chars // 4))
                 summary_text = conversation_summary[:background_limit]
                 context_data: dict[str, Any] = {}
@@ -752,10 +752,10 @@ class KnowledgeAgent:
                 if dependency_transform and decision.kind in {
                     IntentKind.KNOWLEDGE, IntentKind.NEEDS_CLARIFICATION,
                 }:
-                    # Explicit plan references resolve the referent; only the
-                    # knowledge snapshots below can supply factual evidence.
-                    # With an MCP-only prerequisite preparation reports the
-                    # missing evidence instead of spending an unreserved search.
+                    # 显式计划引用解析指代对象；只有下面的
+                    # 知识快照才能提供事实证据。
+                    # 若前置步骤仅涉及 MCP，准备阶段会报告
+                    # 缺少证据，而不是消耗未预留的搜索。
                     decision = replace(
                         decision, kind=IntentKind.KNOWLEDGE, clarification_question="",
                         retrieval_query=step.goal, reason_code="plan_dependency_transform",
@@ -852,7 +852,7 @@ class KnowledgeAgent:
                 finalize_answer(model_result, state) if step.kind == "knowledge"
                 else finalize_mcp_answer(model_result, state)
             )
-            # A mixed tool outcome is not a completed prerequisite.
+            # 混合的工具结果不算完成的前置步骤。
             if result.stop_reason == "partial_tool_failure" and result.status == "success":
                 result = replace(result, status="insufficient_evidence")
         except PreparedContextLimitError:
@@ -868,7 +868,7 @@ class KnowledgeAgent:
                 tool_calls=state.tool_calls, stop_reason=_model_error_code(exc),
             )
         except Exception:
-            # Do not retry a failed tool step: a timeout may have executed it.
+            # 不要重试失败的工具步骤：超时可能已经执行了它。
             result = AnswerResult(
                 question=step.goal, answer="本步骤执行失败，未自动重试。",
                 status="service_error", model_calls=state.model_calls,
@@ -891,7 +891,7 @@ class KnowledgeAgent:
         dialogue_resolution: DialogueResolution | None = None,
         turn_id: str | None = None,
     ) -> AnswerResult:
-        """Run one complete question-answer turn and return its public result."""
+        """运行一个完整的问答轮次，并返回其公开结果。"""
         if not isinstance(question, str):
             raise TypeError("question must be a string")
         if not question.strip():
@@ -1008,8 +1008,8 @@ class KnowledgeAgent:
             )
             state.model_calls = intent_model_calls
             if route.allowed_tool_names == (SEARCH_BILIBILI_TOOL,):
-                # Stateless searches also preserve the topic accepted by the
-                # single dialogue decision when the model builds tool args.
+                # 当模型构建工具参数时，无状态搜索也会保留
+                # 单一对话决定所接受的主题。
                 state.browser_search_topic = (
                     dialogue_resolution.decision.confirmed_slots.get("query")
                     if dialogue_resolution is not None else intent.search_topic or None
@@ -1199,7 +1199,7 @@ class KnowledgeAgent:
         turn_id: str | None = None,
         allow_failure: bool = False,
     ) -> AnswerResult:
-        """Commit only a completed turn; failures and partial tool exchanges are dropped."""
+        """只提交已完成的轮次；失败和部分工具交换会被丢弃。"""
         if result.status in {"service_error", "limit_reached"} and not allow_failure:
             return result
         complete_messages = _complete_history_messages(messages)
@@ -1249,11 +1249,11 @@ class KnowledgeAgent:
         return result
 
     def get_session_history(self, session_id: str) -> tuple[ConversationTurn, ...]:
-        """Return an immutable snapshot of the session's retained complete turns."""
+        """返回会话保留的完整轮次的不可变快照。"""
         return self.history.turns(session_id)
 
     def clear_session(self, session_id: str) -> None:
-        """Remove all retained turns for one session."""
+        """移除某个会话保留的所有轮次。"""
         self.history.clear(session_id)
         self.assessment_states.pop(session_id, None)
         self.session_summaries.pop(session_id, None)
@@ -1264,7 +1264,7 @@ class KnowledgeAgent:
         result: ModelTurnResult | None,
         state: TurnState,
     ) -> AnswerResult:
-        """Turn the model's terminal message into a verified public answer."""
+        """把模型的终止消息转换为已验证的公开回答。"""
         return finalize_answer(result, state)
 
 

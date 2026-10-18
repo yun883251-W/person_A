@@ -53,7 +53,7 @@ class IngestConfig:
 
 
 def load_ingest_config() -> IngestConfig:
-    """Load and validate the filesystem and chunking configuration."""
+    """加载并校验文件系统与分块配置。"""
     settings = get_ingest_settings()
     project_root = settings.project_root.resolve()
 
@@ -122,7 +122,7 @@ def load_ingest_config() -> IngestConfig:
     )
 
 def scan_markdown_files(docs_dir: Path) -> list[Path]:
-    """Return Markdown files below *docs_dir* in deterministic path order."""
+    """按确定的路径顺序返回 *docs_dir* 下的 Markdown 文件。"""
     docs_dir = docs_dir.resolve()
     markdown_files: list[Path] = []
     directories = [docs_dir]
@@ -144,7 +144,7 @@ def scan_markdown_files(docs_dir: Path) -> list[Path]:
 
 @dataclass(frozen=True, slots=True)
 class SourceLine:
-    """One source line, including its original line ending when present."""
+    """一行源文本，包含其原始的换行符（如有）。"""
 
     number: int
     text: str
@@ -154,7 +154,7 @@ class SourceLine:
 
 @dataclass(frozen=True, slots=True)
 class SourceDocument:
-    """Decoded source text together with a one-based source-line mapping."""
+    """解码后的源文本，以及从 1 开始计数的源行映射。"""
 
     path: Path
     text: str
@@ -166,11 +166,11 @@ class SourceDocument:
 
 
 class DocumentReadError(RuntimeError):
-    """Raised when a source document cannot be decoded or read."""
+    """源文档无法解码或读取时抛出。"""
 
 
 def read_markdown_file(path: Path) -> SourceDocument:
-    """Read UTF-8 Markdown without changing its line endings or blank lines."""
+    """读取 UTF-8 Markdown，不改变换行符或空行。"""
     path = Path(path)
     try:
         text = path.read_bytes().decode("utf-8-sig")
@@ -190,14 +190,14 @@ def read_markdown_file(path: Path) -> SourceDocument:
 
 @dataclass(frozen=True, slots=True)
 class DocumentIdentity:
-    """Stable source identity and a fingerprint of its decoded content."""
+    """稳定的源文件身份及其解码内容的指纹。"""
 
     relative_path: str
     content_hash: str
 
 
 def get_document_identity(document: SourceDocument, docs_dir: Path) -> DocumentIdentity:
-    """Return the normalized docs-relative path and SHA-256 content hash."""
+    """返回规范化的文档目录相对路径和 SHA-256 内容哈希。"""
     docs_dir = Path(docs_dir).resolve()
     path = document.path.resolve()
     try:
@@ -210,7 +210,7 @@ def get_document_identity(document: SourceDocument, docs_dir: Path) -> DocumentI
 
 @dataclass(frozen=True, slots=True)
 class MarkdownBlock:
-    """A source-preserving Markdown text or fenced-code block."""
+    """保留原文的 Markdown 文本块或围栏代码块。"""
 
     kind: Literal["text", "code"]
     text: str
@@ -228,7 +228,7 @@ class MarkdownBlock:
 
 @dataclass(frozen=True, slots=True)
 class MarkdownParseIssue:
-    """A non-fatal problem found while recognizing Markdown blocks."""
+    """识别 Markdown 块时发现的非致命问题。"""
 
     message: str
     line: int
@@ -270,7 +270,7 @@ def _is_closing_fence(line: str, character: str, minimum_length: int) -> bool:
 
 
 def parse_markdown_blocks(document: SourceDocument) -> MarkdownParseResult:
-    """Split *document* into text and fenced-code blocks in one linear pass."""
+    """以单次线性扫描把 *document* 拆分为文本块和围栏代码块。"""
     lines = document.lines
     blocks: list[MarkdownBlock] = []
     issues: list[MarkdownParseIssue] = []
@@ -336,7 +336,7 @@ def parse_markdown_blocks(document: SourceDocument) -> MarkdownParseResult:
 
 @dataclass(frozen=True, slots=True)
 class MarkdownSection:
-    """A heading-scoped, source-preserving part of a Markdown document."""
+    """Markdown 文档中按标题划分、保留原文的一部分。"""
 
     source_path: Path
     heading_path: tuple[str, ...]
@@ -365,7 +365,7 @@ def organize_markdown_sections(
     document: SourceDocument,
     parsed: MarkdownParseResult | None = None,
 ) -> tuple[MarkdownSection, ...]:
-    """Organize a document into exact source ranges using ATX heading levels."""
+    """使用 ATX 标题层级，把文档组织成精确的源区间。"""
     if not document.lines:
         return ()
 
@@ -373,8 +373,8 @@ def organize_markdown_sections(
     headings: list[tuple[int, int, str]] = []
     append_heading = headings.append
 
-    # Only text blocks are inspected, so heading-like lines inside code fences
-    # remain part of their surrounding section.
+    # 只检查文本块，因此代码围栏内形似标题的行
+    # 仍然属于其所在的章节。
     for block in parsed.blocks:
         if block.kind != "text":
             continue
@@ -442,7 +442,7 @@ def organize_markdown_sections(
 
 @dataclass(frozen=True, slots=True)
 class MarkdownSectionChunk:
-    """A contiguous source slice; length is measured in Unicode characters."""
+    """连续的源切片；长度以 Unicode 字符数计量。"""
 
     source_path: Path
     heading_path: tuple[str, ...]
@@ -455,7 +455,7 @@ class MarkdownSectionChunk:
 
 @dataclass(frozen=True, slots=True)
 class OversizedMarkdownBlock:
-    """An indivisible source block which is larger than the configured limit."""
+    """超过配置上限、无法再拆分的源块。"""
 
     source_path: Path
     heading_path: tuple[str, ...]
@@ -485,7 +485,7 @@ class _SectionContentBlock:
 
 
 def _section_content_blocks(section: MarkdownSection) -> list[_SectionContentBlock]:
-    """Partition a section without splitting paragraphs or fenced code blocks."""
+    """划分章节，但不拆散段落或围栏代码块。"""
     lines = section.text.splitlines(keepends=True)
     if not lines:
         return []
@@ -502,8 +502,8 @@ def _section_content_blocks(section: MarkdownSection) -> list[_SectionContentBlo
         index = first
         while index < stop:
             block_start = index
-            # Blank lines belong to the preceding paragraph. Leading blank lines
-            # form their own block, which keeps the source partition lossless.
+            # 空行归属于前一个段落。开头的空行自成一个块，
+            # 从而保证源文本划分无损。
             if lines[index].strip(" \t\r\n"):
                 index += 1
                 while index < stop and lines[index].strip(" \t\r\n"):
@@ -557,12 +557,12 @@ def split_markdown_sections(
     chunk_size: int,
     chunk_overlap: int,
 ) -> MarkdownChunkingResult:
-    """Split sections on natural boundaries using character-sized limits.
+    """按自然边界拆分章节，长度上限以字符数计。
 
-    Paragraphs (including Markdown tables and unfenced diagrams) and fenced code
-    are atomic. Whole trailing blocks are reused for overlap, so no source block
-    is cut merely to hit an exact limit. An atomic block over ``chunk_size`` is
-    emitted intact as a chunk and also returned in ``oversized_blocks``.
+    段落（包括 Markdown 表格和无围栏图示）与围栏代码是原子单元。
+    重叠部分复用完整的尾部块，因此不会仅为凑准上限而切断源块。
+    超过 ``chunk_size`` 的原子块会原样输出为一个片段，同时也在
+    ``oversized_blocks`` 中返回。
     """
     if chunk_size <= 0:
         raise ValueError("片段长度必须大于 0")
@@ -612,8 +612,8 @@ def split_markdown_sections(
 
             next_start = stop
             overlap_length = 0
-            # Reuse only complete blocks and always advance by at least one
-            # block, preventing large paragraphs from causing a stalled loop.
+            # 只复用完整的块，且至少前进一个块，
+            # 避免超长段落导致循环停滞。
             while next_start > start + 1:
                 candidate = blocks[next_start - 1]
                 candidate_length = candidate.end - candidate.start
@@ -633,7 +633,7 @@ def add_chunk_metadata(
     chunks: tuple[MarkdownSectionChunk, ...] | list[MarkdownSectionChunk],
     docs_dir: Path,
 ) -> tuple[DocumentChunk, ...]:
-    """Convert source slices to traceable chunks without altering their text."""
+    """把源切片转换为可追溯的片段，且不改变其文本。"""
     identity = get_document_identity(document, docs_dir)
     source_path = document.path.resolve()
     document_text = document.text
@@ -686,7 +686,7 @@ class ChunkIdAssignment:
 def assign_chunk_ids(
     chunks: tuple[DocumentChunk, ...] | list[DocumentChunk],
 ) -> ChunkIdAssignment:
-    """Assign reproducible IDs and group them by source file."""
+    """分配可复现的 ID，并按源文件分组。"""
     assigned: list[DocumentChunk] = []
     ids_by_file: dict[str, list[str]] = {}
     seen: set[str] = set()
@@ -720,7 +720,7 @@ def validate_and_export_chunks(
     docs_dir: Path,
     output_path: Path,
 ) -> Path:
-    """Validate *chunks* and atomically publish them as UTF-8 JSONL."""
+    """校验 *chunks*，并以 UTF-8 JSONL 原子发布。"""
     docs_dir = Path(docs_dir).resolve()
     output_path = Path(output_path)
     seen_ids: set[str] = set()
@@ -844,7 +844,7 @@ def _verify_document_coverage(
     document: SourceDocument,
     chunks: tuple[MarkdownSectionChunk, ...],
 ) -> None:
-    """Ensure the chunks cover the complete source, allowing only overlap."""
+    """确保片段覆盖完整源文本，只允许相邻片段重叠。"""
     if not chunks:
         raise ValueError(f"非空文档未生成片段: {document.path}")
 
@@ -860,7 +860,7 @@ def _verify_document_coverage(
 
 
 def _verify_chunk_citation(chunk: DocumentChunk, document: SourceDocument) -> None:
-    """Check that a chunk is the exact source slice named by its line citation."""
+    """检查片段是否正是其行引用所指的精确源切片。"""
     if not (1 <= chunk.start_line <= chunk.end_line <= len(document.lines)):
         raise ValueError(
             f"片段行号越界: {chunk.source_path}:{chunk.start_line}-{chunk.end_line}"
@@ -920,7 +920,7 @@ def run_first_stage(
     config: IngestConfig | None = None,
     output_path: Path | None = None,
 ) -> FirstStageResult:
-    """Read, chunk, verify, and export the non-vector first-stage corpus."""
+    """读取、分块、校验并导出不含向量的第一阶段语料。"""
     config = config or load_ingest_config()
     files = scan_markdown_files(config.docs_dir)
     documents: dict[str, SourceDocument] = {}
@@ -990,7 +990,7 @@ def run_first_stage(
 
 @dataclass(frozen=True, slots=True)
 class OllamaEmbeddingModel:
-    """A verified Ollama embedding adapter and its immutable model identity."""
+    """一个已验证的 Ollama Embedding 适配器及其不可变的模型身份。"""
 
     adapter: Any
     provider: str
@@ -1001,7 +1001,7 @@ class OllamaEmbeddingModel:
 
 
 class OllamaEmbeddingError(RuntimeError):
-    """Raised when the configured local embedding model cannot be used."""
+    """配置的本地 Embedding 模型不可用时抛出。"""
 
 
 def check_ollama_embedding_model(
@@ -1011,7 +1011,7 @@ def check_ollama_embedding_model(
     opener: Callable[..., Any] = urlopen,
     adapter: Any | None = None,
 ) -> OllamaEmbeddingModel:
-    """Verify Ollama, resolve the model digest, and probe its output dimension."""
+    """校验 Ollama、解析模型 digest，并探测其输出维度。"""
     config = config or load_ingest_config()
     if config.embedding_provider != "ollama":
         raise ValueError(f"不支持的 Embedding provider: {config.embedding_provider}")
@@ -1086,7 +1086,7 @@ def check_ollama_embedding_model(
 
 @dataclass(frozen=True, slots=True)
 class DocumentEmbeddingResult:
-    """Validated vectors in exactly the same order as the input chunks."""
+    """已校验的向量，顺序与输入片段完全一致。"""
 
     chunk_ids: tuple[str, ...]
     vectors: tuple[tuple[float, ...], ...]
@@ -1100,7 +1100,7 @@ class DocumentEmbeddingResult:
 
 @dataclass(frozen=True, slots=True)
 class TemporaryIndexBuildResult:
-    """Artifacts and probe result for a fully validated temporary index."""
+    """完全通过校验的临时索引所产出的文件与探测结果。"""
 
     index_dir: Path
     vector_index_path: Path
@@ -1127,7 +1127,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _is_transient_embedding_error(exc: BaseException) -> bool:
-    """Recognize transport, timeout, rate-limit, and temporary server failures."""
+    """识别传输、超时、限流和临时性服务端故障。"""
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -1190,7 +1190,7 @@ def generate_document_embeddings(
     progress: Callable[[int, int], None] | None = None,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> DocumentEmbeddingResult:
-    """Generate and validate document vectors in bounded Ollama batches."""
+    """按有界的 Ollama 批次生成并校验文档向量。"""
     config = config or load_ingest_config()
     ordered_chunks = tuple(chunks)
     chunk_ids = tuple(chunk.chunk_id or "" for chunk in ordered_chunks)
@@ -1292,7 +1292,7 @@ def build_temporary_vector_index(
     *,
     config: IngestConfig | None = None,
 ) -> TemporaryIndexBuildResult:
-    """Build vector and keyword indexes from one chunk snapshot and probe them."""
+    """基于同一份片段快照构建向量索引和关键词索引，并探测它们。"""
     ordered_chunks = tuple(chunks)
     chunk_ids = tuple(chunk.chunk_id or "" for chunk in ordered_chunks)
     if any(not chunk_id for chunk_id in chunk_ids):
@@ -1378,7 +1378,7 @@ def build_temporary_vector_index(
         },
     )
 
-    # Validate the persisted ID associations, not only the in-memory inputs.
+    # 校验已持久化的 ID 关联，而不只是内存中的输入。
     with vector_path.open("r", encoding="utf-8") as source:
         stored_vectors = json.load(source)
     with keyword_path.open("r", encoding="utf-8") as source:
@@ -1423,7 +1423,7 @@ build_temporary_indexes = build_temporary_vector_index
 
 @dataclass(frozen=True, slots=True)
 class PublishedIndexResult:
-    """Paths belonging to one completely published index generation."""
+    """属于同一个完整发布索引代的路径集合。"""
 
     index_dir: Path
     chunks_path: Path
@@ -1438,7 +1438,7 @@ def _manifest_files(
     docs_dir: Path,
     file_chunk_ids: dict[str, tuple[str, ...]],
 ) -> list[dict[str, object]]:
-    """Snapshot every source file and fail if it changed or became unreadable."""
+    """为每个源文件拍摄快照；若文件发生变化或不可读则失败。"""
     records: list[dict[str, object]] = []
     for path in scan_markdown_files(docs_dir):
         document = read_markdown_file(path)
@@ -1461,7 +1461,7 @@ def publish_complete_index(
     *,
     model_identity_checker: Callable[..., OllamaEmbeddingModel] | None = None,
 ) -> PublishedIndexResult:
-    """Create a manifest and transactionally publish one complete index batch."""
+    """创建 manifest，并以事务方式发布一个完整的索引批次。"""
     config = config or load_ingest_config()
     if first_stage.failures:
         raise ValueError("文档读取存在失败，不能发布索引")
@@ -1584,7 +1584,7 @@ _QUERY_EMBEDDING_STRATEGY = "verbatim"
 
 @dataclass(frozen=True, slots=True)
 class ManifestFileRecord:
-    """One validated file entry from a current or previously published manifest."""
+    """当前或上一版已发布 manifest 中的一条已校验文件记录。"""
 
     path: str
     content_hash: str
@@ -1593,7 +1593,7 @@ class ManifestFileRecord:
 
 @dataclass(frozen=True, slots=True)
 class ManifestComparison:
-    """File-level changes and compatibility decisions for an incremental update."""
+    """增量更新所需的文件级变更与兼容性判断。"""
 
     current_files: tuple[ManifestFileRecord, ...]
     previous_files: tuple[ManifestFileRecord, ...]
@@ -1609,8 +1609,8 @@ class ManifestComparison:
     def has_file_changes(self) -> bool:
         return bool(self.added or self.modified or self.deleted)
 
-    # More explicit spellings are useful to callers and keep the compact names
-    # pleasant when reporting the comparison on the command line.
+    # 更明确的拼写便于调用方使用，同时在命令行中报告比较结果时
+    # 仍保留紧凑的属性名。
     @property
     def added_files(self) -> tuple[str, ...]:
         return self.added
@@ -1672,7 +1672,7 @@ def _manifest_file_records(value: object, *, source: str) -> tuple[ManifestFileR
 
 
 def _snapshot_manifest_files(docs_dir: Path) -> tuple[ManifestFileRecord, ...]:
-    """Read a complete Markdown snapshot, propagating every scan/read failure."""
+    """读取完整的 Markdown 快照，并向上传播任何扫描/读取失败。"""
     docs_dir = Path(docs_dir).resolve()
     paths: list[Path] = []
     directories = [docs_dir]
@@ -1705,7 +1705,7 @@ def compare_manifest(
     document_strategy: str = _DOCUMENT_EMBEDDING_STRATEGY,
     query_strategy: str = _QUERY_EMBEDDING_STRATEGY,
 ) -> ManifestComparison:
-    """Compare a consistent source snapshot with the last published manifest."""
+    """把一致的源文件快照与最近一次发布的 manifest 进行比较。"""
     current_files = _snapshot_manifest_files(config.docs_dir)
     manifest_path = Path(manifest_path) if manifest_path is not None else config.index_dir / "manifest.json"
 
@@ -1780,7 +1780,7 @@ compare_with_previous_manifest = compare_manifest
 
 @dataclass(frozen=True, slots=True)
 class IncrementalUpdateResult:
-    """Outcome of one atomic incremental index update."""
+    """一次原子增量索引更新的结果。"""
 
     comparison: ManifestComparison
     published: PublishedIndexResult
@@ -1925,7 +1925,7 @@ def update_index_incrementally(
     model_identity_checker: Callable[..., OllamaEmbeddingModel] | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> IncrementalUpdateResult:
-    """Reuse unchanged records and atomically publish a validated new snapshot."""
+    """复用未变化的记录，并原子发布一份已验证的新快照。"""
     comparison = comparison or compare_manifest(config, embedding_model)
     manifest_path = config.index_dir / "manifest.json"
     previous_manifest = (
@@ -2073,7 +2073,7 @@ update_incremental_index = update_index_incrementally
 
 @dataclass(frozen=True, slots=True)
 class IngestRunResult:
-    """Structured result returned by the ingestion entry points."""
+    """入库入口函数返回的结构化结果。"""
 
     operation: Literal["chunk", "build", "update"]
     discovered_files: int
@@ -2115,7 +2115,7 @@ def chunk_documents(
     config: IngestConfig | None = None,
     output_path: Path | None = None,
 ) -> IngestRunResult:
-    """Read, validate, and chunk documents without creating vector indexes."""
+    """读取、校验并分块文档，不创建向量索引。"""
     config = config or load_ingest_config()
     stage = run_first_stage(config, output_path)
     return IngestRunResult(
@@ -2136,7 +2136,7 @@ def build_index(
     model_identity_checker: Callable[..., OllamaEmbeddingModel] | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> IngestRunResult:
-    """Build and atomically publish a complete index generation."""
+    """构建并以事务方式发布一个完整的索引代。"""
     config = config or load_ingest_config()
     config.index_dir.parent.mkdir(parents=True, exist_ok=True)
     build_dir = Path(
@@ -2194,7 +2194,7 @@ def update_index(
     model_identity_checker: Callable[..., OllamaEmbeddingModel] | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> IngestRunResult:
-    """Incrementally update and atomically publish the current index."""
+    """增量更新并以事务方式发布当前索引。"""
     config = config or load_ingest_config()
     model = embedding_model or check_ollama_embedding_model(config)
     comparison = compare_manifest(config, model)

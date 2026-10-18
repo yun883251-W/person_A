@@ -1,8 +1,8 @@
-"""Session-owned MBTI interaction; questionnaire and scoring run through MCP.
+"""由会话持有的 MBTI 交互；问卷与评分均通过 MCP 执行。
 
-Each handled turn produces a new snapshot. The Agent commits that snapshot with
-the answer, so a failed database write never advances the in-memory questionnaire.
-This module neither loads MindCare nor owns a database or MCP connection.
+每个被处理的轮次都会生成一份新快照。Agent 将该快照与回答一并提交，
+因此数据库写入失败不会推进内存中的问卷状态。
+本模块不加载 MindCare，也不持有数据库或 MCP 连接。
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def _command_text(question: str) -> str:
 
 
 def _control_action(question: str, has_state: bool) -> str | None:
-    """Match a complete command, never an arbitrary action word in a sentence."""
+    """匹配完整命令，绝不匹配句子中任意一个动作词。"""
     text = _command_text(question)
     if re.fullmatch(rf"(?:重新(?:开始|做|测)?|重做|重测)(?:一次|一个|一份)?{_TARGET}", text):
         return "restart"
@@ -105,17 +105,17 @@ def _is_description_request(question: str) -> bool:
 
 
 def is_tool_instruction_question(question: str) -> bool:
-    """Whether this asks about implementing/using tools instead of running them.
+    """判断这是否在询问如何实现/使用工具，而不是要实际运行它们。
 
-    The planner can reuse this guard. A separate explicit MBTI command in another
-    clause makes the request mixed; request_clarification handles that boundary.
-    Quoted command examples cannot become executable clauses.
+    规划器可以复用这个守卫。若另一个从句中另有显式 MBTI 命令，
+    该请求就是混合请求；request_clarification 负责这一边界。
+    被引用的命令示例不能成为可执行从句。
     """
     for quoted in _QUOTED_RE.finditer(question):
         fragment = quoted.group(0)
         inner = fragment[1:-1].strip()
-        # A quoted parameter ("INTJ") or formatted tool identifier is not an
-        # instructional example. A quoted whole command must never execute.
+        # 带引号的参数（"INTJ"）或格式化的工具标识不是
+        # 指令示例。被引用的完整命令绝不能执行。
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", inner):
             continue
         if (
@@ -144,7 +144,7 @@ def is_tool_instruction_question(question: str) -> bool:
 
 
 def request_clarification(question: str, state: Mapping[str, Any] | None) -> str | None:
-    """Return a fixed clarification for requests that must not advance the test."""
+    """对不得推进测试的请求返回固定澄清语。"""
     text = question.strip()
     has_state = state is not None
     if is_tool_instruction_question(text):
@@ -155,8 +155,8 @@ def request_clarification(question: str, state: Mapping[str, Any] | None) -> str
         return "本轮没有执行测试或工具操作。请直接说明你想了解的内容，或单独发送需要执行的操作。"
     unquoted = _QUOTED_RE.sub("", text)
     parts = tuple(part.strip() for part in _CLAUSE_RE.split(unquoted) if part.strip())
-    # An interactive questionnaire cannot finish as one step of a compound turn.
-    # Ask explicitly instead of silently dropping the user's remaining objectives.
+    # 交互式问卷不能作为复合轮次中的一步完成。
+    # 应显式询问，而不是悄悄丢掉用户其余的目标。
     if len(parts) > 1 and any(
         _control_action(part, has_state) is not None or _is_description_request(part)
         for part in parts
@@ -182,11 +182,11 @@ def _description_type(question: str, state: Mapping[str, Any] | None) -> str | N
 
 
 def request_action(question: str, state: Mapping[str, Any] | None) -> str | None:
-    """Recognize complete controls without advancing state or guessing personality.
+    """识别完整控制语，但不推进状态，也不猜测人格。
 
-    A knowledge-topic switch returns None and leaves the snapshot untouched.
-    Numeric replies in paused/ready states reach handle_request's explicit guard;
-    they never implicitly resume a test or overwrite a completed result.
+    切换知识主题返回 None，并不改动快照。
+    paused/ready 状态下的数字回复会走到 handle_request 的显式守卫；
+    它们绝不会隐式恢复测试或覆盖已完成的结果。
     """
     text = question.strip()
     ongoing = state is not None and state.get("status") in {"active", "paused", "ready"}
@@ -207,7 +207,7 @@ def request_action(question: str, state: Mapping[str, Any] | None) -> str | None
 
 
 def validate_snapshot(value: object) -> dict[str, Any]:
-    """Bound and validate persisted questionnaire state, including old snapshots."""
+    """校验并约束持久化的问卷状态，包括旧快照。"""
     if not isinstance(value, dict):
         raise ValueError("Invalid MBTI snapshot")
     required = {"schema_version", "test_id", "status", "total", "questionnaire_version",
@@ -328,7 +328,7 @@ def handle_request(
     action: str, question: str, previous: dict[str, Any] | None,
     call: Callable[[str, dict[str, Any]], dict[str, Any]],
 ) -> AssessmentReply:
-    """Advance one host-managed step; call only the three fixed MBTI tools."""
+    """推进一个由宿主管理的步骤；只调用三个固定的 MBTI 工具。"""
     state = validate_snapshot(previous) if previous is not None else None
     if action == "describe":
         type_code = _description_type(question, state)
@@ -405,7 +405,7 @@ def handle_request(
         try:
             _load_page(state, call)
         except (AssessmentToolError, ValueError):
-            # Persist the just-submitted answer, but do not invent the next question.
+            # 持久化刚提交的答案，但不要臆造下一道题。
             state["questions"] = state["questions"][:len(state["answers"])]
             return AssessmentReply(f"已记录 {len(state['answers'])}/{state['total']} 道答案，下一批题目暂不可用。请稍后发送“继续 MBTI 测试”；若题库更新，请重新测试。", state, "needs_clarification", "mbti_page_pending")
     return AssessmentReply(_question_text(state), validate_snapshot(state))

@@ -1,8 +1,8 @@
-"""Citation rendering and the separate, non-citable view of past answers.
+"""引用渲染，以及历史回答独立的、不可引用的视图。
 
-Public answers retain source metadata for the UI and persistence. Model history,
-plan dependencies and memory must not replay those renderings or turn-local IDs.
-Nothing here validates, repairs or relaxes citations in a new model answer.
+公开回答会为 UI 和持久化保留来源元数据。模型历史、计划依赖和记忆
+不得重放这些渲染结果或轮次内的 ID。
+本模块不校验、修复或放宽新模型回答中的引用。
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ WRITTEN_CITATION_RE = re.compile(
     re.IGNORECASE,
 )
 _HISTORICAL_SOURCE_TOKEN_RE = re.compile(r"\[S\d+\]", re.IGNORECASE)
-# History-only fallback for rendered headings that themselves contain 【】.
-# Keep the current-answer validation pattern above unchanged.
+# 仅用于历史的兜底规则，处理渲染标题本身包含【】的情况。
+# 保持上方当前回答的校验模式不变。
 _RENDERED_HISTORY_CITATION_RE = re.compile(
     r"【[^\r\n【】]*\.md · [^\r\n]*?原文第 \d+(?:-\d+)? 行】",
     re.IGNORECASE,
@@ -32,7 +32,7 @@ _RENDERED_HISTORY_CITATION_RE = re.compile(
 
 
 def format_source(source: AnswerSource) -> str:
-    """Render a public citation solely from indexed source metadata."""
+    """仅依据索引来源元数据渲染公开引用。"""
     parts = [source.source_path]
     if source.heading_path:
         parts.append(" > ".join(source.heading_path))
@@ -44,12 +44,12 @@ def format_source(source: AnswerSource) -> str:
 
 
 def historical_answer_text(text: str, sources: Sequence[AnswerSource] = ()) -> str:
-    """Remove old citations before truncating or sending background to a model.
+    """在截断背景或发送给模型之前移除旧引用。
 
-    Match known renderings exactly first, including unusual paths/headings. The
-    pattern also covers old summaries and stored answers lacking source metadata.
-    Never turn an old reference into [S1]: IDs belong only to the current evidence.
-    This projection leaves the stored/displayed answer and source objects intact.
+    先精确匹配已知的渲染形式，包括不常见的路径/标题。该模式也覆盖
+    缺少来源元数据的旧摘要和存储回答。
+    绝不能把旧引用转换成 [S1]：ID 只属于当前证据。
+    此投影不改变存储/展示的回答和来源对象。
     """
     cleaned = text
     for source in sources:

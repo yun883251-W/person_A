@@ -170,7 +170,7 @@ def propose_transition(
     commit_timing: CommitTiming = CommitTiming.WITH_TURN,
     tool_schema: Mapping[str, object] | None = None,
 ) -> StateTransition:
-    """Build a validated, copy-on-write state proposal without committing it."""
+    """构建经校验的写时复制状态提议，但不提交它。"""
 
     previous = validate_business_state(previous)
     decision = validate_dialogue_decision(decision, tool_schema=tool_schema)
@@ -191,7 +191,7 @@ def propose_transition(
 
 
 def transition_requires_execution(transition: StateTransition) -> bool:
-    """Return the execution policy attached to a validated transition reason."""
+    """返回附加在已校验转换原因上的执行策略。"""
 
     rule = _TRANSITION_RULES.get(transition.reason_code)
     if rule is None:
@@ -245,7 +245,7 @@ def create_pending_transition(
     updated_at: str,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> StateTransition:
-    """Create the sole resumable task for a supported, incomplete request."""
+    """为受支持但不完整的请求创建唯一的可恢复任务。"""
 
     decision = _validate_decision_for_state(previous, decision, tool_schema=tool_schema)
     if (
@@ -285,7 +285,7 @@ def start_business_transition(
     updated_at: str,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> StateTransition:
-    """Start or replace one explicit single business without retaining an old pending task."""
+    """启动或替换一个显式单一业务，不保留旧的待处理任务。"""
 
     decision = _validate_decision_for_state(previous, decision, tool_schema=tool_schema)
     if decision.intent is not DialogueIntent.NEW_BUSINESS or decision.execution_mode is not ExecutionMode.SINGLE:
@@ -318,7 +318,7 @@ def start_business_transition(
         focus = BusinessFocus(business_type, BusinessPhase.READY, test_id=test_id)
         actions = ("prepare_execution",)
     else:
-        # Generic MCP requests have no cross-turn PendingBusiness contract in phase one.
+        # 第一阶段中，通用 MCP 请求没有跨轮 PendingBusiness 契约。
         raise DialogueContractError("business_unsupported")
     return propose_transition(
         previous,
@@ -339,7 +339,7 @@ def merge_pending_transition(
     updated_at: str,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> StateTransition:
-    """Merge validated supplemental slots into the current awaiting-input task."""
+    """把已校验的补充槽位合并到当前等待输入的任务中。"""
 
     decision = _validate_decision_for_state(previous, decision, tool_schema=tool_schema)
     pending = previous.pending
@@ -397,7 +397,7 @@ def record_unresolved_clarification(
     clarification_question: str,
     updated_at: str,
 ) -> StateTransition:
-    """Count one genuine unresolved reply without imposing a retry ceiling."""
+    """统计一次真正的未解决回复，但不施加重试上限。"""
 
     previous = validate_business_state(previous)
     if _phase(previous) is not BusinessPhase.AWAITING_INPUT or previous.pending is None:
@@ -426,7 +426,7 @@ def preserve_business_state(
     *,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> SessionBusinessState:
-    """Validate a passive decision and return the exact unchanged committed state."""
+    """校验被动决定，并返回精确且未改变的已提交状态。"""
 
     decision = _validate_decision_for_state(previous, decision, tool_schema=tool_schema)
     if decision.intent not in {DialogueIntent.CHITCHAT, DialogueIntent.UNCLEAR, DialogueIntent.UNSUPPORTED}:
@@ -442,7 +442,7 @@ def apply_mbti_outcome(
     phase: BusinessPhase,
     updated_at: str,
 ) -> StateTransition:
-    """Project an already-validated assessment outcome without duplicating assessment logic."""
+    """投影已经校验过的测评结果，不重复测评逻辑。"""
 
     previous = validate_business_state(previous)
     if phase not in {BusinessPhase.ACTIVE, BusinessPhase.PAUSED, BusinessPhase.COMPLETED, BusinessPhase.CANCELLED}:
@@ -490,7 +490,7 @@ def cancel_current_business(
     updated_at: str,
     mbti_test_id: str | None = None,
 ) -> StateTransition:
-    """Cancel the unambiguous current task; never attempts to interrupt dispatch."""
+    """取消明确的当前任务；绝不尝试中断派发。"""
 
     previous = validate_business_state(previous)
     focus = previous.focus
@@ -531,7 +531,7 @@ def prepare_execution(
     *,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> ExecutionProposal:
-    """Revalidate a ready task and return data for the existing executor, not a tool call."""
+    """重新校验就绪任务，并为现有执行器返回数据，而不是工具调用。"""
 
     decision = _validate_decision_for_state(previous, decision, tool_schema=tool_schema)
     pending = previous.pending
@@ -565,7 +565,7 @@ def mark_dispatching(
     updated_at: str,
     tool_schema: Mapping[str, Any] | None = None,
 ) -> StateTransition:
-    """Consume a ready pending task in the short transaction before external dispatch."""
+    """在外部派发前的短事务中消费一个就绪的待处理任务。"""
 
     previous = validate_business_state(previous)
     pending = previous.pending
@@ -604,7 +604,7 @@ def apply_execution_outcome(
     outcome: ExecutionOutcome,
     updated_at: str,
 ) -> StateTransition | None:
-    """Close a dispatched operation from an executor-owned fact without retrying it."""
+    """依据执行器持有的事实关闭已派发操作，而不重试它。"""
 
     previous = validate_business_state(previous)
     if not isinstance(outcome, ExecutionOutcome):
@@ -643,7 +643,7 @@ def restore_business_state(
     session_id: str,
     updated_at: str,
 ) -> SessionBusinessState:
-    """Load only the dedicated state record; absence means a validated empty legacy state."""
+    """只加载专用状态记录；不存在时视为已校验的空旧版状态。"""
 
     if record is None:
         return empty_business_state(session_id, updated_at=updated_at)
@@ -654,7 +654,7 @@ def restore_business_state(
 
 
 def restoration_next_actions(state: SessionBusinessState) -> tuple[str, ...]:
-    """Describe safe resume behavior without turning recovery into execution."""
+    """说明安全的恢复行为，但不把恢复变成执行。"""
 
     state = validate_business_state(state)
     phase = _phase(state)
@@ -666,7 +666,7 @@ def restoration_next_actions(state: SessionBusinessState) -> tuple[str, ...]:
 
 
 def cleared_business_state(previous: SessionBusinessState, *, updated_at: str) -> SessionBusinessState:
-    """Return the empty in-memory value to publish after persistent clear/delete succeeds."""
+    """持久化清除/删除成功后，返回要发布的空内存值。"""
 
     previous = validate_business_state(previous)
     return empty_business_state(previous.session_id, updated_at=updated_at)

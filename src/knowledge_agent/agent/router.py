@@ -53,11 +53,11 @@ _ROUTE_BY_INTENT = {
 
 
 def intent_from_dialogue(decision: DialogueDecision, *, current_input: str) -> IntentDecision:
-    """Project the final dialogue decision into the stable executor contract.
+    """把最终对话决定投影为稳定的执行器契约。
 
-    This boundary does not classify again or consult an obsolete decision.
-    Existing history/API routing enums remain compatible with stored turns.
-    Cross-turn browser dispatch validates its separate source binding.
+    此边界不会再次分类，也不参考过时的决定。
+    现有历史/API 路由枚举与存储轮次保持兼容。
+    跨轮浏览器派发会校验其独立的来源绑定。
     """
     validate_dialogue_decision(decision)
     source = decision.decision_source.value
@@ -102,7 +102,7 @@ def resolve_route(
     *,
     assessment_action: str | None = None,
 ) -> RouteDecision:
-    """Route an already validated intent without classifying it again."""
+    """路由一个已校验的意图，而不再次分类。"""
     if not isinstance(intent, IntentDecision):
         raise TypeError("intent must be an IntentDecision")
     if skill_id is not None and not isinstance(skill_id, str):

@@ -18,11 +18,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class DocumentChunk:
-    """A source-preserving Markdown chunk with traceable metadata.
+    """保留原文的 Markdown 片段，附带可追溯的元数据。
 
-    ``text`` is always the verbatim source slice.  Heading information remains
-    separate so adding it to embedding/search input cannot change citations.
-    ``chunk_id`` is populated by the stable-ID stage.
+    ``text`` 始终是逐字的原文切片。标题信息单独保存，
+    因此把它加入 Embedding/检索输入不会改变引用内容。
+    ``chunk_id`` 由稳定 ID 阶段填充。
     """
 
     text: str
@@ -36,7 +36,7 @@ class DocumentChunk:
 
     @property
     def retrieval_text(self) -> str:
-        """Return search text while keeping the cited source text untouched."""
+        """返回用于检索的文本，同时保持被引用的原文不变。"""
         if not self.heading_path:
             return self.text
         return f"{' > '.join(self.heading_path)}\n\n{self.text}"
@@ -47,7 +47,7 @@ RetrievalChannel = Literal["vector", "keyword"]
 
 @dataclass(frozen=True, slots=True)
 class RetrievalResult:
-    """One ranked, source-preserving result from an index snapshot."""
+    """索引快照中一条已排序、保留原文的检索结果。"""
 
     chunk_id: str
     chunk: DocumentChunk
@@ -83,7 +83,7 @@ DecisionSource = Literal["rules", "model", "fallback"]
 
 @dataclass(frozen=True, slots=True)
 class DialogueSummary:
-    """Display-safe description of the single dialogue decision for this turn."""
+    """对本轮单次对话决策的展示安全描述。"""
 
     action: str
     business_type: str | None
@@ -93,7 +93,7 @@ class DialogueSummary:
 
 @dataclass(frozen=True, slots=True)
 class BusinessStateSummary:
-    """Display-safe projection of the latest committed business state."""
+    """对最新已提交业务状态的展示安全投影。"""
 
     business_type: str | None
     phase: str
@@ -106,7 +106,7 @@ class BusinessStateSummary:
 
 @dataclass(frozen=True, slots=True)
 class RouteSummary:
-    """Stable public routing metadata for one completed turn."""
+    """一个已完成轮次的稳定公开路由元数据。"""
 
     route: RouteName
     intent: IntentName
@@ -116,7 +116,7 @@ class RouteSummary:
 
 @dataclass(frozen=True, slots=True)
 class AnswerSource:
-    """A source that was actually supplied to and cited by the answer."""
+    """实际提供给回答并被引用的来源。"""
 
     chunk_id: str
     source_path: str
@@ -150,10 +150,10 @@ AnswerValidationStatus = Literal["passed", "warning", "rejected"]
 
 @dataclass(frozen=True, slots=True)
 class AnswerDiagnostics:
-    """Keep model intent separate from validation and the answer's business status.
+    """将模型意图与校验结果、回答的业务状态分开。
 
-    The bounded final-text excerpt is private persistence data, never model
-    history, public JSON, or trace progress. Model reasoning fields are excluded.
+    有界的最终文本摘录属于私有持久化数据，绝不会进入模型历史、
+    公开 JSON 或 trace 进度。模型推理字段一律排除。
     """
 
     declared_status: DeclaredAnswerStatus | None
@@ -167,7 +167,7 @@ class AnswerDiagnostics:
 
 @dataclass(frozen=True, slots=True)
 class StepAnswerDiagnostics:
-    """Private diagnostics for one leaf; public plan data uses an allow-list."""
+    """单个叶节点的私有诊断；公开计划数据使用白名单投影。"""
 
     step_id: str
     diagnostics: AnswerDiagnostics
@@ -175,10 +175,10 @@ class StepAnswerDiagnostics:
 
 @dataclass(frozen=True, slots=True)
 class AnswerResult:
-    """Structured answer with an optional private, persisted assessment snapshot.
+    """结构化回答，可附带一份私有的、已持久化的测评快照。
 
-    HTTP responses must convert ``assessment_state`` with ``public_assessment``;
-    the snapshot contains submitted answers and is never a public response body.
+    HTTP 响应必须用 ``public_assessment`` 转换 ``assessment_state``；
+    该快照包含已提交的答案，绝不能作为公开响应体。
     """
 
     question: str
@@ -192,8 +192,8 @@ class AnswerResult:
     trace: TurnTrace | None = None
     routing: RouteSummary | None = None
     assessment_state: dict[str, Any] | None = None
-    # Public execution summary only: goals, dependencies, outcomes and counts.
-    # Never store model reasoning or raw tool responses in this field.
+    # 仅公开执行摘要：目标、依赖关系、结果和计数。
+    # 该字段绝不存储模型推理或原始工具响应。
     plan: dict[str, Any] | None = None
     answer_diagnostics: AnswerDiagnostics | None = None
     step_answer_diagnostics: tuple[StepAnswerDiagnostics, ...] = field(default=(), repr=False)

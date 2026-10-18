@@ -17,11 +17,10 @@ from .schemas import AskRequest
 from .serialization import _answer_response
 
 class _ProgressChannel:
-    """A bounded worker-to-event-loop channel for one connected HTTP stream.
+    """单条已连接 HTTP 流的有界工作线程→事件循环通道。
 
-    The cap bounds both scheduled callbacks and queued payloads. Terminal results
-    travel through the worker Future, so a slow client cannot lose its answer to
-    a full progress queue. Detaching never cancels the business operation.
+    上限同时约束已调度回调和排队载荷。最终结果经由工作线程 Future 传递，
+    因此慢客户端不会因为进度队列已满而丢失回答。断开连接不会取消业务操作。
     """
 
     MAX_EVENTS = 256
@@ -38,8 +37,8 @@ class _ProgressChannel:
             if not self._attached or self._sent >= self.MAX_EVENTS:
                 return
             self._sent += 1
-            # Payloads come only from trace's public field serializer, never
-            # from model messages, tool arguments or retrieved source text.
+            # 载荷只来自 trace 的公开字段序列化器，
+            # 绝不来自模型消息、工具参数或检索原文。
             try:
                 self._loop.call_soon_threadsafe(self._enqueue, dict(payload))
             except RuntimeError:
@@ -57,7 +56,7 @@ class _ProgressChannel:
 
 
 def _sse_event(event: Literal["progress", "result", "error"], value: dict[str, Any]) -> str:
-    # JSON escapes embedded newlines, so text cannot inject an extra SSE frame.
+    # JSON 会转义内嵌换行，因此文本无法注入额外的 SSE 帧。
     return f"event: {event}\ndata: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
@@ -67,11 +66,11 @@ async def create_progress_response(
     request: AskRequest,
     http_request: Request,
 ) -> StreamingResponse:
-    """Submit once, then emit public progress and a validated final response."""
+    """只提交一次，随后发送公开进度与已校验的最终响应。"""
     channel = _ProgressChannel(asyncio.get_running_loop())
     try:
-        # Reserve the same single worker before sending response headers, so
-        # concurrent questions and mutations keep their existing busy policy.
+        # 在发送响应头之前先占用同一个工作线程，
+        # 使并发提问与修改操作继续遵守既有的忙碌策略。
         worker_future = runtime.submit_ask_session(
             session_id, request.question,
             skill_id=request.skill_id, skill_mode=request.skill_mode,
@@ -81,8 +80,8 @@ async def create_progress_response(
         channel.detach()
         raise
     wrapped = asyncio.wrap_future(worker_future)
-    # asyncio.wait below never cancels this Future. If the browser leaves,
-    # completion still retrieves failures and the worker owns persistence.
+    # 下面的 asyncio.wait 不会取消该 Future。即使浏览器离开，
+    # 完成时仍会取回异常，且持久化由工作线程负责。
     wrapped.add_done_callback(ServiceRuntime._consume_future_exception)
 
     async def stream_events():

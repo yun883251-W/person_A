@@ -1,9 +1,8 @@
-"""Execute one host-confirmed Bilibili task with durable dispatch protection.
+"""执行一个经宿主确认的 B 站任务，并提供持久化的派发保护。
 
-The caller has committed the READY transition. This boundary revalidates the
-original request and current slot provenance, consumes the pending task before
-the external call, and accepts only the browser service's exact result contract.
-It does not classify with a model, invent tool calls, or replay uncertain work.
+调用方已提交 READY 转换。此边界会重新校验原始请求和当前槽位来源，
+在外部调用之前消费待处理任务，并且只接受浏览器服务的精确结果契约。
+它不用模型分类、不凭空生成工具调用，也不重放不确定的工作。
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ def _ready_arguments(
     question: str, session_id: str, ready: SessionBusinessState,
     decision: DialogueDecision, *, turn_id: str, registry: ToolRegistry[TurnState],
 ) -> dict[str, str]:
-    """Recheck current-turn authority independently of the earlier classifier."""
+    """独立于先前的分类器，重新检查当前轮次的授权。"""
     validate_business_state(ready)
     validate_dialogue_decision(decision)
     pending = ready.pending
@@ -73,8 +72,8 @@ def _ready_arguments(
     ):
         raise DialogueContractError("browser_pending_authorization_invalid")
 
-    # READY was committed from this decision, so execution uses the new revision
-    # only after proving that it is exactly the next state of this decision.
+    # READY 是基于该决定提交的，因此执行只有在证明它恰好是该决定的
+    # 下一个状态之后，才使用新的 revision。
     current_decision = replace(decision, expected_revision=ready.revision)
     proposal = prepare_execution(ready, current_decision)
     arguments = validate_search_arguments(proposal.arguments)
@@ -101,9 +100,9 @@ def _ready_arguments(
             raise DialogueContractError("browser_pending_authorization_invalid")
         literal_topic = extract_bilibili_topic(pending.original_request)
         if literal_topic != topic:
-            # The semantic classifier already passed the host's explicit-action
-            # boundary. Retain that exact current request and literal topic;
-            # generic clarification or historical model content is insufficient.
+            # 语义分类器已经通过宿主的显式操作边界。
+            # 保留这份精确的当前请求和字面主题；
+            # 泛化澄清或历史模型内容都不够。
             semantic_authorized = (
                 original_action is not None
                 and original_action.kind == "semantic_candidate"
@@ -120,8 +119,8 @@ def _ready_arguments(
         or original_action.reason_code != "browser_bilibili_missing_topic"
         or topic != question.strip()
     ):
-        # Cross-turn execution is only a literal answer to an established,
-        # specific missing-topic question, never a guessed business continuation.
+        # 跨轮执行只是对一个已确立、具体的缺主题问题的字面回答，
+        # 绝不是猜测出来的业务延续。
         raise DialogueContractError("browser_pending_authorization_invalid")
 
     registration = registry.get(SEARCH_BILIBILI_TOOL)
@@ -133,8 +132,8 @@ def _ready_arguments(
         else:
             checked = registration.definition.get_input_schema().model_validate(arguments).model_dump()
     except Exception as exc:
-        # MCP adapters and local schemas expose different exception classes.
-        # A rejected schema is still a pre-dispatch failure, not an HTTP crash.
+        # MCP 适配器和本地 schema 暴露不同的异常类。
+        # 被拒绝的 schema 仍属于派发前失败，而不是 HTTP 崩溃。
         raise DialogueContractError("browser_invalid_tool_arguments") from exc
     if not isinstance(checked, dict) or checked != arguments:
         raise DialogueContractError("browser_invalid_tool_arguments")
@@ -177,7 +176,7 @@ def dispatch_pending_search(
     save_transition: Callable[[str, StateTransition], SessionBusinessState],
     commit_turn: Callable[..., AnswerResult],
 ) -> AnswerResult:
-    """Dispatch once after READY; preserve consumed state if final persistence fails."""
+    """READY 之后只派发一次；若最终持久化失败，保留已消费状态。"""
     trace = TraceRecorder()
     state = TurnState(original_question=question, trace_recorder=trace)
     state.model_calls = model_calls
@@ -209,7 +208,7 @@ def dispatch_pending_search(
             "搜索请求的参数、来源或工具状态未通过校验，尚未请求打开浏览器。请重新发送完整搜索请求。",
             status="limit_reached" if limited else "service_error", code=code,
         )
-        # A rejected cross-session proposal must not be written to either session.
+        # 被拒绝的跨会话提议不得写入任一会话。
         if ready.session_id != session_id:
             return result
         return commit_turn(
@@ -229,8 +228,8 @@ def dispatch_pending_search(
     try:
         dispatching = save_transition(session_id, dispatch)
     except Exception:
-        # The action has not been attempted. Never trade persistence failure for
-        # an unrecorded browser launch, and do not retry the write here.
+        # 操作尚未尝试。绝不能以持久化失败换取一次未记录的
+        # 浏览器启动，也不要在这里重试写入。
         return _result(
             state, decision, "业务状态保存失败，尚未请求打开浏览器。请稍后重新发送完整搜索请求。",
             status="service_error", code="browser_dispatch_state_unsaved",
@@ -257,8 +256,8 @@ def dispatch_pending_search(
     except TimeoutError:
         outcome, code = ExecutionOutcome.TIMED_OUT, "tool_timeout"
     except Exception:
-        # A disconnected transport or malformed reply does not prove that the
-        # browser launch failed. The consumed task is never put back in READY.
+        # 传输断开或回复格式错误并不能证明浏览器启动失败。
+        # 已消费的任务绝不会被放回 READY。
         outcome = ExecutionOutcome.UNKNOWN
 
     success = payload is not None
@@ -286,8 +285,8 @@ def dispatch_pending_search(
         updated_at=_utc_now(),
     )
     result = _result(state, decision, answer, status="success" if success else "service_error", code=code)
-    # The consumed DISPATCHING state is already durable. If this commit fails,
-    # the caller reports persistence failure without resurrecting/replaying it.
+    # 已消费的 DISPATCHING 状态已经持久化。若这次提交失败，
+    # 调用方报告持久化失败，而不复活或重放它。
     return commit_turn(
         session_id, state, result,
         (HumanMessage(content=question), AIMessage(content=answer)),

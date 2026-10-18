@@ -51,7 +51,7 @@ def _error_content(
 
 
 def _answer_service_error(response: AnswerResponse) -> JSONResponse:
-    """Share business-error mapping between complete JSON and SSE responses."""
+    """让完整 JSON 与 SSE 响应共用同一套业务错误映射。"""
     if response.stop_reason == "index_not_built":
         status_code, code, message = (
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -88,7 +88,7 @@ async def internal_error_handler(
 
 
 def register_error_handlers(application: FastAPI) -> None:
-    """Attach exception mappings to an assembled HTTP application."""
+    """向已组装完成的 HTTP 应用挂载异常映射。"""
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(
         _request: Request, exc: RequestValidationError

@@ -27,37 +27,37 @@ if TYPE_CHECKING:
 
 
 class ChatModelInvocationError(RuntimeError):
-    """Base error raised when a chat-model request cannot be completed."""
+    """对话模型请求无法完成时抛出的基类错误。"""
 
 
 class ChatModelAuthenticationError(ChatModelInvocationError):
-    """The provider rejected the configured credentials."""
+    """提供方拒绝了已配置的凭据。"""
 
 
 class ChatModelNotFoundError(ChatModelInvocationError):
-    """The configured model or endpoint does not exist."""
+    """配置的模型或端点不存在。"""
 
 
 class ChatModelTimeoutError(ChatModelInvocationError):
-    """The provider request exceeded its configured timeout."""
+    """提供方请求超过配置的超时时间。"""
 
 
 class ChatModelServiceError(ChatModelInvocationError):
-    """A transient provider or network failure exhausted its retries."""
+    """暂时性的提供方或网络故障在重试后仍未恢复。"""
 
 
 class ChatModelRequestError(ChatModelInvocationError):
-    """The request is invalid or uses a capability the model lacks."""
+    """请求无效，或使用了模型不具备的能力。"""
 
 
 class ChatModelOutputError(ChatModelInvocationError):
-    """The provider answered, but its response or tool arguments were invalid."""
+    """提供方已响应，但响应或工具参数无效。"""
 
 
 def create_embedding_model(
     *, provider: str, model: str, base_url: str, request_timeout: float = 60.0
 ) -> Any:
-    """Create the configured embedding adapter without contacting the service."""
+    """创建已配置的 Embedding 适配器，但不联系服务。"""
     if provider.strip().lower() != "ollama":
         raise ValueError(f"不支持的 Embedding provider: {provider}")
     if not model.strip():
@@ -73,7 +73,7 @@ def create_embedding_model(
         ) from exc
 
     class NonTruncatingOllamaEmbeddings(OllamaEmbeddings):
-        """Ollama adapter that never silently truncates document input."""
+        """绝不静默截断文档输入的 Ollama 适配器。"""
 
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
             response = self._client.embed(
@@ -108,11 +108,11 @@ def create_chat_model(
     max_output_tokens: int | None = None,
     model_kwargs: Mapping[str, Any] | None = None,
 ) -> BaseChatModel:
-    """Create a chat adapter for agent message input and structured output.
+    """为 Agent 消息输入和结构化输出创建对话适配器。
 
-    The factory is limited to adapting the explicitly supplied provider settings.
-    Prompt construction, retrieval, conversation orchestration, tool execution, and
-    generation of a complete business answer belong to their respective layers.
+    该工厂只负责适配显式传入的提供方设置。
+    提示词构造、检索、对话编排、工具执行以及完整业务回答的生成
+    都属于各自所在的层。
     """
     if not isinstance(provider, str) or not provider.strip():
         raise ValueError("CHAT_PROVIDER 不能为空")
@@ -193,8 +193,8 @@ def create_chat_model(
             "api_key": api_key.strip(),
             "base_url": normalized_base_url.rstrip("/"),
             "timeout": float(request_timeout),
-            # Retrying is centralized in invoke_chat_model so all providers have
-            # the same finite policy and nested retries cannot multiply.
+            # 重试统一集中在 invoke_chat_model，使所有提供方共享
+            # 同一套有限策略，避免嵌套重试成倍放大。
             "max_retries": 0,
         }
         if temperature is not None:
@@ -229,11 +229,10 @@ def create_chat_model(
     return chat_model
 
 def initialize_chat_model() -> BaseChatModel:
-    """Return the client for the current chat configuration.
+    """返回当前对话配置对应的客户端。
 
-    A client is reused while all chat settings remain unchanged.  A changed
-    configuration creates and retains a replacement client; embedding clients
-    and indexes are deliberately outside this lifecycle.
+    只要对话设置未变就复用同一客户端。配置变化时会创建并保留
+    替代客户端；Embedding 客户端和索引刻意不在此生命周期内。
     """
     from knowledge_agent.config import get_chat_settings
 
@@ -242,7 +241,7 @@ def initialize_chat_model() -> BaseChatModel:
 
 @lru_cache(maxsize=1)
 def _configured_chat_model(settings: ChatSettings) -> BaseChatModel:
-    """Create one stateless, reusable client per active chat configuration."""
+    """为每个生效的对话配置创建一个无状态、可复用的客户端。"""
     return create_chat_model(
         provider=settings.provider,
         model=settings.model,
@@ -260,11 +259,10 @@ def invoke_chat_model(
     *,
     max_retries: int | None = None,
 ) -> AIMessage:
-    """Synchronously return one complete message, including tool-call metadata.
+    """同步返回一条完整消息，包括工具调用元数据。
 
-    This boundary deliberately uses ``invoke`` rather than consuming ``stream``:
-    callers only receive the provider's completed message, and tool execution stays
-    in the agent layer.
+    该边界刻意使用 ``invoke`` 而不是消费 ``stream``：
+    调用方只拿到提供方已完成的消息，工具执行仍留在 Agent 层。
     """
     retries = (
         getattr(model, "_knowledge_agent_max_retries", 0)
@@ -293,7 +291,7 @@ def invoke_chat_model(
 def _normalize_chat_model_error(
     exc: Exception,
 ) -> tuple[ChatModelInvocationError, bool]:
-    """Translate provider-specific failures without importing provider SDKs."""
+    """在不导入提供方 SDK 的情况下转换提供方特有的失败。"""
     status = _exception_status_code(exc)
     name = type(exc).__name__.lower()
 
@@ -324,7 +322,7 @@ def _normalize_chat_model_error(
 
 
 def _exception_status_code(exc: Exception) -> int | None:
-    """Best-effort extraction for OpenAI/httpx/Ollama-style exceptions."""
+    """尽力从 OpenAI/httpx/Ollama 风格的异常中提取状态码。"""
     for candidate in (exc, getattr(exc, "response", None)):
         for attribute in ("status_code", "status"):
             value = getattr(candidate, attribute, None)
@@ -334,14 +332,13 @@ def _exception_status_code(exc: Exception) -> int | None:
 
 
 def bind_chat_json_schema(model: BaseChatModel, schema: Mapping[str, Any]) -> Any:
-    """Constrain an isolated Ollama JSON response without changing the client.
+    """在不改变客户端的前提下约束一次隔离的 Ollama JSON 响应。
 
-    Use the native ``format`` schema, not a synthetic tool or a permissive JSON
-    parser. Callers still own strict parsing, semantic validation and budgets.
-    Returning a bound runnable preserves the raw AIMessage and leaves ordinary
-    answers and tool calls on the shared model unaffected. Other providers keep
-    their existing prompt-based contract; do not send Ollama-only parameters.
-    This function only prepares the request and never contacts the service.
+    使用原生 ``format`` schema，而不是合成工具或宽松的 JSON 解析器。
+    调用方仍负责严格解析、语义校验和预算控制。返回绑定后的 runnable
+    会保留原始 AIMessage，并让共享模型上的普通回答和工具调用不受影响。
+    其他提供方保持现有的基于提示词的契约；不要发送 Ollama 专属参数。
+    该函数只准备请求，绝不联系服务。
     """
     if not isinstance(schema, Mapping) or schema.get("type") != "object":
         raise ValueError("The response schema must describe a JSON object")
@@ -360,10 +357,9 @@ def bind_chat_json_schema(model: BaseChatModel, schema: Mapping[str, Any]) -> An
 
 
 def bind_chat_tools(model: BaseChatModel, tools: Sequence[Any]) -> Any:
-    """Bind agent-supplied tool schemas without executing the tools.
+    """绑定由 Agent 提供的工具 schema，但不执行工具。
 
-    Tool-call execution, result messages, and iteration limits remain the
-    responsibility of the agent layer.
+    工具调用执行、结果消息和迭代上限仍由 Agent 层负责。
     """
     try:
         return model.bind_tools(tools)

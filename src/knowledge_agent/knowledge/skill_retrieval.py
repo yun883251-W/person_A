@@ -1,9 +1,8 @@
-"""Build and execute bounded, skill-aware knowledge retrieval strategies.
+"""构建并执行有界的、技能感知的知识检索策略。
 
-This module performs deterministic text analysis only. It does not execute user
-code, load executable behavior from skill text, alter retriever configuration,
-or generate a final answer. The owning runner supplies turn-scoped executors and
-state so strategy searches share the normal tool, follow-up, and context budget.
+本模块只做确定性的文本分析。它不执行用户代码，不从技能文本加载可执行行为，
+不修改检索器配置，也不生成最终回答。所属 runner 提供轮次作用域的
+执行器和状态，使策略检索共享常规的工具、追问和上下文预算。
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ SKILL_STRATEGIES: Mapping[str, RetrievalStrategy] = {
 
 @dataclass(frozen=True, slots=True)
 class RetrievalSubject:
-    """A bounded retrieval object and the visible input it came from."""
+    """一个有界的检索对象及其来源可见输入。"""
 
     text: str
     source: Literal["question", "visible_context"]
@@ -41,7 +40,7 @@ class RetrievalSubject:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalAnalysis:
-    """Deterministic analysis used to build a strategy plan."""
+    """用于构建策略计划的确定性分析结果。"""
 
     subjects: tuple[RetrievalSubject, ...]
     focus: str
@@ -51,7 +50,7 @@ class RetrievalAnalysis:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalStep:
-    """One planned knowledge-tool operation."""
+    """一项已计划的知识工具操作。"""
 
     step_id: str
     operation: RetrievalOperation
@@ -83,7 +82,7 @@ class RetrievalStep:
 
 @dataclass(frozen=True, slots=True)
 class SkillRetrievalPlan:
-    """Immutable retrieval strategy selected for one knowledge step."""
+    """为单个知识步骤选定的不可变检索策略。"""
 
     strategy_id: RetrievalStrategy
     selected_skill_id: str | None
@@ -94,7 +93,7 @@ class SkillRetrievalPlan:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalStepResult:
-    """Execution result for one planned operation."""
+    """一项已计划操作的执行结果。"""
 
     status: RetrievalStepStatus
     returned_chunk_ids: tuple[str, ...] = ()
@@ -105,7 +104,7 @@ class RetrievalStepResult:
 
 @dataclass(frozen=True, slots=True)
 class SkillRetrievalOutcome:
-    """Aggregate execution, coverage, and truncation information."""
+    """聚合的执行、覆盖和截断信息。"""
 
     executed: int = 0
     skipped: int = 0
@@ -129,7 +128,7 @@ class SkillRetrievalOutcome:
 
 
 class RetrievalExecutionState(Protocol):
-    """Minimal mutable turn state needed by the strategy executor."""
+    """策略执行器所需的最小可变轮次状态。"""
 
     evidence: MutableMapping[str, RetrievalResult]
     tool_calls: int
@@ -177,7 +176,7 @@ _FOCUS_RULES = (
 
 
 def strategy_for_skill(selected_skill_id: str | None) -> RetrievalStrategy:
-    """Map only built-in skill IDs to specialized strategies."""
+    """只把内置技能 ID 映射到专用策略。"""
 
     return SKILL_STRATEGIES.get(selected_skill_id or "", "default")
 
@@ -260,8 +259,8 @@ def _code_identifiers(code: str, question: str = "") -> tuple[str, ...]:
                 if alias.name != "*":
                     aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
                     imported.append(f"{node.module}.{alias.name}")
-    # Actual calls come before unrelated imports. A bounded visible question can
-    # then prioritize a named call without treating source text as instructions.
+    # 实际调用优先于无关的导入。这样有界的可见问题可以优先考虑
+    # 一个具名调用，而不会把源码文本当作指令。
     for node in nodes:
         if isinstance(node, ast.Call):
             name = dotted(node.func)
@@ -284,7 +283,7 @@ def analyze_retrieval_question(
     strategy_id: RetrievalStrategy,
     visible_context: str = "",
 ) -> RetrievalAnalysis:
-    """Extract bounded subjects from a disambiguated question and visible code."""
+    """从已消歧的问题和可见代码中提取有界主体。"""
 
     cleaned = question.strip()
     if not cleaned:
@@ -341,7 +340,7 @@ def build_retrieval_plan(
     remaining_searches: int,
     visible_context: str = "",
 ) -> SkillRetrievalPlan:
-    """Create a deterministic plan without performing retrieval."""
+    """创建一个确定性计划，但不执行检索。"""
 
     if remaining_searches < 0:
         raise ValueError("remaining_searches must not be negative")
@@ -491,7 +490,7 @@ def _retained_ids(
     *,
     max_context_chars: int,
 ) -> tuple[str, ...]:
-    """Round-robin targets while keeping only complete chunks that fit."""
+    """在目标之间轮询，只保留能放下的完整片段。"""
 
     queues = [deque(chunk_ids) for chunk_ids in target_hits.values() if chunk_ids]
     ordered: list[str] = []
@@ -543,7 +542,7 @@ def execute_retrieval_plan(
     max_followup_searches: int,
     max_context_chars: int,
 ) -> SkillRetrievalOutcome:
-    """Run plan steps sequentially against the owning turn's shared budgets."""
+    """针对所属轮次共享的预算，依次执行计划步骤。"""
 
     if max_tool_calls < 1 or max_context_chars < 1 or max_followup_searches < 0:
         raise ValueError("retrieval budgets are invalid")
@@ -648,8 +647,8 @@ def execute_retrieval_plan(
                 if target.startswith("object:"):
                     subject = target.removeprefix("object:")
                     visible_text = "\n".join((*result.chunk.heading_path, result.chunk.text))
-                    # Running a query for A/B is not evidence for both objects.
-                    # Conservative lexical coverage, never a semantic guarantee.
+                    # 对 A/B 执行查询并不能同时为两个对象提供证据。
+                    # 保守的词法覆盖，绝不是语义保证。
                     pattern = re.escape(subject)
                     if subject.isascii():
                         pattern = r"(?<![A-Za-z0-9_])" + pattern + r"(?![A-Za-z0-9_])"
@@ -698,10 +697,10 @@ def execute_retrieval_plan(
 def reconcile_retrieval_outcome(
     outcome: SkillRetrievalOutcome, *, available_chunk_ids: Sequence[str],
 ) -> SkillRetrievalOutcome:
-    """Use the exact final source map after serialized-context trimming.
+    """在序列化上下文被裁剪后，使用精确的最终来源映射。
 
-    A successful search and a retained candidate do not imply that the answering
-    model received that candidate. Keep this distinction for every target.
+    检索成功且候选被保留，并不意味着回答模型实际收到了该候选。
+    对每个目标都要保持这一区分。
     """
     available = set(available_chunk_ids)
     retained = tuple(chunk_id for chunk_id in outcome.retained_chunk_ids if chunk_id in available)
@@ -721,7 +720,7 @@ def section_followup_step(
     outcome: SkillRetrievalOutcome,
     evidence: Mapping[str, RetrievalResult],
 ) -> RetrievalStep | None:
-    """Propose one registered-anchor read only for a visibly incomplete chunk."""
+    """仅对明显不完整的片段提议一次已注册锚点的读取。"""
 
     for chunk_id in outcome.retained_chunk_ids:
         result = evidence.get(chunk_id)
@@ -751,7 +750,7 @@ def retrieval_summary(
     plan: SkillRetrievalPlan,
     outcome: SkillRetrievalOutcome,
 ) -> dict[str, Any]:
-    """Return a persistence-safe summary without queries or evidence text."""
+    """返回持久化安全的摘要，不包含查询或证据文本。"""
 
     pairs = tuple(zip(plan.steps, outcome.step_results))
     skipped_reason = next(
@@ -786,7 +785,7 @@ def retrieval_summary(
     }
 
 
-# Validation is intentionally deferred; this file contains implementation only.
-# TODO 15: validate query order, counters, empty results, and missing visible code.
-# TODO 16: validate provenance, version changes, deduplication, and shared budgets.
-# TODO 17: compare off/manual/auto behavior using the evaluation layer.
+# 校验刻意延后；本文件只包含实现。
+# TODO 15：校验查询顺序、计数器、空结果和缺失的可见代码。
+# TODO 16：校验来源、版本变化、去重和共享预算。
+# TODO 17：使用评估层比较 off/manual/auto 行为。

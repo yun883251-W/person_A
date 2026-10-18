@@ -56,7 +56,7 @@ def _model_text(response: object) -> str:
 
 
 class _IntentModelValidationError(ValueError):
-    """Carry only a public, fixed failure code across the classifier boundary."""
+    """只携带公开、固定的失败码跨越分类器边界。"""
 
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
@@ -82,7 +82,7 @@ def _hybrid_model_decision(
     model: BaseChatModel | None,
     model_invoker: Callable[[Sequence[BaseMessage]], object] | None,
 ) -> IntentDecision:
-    """Run the isolated classifier once and accept only its routing JSON."""
+    """运行一次隔离的分类器，并只接受其路由 JSON。"""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from knowledge_agent.models.provider import initialize_chat_model, invoke_chat_model
@@ -208,7 +208,7 @@ def _identify_browser_semantics(
     model: BaseChatModel | None,
     model_invoker: Callable[[Sequence[BaseMessage]], object] | None,
 ) -> IntentDecision:
-    """Resolve an admitted browser candidate once; errors never grant tools."""
+    """对已准入的浏览器候选解析一次；错误绝不授予工具权限。"""
     from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
     from knowledge_agent.models.provider import ChatModelTimeoutError
@@ -284,15 +284,15 @@ def classify_rule_intent(
     max_history_turns: int = _DEFAULT_MAX_HISTORY_TURNS,
     max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
 ) -> IntentDecision:
-    """Apply at most one permitted classifier to an already resolved rule result."""
+    """对已解析的规则结果最多应用一个允许的分类器。"""
     if not isinstance(rules_decision, IntentDecision):
         raise TypeError("rules_decision must be an IntentDecision instance")
     if not isinstance(settings, IntentSettings):
         raise TypeError("settings must be an IntentSettings instance")
 
     if rules_decision.reason_code.startswith("browser_bilibili_"):
-        # Browser candidates are governed solely by browser_mode. They must not
-        # fall through to the generic classifier when browser_mode is rules.
+        # 浏览器候选只由 browser_mode 管理。当 browser_mode 为 rules 时，
+        # 它们不得落入通用分类器。
         if (
             rules_decision.reason_code == "browser_bilibili_semantic_candidate"
             and settings.browser_mode == "hybrid"
@@ -376,7 +376,7 @@ def identify_intent(
     max_history_turns: int = _DEFAULT_MAX_HISTORY_TURNS,
     max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
 ) -> IntentDecision:
-    """Compatibility entry point for callers without dialogue lifecycle state."""
+    """供没有对话生命周期状态的调用方使用的兼容入口。"""
     rules_decision = identify_intent_rules(
         question,
         context=context,

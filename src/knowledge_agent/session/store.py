@@ -66,7 +66,7 @@ MESSAGE_SERIALIZATION_VERSION = 1
 
 
 class SessionStoreError(RuntimeError):
-    """Base class for safe, application-facing persistence failures."""
+    """安全的、面向应用的持久化错误基类。"""
 
     operation = "storage"
     retryable = False
@@ -110,13 +110,13 @@ class DuplicateTurnError(SessionStoreError):
 
 
 class SessionSummaryConflictError(SessionStoreError):
-    """A summary was superseded or its source turns no longer exist."""
+    """摘要已被取代，或其来源轮次已不存在。"""
 
     operation = "summary"
 
 
 class BusinessStateConflictError(SessionStoreError):
-    """The caller resolved a turn against an obsolete business-state revision."""
+    """调用方基于过期的业务状态版本解析了该轮次。"""
 
     operation = "business_state"
 
@@ -124,7 +124,7 @@ class BusinessStateConflictError(SessionStoreError):
 def _storage_error(
     exc: BaseException, *, operation: str, write: bool = False
 ) -> SessionStoreError:
-    """Translate low-level failures without exposing paths or stored content."""
+    """转换底层故障，不暴露路径或存储内容。"""
     if isinstance(exc, SessionStoreError):
         return exc
     if isinstance(exc, OSError):
@@ -159,7 +159,7 @@ def _storage_error(
 
 @dataclass(frozen=True, slots=True)
 class SessionRecord:
-    """Persisted session metadata."""
+    """已持久化的会话元数据。"""
 
     session_id: str
     title: str | None
@@ -169,7 +169,7 @@ class SessionRecord:
 
 @dataclass(frozen=True, slots=True)
 class StoredTurn:
-    """One complete conversation turn restored from durable storage."""
+    """从持久化存储恢复的一个完整对话轮次。"""
 
     turn_id: str
     turn_no: int
@@ -181,7 +181,7 @@ class StoredTurn:
 
 @dataclass(frozen=True, slots=True)
 class SessionSummary:
-    """Lossy background memory with a watermark over immutable saved turns."""
+    """带水位线的有损后台记忆，水位线覆盖不可变的已保存轮次。"""
 
     session_id: str
     summary: str
@@ -192,7 +192,7 @@ class SessionSummary:
 
 @dataclass(frozen=True, slots=True)
 class SummaryTurn:
-    """Visible content only; raw messages and assessment snapshots are excluded."""
+    """仅可见内容；原始消息和测评快照均排除在外。"""
 
     turn_id: str
     turn_no: int
@@ -203,51 +203,51 @@ class SummaryTurn:
 
 @runtime_checkable
 class SessionStore(Protocol):
-    """Persistence boundary shared by the Agent and CLI.
+    """Agent 与 CLI 共享的持久化边界。
 
-    Implementations manage session metadata and atomically committed, complete
-    turns only.  They must not invoke models, embeddings, or retrieval services.
+    实现只管理会话元数据和原子提交的完整轮次。
+    它们不得调用模型、Embedding 或检索服务。
     """
 
     def initialize(self) -> None:
-        """Explicitly prepare the backing store."""
+        """显式准备底层存储。"""
         ...
 
     def create_session(
         self, session_id: str | None = None, title: str | None = None
     ) -> SessionRecord:
-        """Create a session, raising a conflict if ``session_id`` exists."""
+        """创建会话；若 ``session_id`` 已存在则抛出冲突。"""
         ...
 
     def get_session(self, session_id: str) -> SessionRecord | None:
-        """Return a session, or ``None`` when it does not exist."""
+        """返回会话；不存在时返回 ``None``。"""
         ...
 
     def list_sessions(
         self, *, limit: int = 50, offset: int = 0
     ) -> Sequence[SessionRecord]:
-        """Return a page of session metadata."""
+        """返回一页会话元数据。"""
         ...
 
     def append_turn(self, session_id: str, turn: StoredTurn) -> StoredTurn:
-        """Atomically persist one complete turn and return its stored form."""
+        """原子持久化一个完整轮次，并返回其存储形式。"""
         ...
 
     def append_turn_with_business_state(
         self, session_id: str, turn: StoredTurn, state: SessionBusinessState,
         *, expected_revision: int,
     ) -> StoredTurn:
-        """Atomically persist one turn and its validated next business state."""
+        """原子持久化一个轮次及其经校验的下一业务状态。"""
         ...
 
     def load_business_state(self, session_id: str) -> SessionBusinessState | None:
-        """Load the dedicated current business state; absence is a legacy empty state."""
+        """加载专用的当前业务状态；缺失即视为旧版的空状态。"""
         ...
 
     def save_business_state(
         self, session_id: str, state: SessionBusinessState, *, expected_revision: int,
     ) -> SessionBusinessState:
-        """Compare-and-set one state transition without holding a tool transaction."""
+        """在不持有工具事务的情况下，比较并设置一次状态迁移。"""
         ...
 
     def load_turns(
@@ -257,28 +257,28 @@ class SessionStore(Protocol):
         limit: int | None = None,
         offset: int = 0,
     ) -> Sequence[StoredTurn]:
-        """Load complete turns for a session in chronological order."""
+        """按时间顺序加载一个会话的完整轮次。"""
         ...
 
     def load_context_turns(
         self, session_id: str, *, max_history_turns: int
     ) -> Sequence[StoredTurn]:
-        """Load the most recent complete turns in chronological order."""
+        """按时间顺序加载最近的完整轮次。"""
         ...
 
     def load_latest_assessment(self, session_id: str) -> dict[str, Any] | None:
-        """Restore the latest assessment snapshot, independent of chat limits."""
+        """恢复最新的测评快照，不受聊天历史上限影响。"""
         ...
 
     def load_session_summary(self, session_id: str) -> SessionSummary | None:
-        """Load a summary only when its saved source watermark is still valid."""
+        """仅当保存的来源水位线仍然有效时才加载摘要。"""
         ...
 
     def load_summary_batch(
         self, session_id: str, *, after_turn_no: int, max_history_turns: int,
         limit: int,
     ) -> Sequence[SummaryTurn]:
-        """Load old committed turns outside the retained recent-history window."""
+        """加载保留的近期历史窗口之外的旧已提交轮次。"""
         ...
 
     def save_session_summary(
@@ -286,23 +286,23 @@ class SessionStore(Protocol):
         covered_turn_no: int, expected_previous: SessionSummary | None,
         max_history_turns: int,
     ) -> SessionSummary:
-        """Compare and replace a summary atomically without modifying turns."""
+        """原子地比较并替换摘要，不修改任何轮次。"""
         ...
 
     def clear_session(self, session_id: str) -> bool:
-        """Delete a session's turns while retaining its metadata."""
+        """删除一个会话的轮次，同时保留其元数据。"""
         ...
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and all of its turns."""
+        """删除一个会话及其所有轮次。"""
         ...
 
     def close(self) -> None:
-        """Release owned resources; repeated calls must be safe."""
+        """释放持有的资源；重复调用必须是安全的。"""
         ...
 
 class SQLiteSessionStore:
-    """Own one lazily opened SQLite connection for synchronous use."""
+    """持有一个按需打开的 SQLite 连接，供同步使用。"""
 
     def __init__(
         self,
@@ -326,7 +326,7 @@ class SQLiteSessionStore:
         self._connection: sqlite3.Connection | None = None
 
     def initialize(self) -> None:
-        """Open and configure the database connection, if necessary."""
+        """必要时打开并配置数据库连接。"""
         if self._connection is not None:
             return
 
@@ -432,7 +432,7 @@ class SQLiteSessionStore:
     def _transaction(
         self, *, write: bool = False, operation: str = "transaction"
     ) -> Iterator[sqlite3.Connection]:
-        """Run a transaction with explicit commit and exception rollback."""
+        """运行一个事务，显式提交并在异常时回滚。"""
         connection = self._require_connection()
         try:
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
@@ -457,7 +457,7 @@ class SQLiteSessionStore:
                 raise
 
     def close(self) -> None:
-        """Close the owned connection; repeated calls are safe."""
+        """关闭持有的连接；重复调用是安全的。"""
         connection = self._connection
         if connection is None:
             return
@@ -479,7 +479,7 @@ class SQLiteSessionStore:
     def create_session(
         self, session_id: str | None = None, title: str | None = None
     ) -> SessionRecord:
-        """Persist metadata for a new, empty session."""
+        """为一个新的空会话持久化元数据。"""
         if session_id is None:
             session_id = uuid.uuid4().hex
         elif not isinstance(session_id, str) or not session_id.strip():
@@ -505,7 +505,7 @@ class SQLiteSessionStore:
         return SessionRecord(session_id, title, timestamp, timestamp)
 
     def get_session(self, session_id: str) -> SessionRecord | None:
-        """Return metadata for exactly one session ID."""
+        """只返回一个会话 ID 的元数据。"""
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a non-empty string")
         try:
@@ -531,7 +531,7 @@ class SQLiteSessionStore:
     def list_sessions(
         self, *, limit: int = 50, offset: int = 0
     ) -> Sequence[SessionRecord]:
-        """Return session metadata ordered from most recently updated."""
+        """按最近更新时间倒序返回会话元数据。"""
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -559,7 +559,7 @@ class SQLiteSessionStore:
         )
 
     def append_turn(self, session_id: str, turn: StoredTurn) -> StoredTurn:
-        """Atomically append a complete turn, making retries idempotent."""
+        """原子追加一个完整轮次，使重试具备幂等性。"""
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a non-empty string")
         if not isinstance(turn, StoredTurn):
@@ -588,7 +588,7 @@ class SQLiteSessionStore:
         self, session_id: str, turn: StoredTurn, state: SessionBusinessState,
         *, expected_revision: int,
     ) -> StoredTurn:
-        """Atomically append a turn and compare-and-set its next state."""
+        """原子追加一个轮次，并比较并设置其下一状态。"""
         state = validate_business_state(state)
         if state.session_id != session_id:
             raise ValueError("business state belongs to another session")
@@ -807,7 +807,7 @@ class SQLiteSessionStore:
         limit: int | None = None,
         offset: int = 0,
     ) -> Sequence[StoredTurn]:
-        """Load a chronological page of all committed turns for display."""
+        """按时间顺序加载全部已提交轮次的一页，用于展示。"""
         self._validate_load_arguments(session_id, limit=limit, offset=offset)
         connection = self._require_connection()
         try:
@@ -845,7 +845,7 @@ class SQLiteSessionStore:
     def load_context_turns(
         self, session_id: str, *, max_history_turns: int
     ) -> Sequence[StoredTurn]:
-        """Load only the newest complete turns, ordered oldest to newest."""
+        """只加载最新的完整轮次，按从旧到新排序。"""
         if (
             isinstance(max_history_turns, bool)
             or not isinstance(max_history_turns, int)
@@ -878,13 +878,11 @@ class SQLiteSessionStore:
         return tuple(self._restore_turn(row) for row in rows)
 
     def load_latest_assessment(self, session_id: str) -> dict[str, Any] | None:
-        """Restore the newest committed snapshot for this session only.
+        """只恢复本会话最新已提交的测评快照。
 
-        Assessment state shares the turn transaction with the answer. Searching
-        separately from the bounded model history lets a paused test survive
-        later knowledge questions without another table or schema migration.
-        Corrupt snapshots must fail explicitly instead of restarting the test or
-        reviving an older snapshot whose answers may already have been changed.
+        测评状态与回答共用同一个轮次事务。独立于有界的模型历史窗口检索，
+        可以让暂停中的测试在后续知识问题之后仍然延续，而无需新增表或迁移。
+        损坏的快照必须显式失败，而不是重启测试或复活一份答案可能已被修改的旧快照。
         """
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a non-empty string")
@@ -903,8 +901,7 @@ class SQLiteSessionStore:
             try:
                 for row in rows:
                     payload = _load_json_object(row["result_json"], "result_json")
-                    # LIKE is only a candidate filter; an unrelated nested field
-                    # must never be interpreted as the top-level snapshot.
+                    # LIKE 只是候选过滤；无关的嵌套字段绝不能当作顶层快照。
                     if "assessment_state" not in payload:
                         continue
                     if row["serialization_version"] != MESSAGE_SERIALIZATION_VERSION:
@@ -926,7 +923,7 @@ class SQLiteSessionStore:
         return None
 
     def load_session_summary(self, session_id: str) -> SessionSummary | None:
-        """Restore bounded summary text after checking its exact source turn."""
+        """在校验精确的来源轮次之后恢复有界摘要文本。"""
         connection = self._require_connection()
         try:
             self._require_session(connection, session_id)
@@ -957,7 +954,7 @@ class SQLiteSessionStore:
         self, session_id: str, *, after_turn_no: int, max_history_turns: int,
         limit: int,
     ) -> Sequence[SummaryTurn]:
-        """Read bounded visible records, never model/tool message payloads."""
+        """只读取有界的可见记录，绝不读取模型/工具消息载荷。"""
         self._validate_load_arguments(session_id, limit=limit, offset=after_turn_no)
         self._validate_history_limit(max_history_turns)
         connection = self._require_connection()
@@ -1006,7 +1003,7 @@ class SQLiteSessionStore:
         covered_turn_no: int, expected_previous: SessionSummary | None,
         max_history_turns: int,
     ) -> SessionSummary:
-        """Commit only if the prior summary and exact source watermark survive."""
+        """仅当前一份摘要和精确的来源水位线都仍然成立时才提交。"""
         self._validate_summary_text(summary)
         self._validate_history_limit(max_history_turns)
         if not isinstance(covered_turn_id, str) or not covered_turn_id.strip():
@@ -1083,7 +1080,7 @@ class SQLiteSessionStore:
         )
 
     def clear_session(self, session_id: str) -> bool:
-        """Delete all turns for a session while retaining its metadata."""
+        """删除一个会话的所有轮次，同时保留其元数据。"""
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a non-empty string")
 
@@ -1100,7 +1097,7 @@ class SQLiteSessionStore:
         return True
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and rely on the foreign key cascade for its turns."""
+        """删除会话，并依靠外键级联删除其轮次。"""
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a non-empty string")
 
@@ -1219,7 +1216,7 @@ def _validate_content(value: Any, label: str) -> str | list[Any]:
 
 
 def _messages_to_json(messages: Sequence[BaseMessage]) -> str:
-    """Serialize system-free, complete LangChain message history."""
+    """序列化不含 system 消息的完整 LangChain 消息历史。"""
     encoded: list[dict[str, Any]] = []
     requested: set[str] = set()
     pending: set[str] = set()
@@ -1291,7 +1288,7 @@ def _messages_to_json(messages: Sequence[BaseMessage]) -> str:
 
 
 def _messages_from_json(value: str) -> tuple[BaseMessage, ...]:
-    """Restore and validate complete LangChain message history."""
+    """恢复并校验完整的 LangChain 消息历史。"""
     root = _load_json_object(value, "messages_json")
     _require_fields(root, {"version", "messages"}, set(), "messages_json")
     if root["version"] != MESSAGE_SERIALIZATION_VERSION:
@@ -1386,7 +1383,7 @@ def _messages_from_json(value: str) -> tuple[BaseMessage, ...]:
 
 
 def _result_to_json(result: AnswerResult) -> str:
-    """Serialize an answer and validated optional execution snapshots."""
+    """序列化回答以及经校验的可选执行快照。"""
     sources = [
         {
             "chunk_id": source.chunk_id,
@@ -1458,7 +1455,7 @@ def _result_to_json(result: AnswerResult) -> str:
 
 
 def _result_from_json(value: str) -> AnswerResult:
-    """Restore an AnswerResult after validating every persisted field."""
+    """在校验每个持久化字段之后恢复 AnswerResult。"""
     root = _load_json_object(value, "result_json")
     fields = {
         "version",
@@ -1639,7 +1636,7 @@ def _result_from_json(value: str) -> AnswerResult:
     )
 
 
-# Stable helper names used by the persistence operations implemented below.
+# 供下方持久化操作使用的稳定辅助函数名。
 _serialize_messages = _messages_to_json
 _deserialize_messages = _messages_from_json
 _serialize_result = _result_to_json

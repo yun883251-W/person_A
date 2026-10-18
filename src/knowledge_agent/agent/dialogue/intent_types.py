@@ -8,7 +8,7 @@ from typing import Literal
 
 
 class IntentKind(str, Enum):
-    """Supported intent categories."""
+    """支持的意图类别。"""
 
     KNOWLEDGE = "knowledge"
     GREETING = "greeting"
@@ -20,7 +20,7 @@ class IntentKind(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class IntentDecision:
-    """Validated, immutable result of intent identification."""
+    """已校验、不可变的意图识别结果。"""
 
     kind: IntentKind
     retrieval_query: str = ""
@@ -28,16 +28,16 @@ class IntentDecision:
     decision_source: Literal["rules", "model", "fallback"] = "rules"
     clarification_question: str = ""
     reason_code: str = ""
-    # Runtime-only provenance: copied by program from the exact current input
-    # after browser intent validation, never supplied by classifier JSON.
+    # 仅运行时的来源信息：浏览器意图校验后由程序从精确的当前输入复制，
+    # 绝不由分类器 JSON 提供。
     authorized_user_input: str = ""
-    # Validated semantic search topic; this does not grant browser authorization.
+    # 已校验的语义搜索主题；这不授予浏览器授权。
     search_topic: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class McpCapability:
-    """Public, non-executable view of an available MCP tool."""
+    """可用 MCP 工具的公开、不可执行视图。"""
 
     name: str
     description: str
@@ -45,4 +45,4 @@ class McpCapability:
 
 
 class IntentModelBudgetError(RuntimeError):
-    """Signal that the owning turn has no model calls remaining."""
+    """表示所属轮次已无剩余模型调用。"""

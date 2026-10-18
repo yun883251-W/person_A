@@ -79,7 +79,7 @@ def _normalized_intent_text(question: str) -> str:
 
 
 def _identify_current_intent(question: str) -> IntentDecision:
-    """Classify a question using the deterministic legacy intent rules."""
+    """使用确定性的旧版意图规则分类问题。"""
     if not isinstance(question, str):
         raise TypeError("question must be a string")
     cleaned = question.strip()
@@ -156,7 +156,7 @@ def _tool_value(tool: object, name: str) -> object | None:
 
 
 def _required_inputs(input_schema: object) -> tuple[tuple[str, str], ...]:
-    """Extract only required field names and their public descriptions."""
+    """只提取必需字段名及其公开描述。"""
     if not isinstance(input_schema, Mapping):
         return ()
     required = input_schema.get("required", ())
@@ -185,7 +185,7 @@ def _required_inputs(input_schema: object) -> tuple[tuple[str, str], ...]:
 def snapshot_mcp_capabilities(
     available_tools: Sequence[object],
 ) -> tuple[McpCapability, ...]:
-    """Copy the safe public subset of an authorized, ready MCP tool snapshot."""
+    """复制已授权且就绪的 MCP 工具快照中安全的公开子集。"""
     if isinstance(available_tools, (str, bytes)) or not isinstance(
         available_tools, Sequence
     ):
@@ -227,7 +227,7 @@ def _requested_mcp_tools(
     question: str,
     capabilities: Sequence[McpCapability],
 ) -> tuple[str, ...]:
-    """Resolve an explicit request only when its tool name is unambiguous."""
+    """仅当工具名明确无歧义时，解析显式请求。"""
     if (
         _EXPLICIT_TOOL_REQUEST_RE.search(question) is None
         or _TOOL_INSTRUCTION_RE.search(question) is not None
@@ -272,7 +272,7 @@ def _knowledge_history_questions(
     max_history_turns: int,
     max_context_chars: int,
 ) -> tuple[str, ...]:
-    """Return bounded questions from complete knowledge-route turns only."""
+    """只从完整的知识路由轮次中返回有界问题。"""
     selected: list[str] = []
     remaining = max_context_chars
     for turn in reversed(context[-max_history_turns:]):
@@ -324,7 +324,7 @@ def _identify_intent_with_rules(
     max_history_turns: int = _DEFAULT_MAX_HISTORY_TURNS,
     max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
 ) -> IntentDecision:
-    """Classify a request and resolve bounded, referential knowledge follow-ups."""
+    """分类请求，并解析有界的指代性知识追问。"""
     current = _identify_current_intent(question)
     capabilities = snapshot_mcp_capabilities(available_tools)
     if isinstance(max_history_turns, bool) or not isinstance(max_history_turns, int):
@@ -407,7 +407,7 @@ def _identify_intent_with_rules(
             reason_code="unsupported_stateful_followup",
         )
 
-    # A direct intent or an explicit topic change belongs entirely to this turn.
+    # 直接意图或显式主题切换完全属于当前轮次。
     if current.kind not in {IntentKind.KNOWLEDGE, IntentKind.NEEDS_CLARIFICATION}:
         return current
     if _EXPLICIT_TOPIC_SWITCH_RE.search(cleaned):
@@ -455,7 +455,7 @@ def identify_intent_rules(
     max_history_turns: int = _DEFAULT_MAX_HISTORY_TURNS,
     max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
 ) -> IntentDecision:
-    """Resolve deterministic intent, without spending a model call."""
+    """解析确定性意图，且不消耗模型调用。"""
     _validate_manual_skill_selection(skill_id)
     rules_decision = _identify_intent_with_rules(
         question,
@@ -465,8 +465,8 @@ def identify_intent_rules(
         max_context_chars=max_context_chars,
     )
     if rules_decision.reason_code.startswith("browser_bilibili_"):
-        # Browser requests take precedence over the broader MBTI teaching guard.
-        # Semantic candidates remain unresolved here for pending-slot handling.
+        # 浏览器请求优先于更宽泛的 MBTI 教学守卫。
+        # 语义候选留在这里不解析，交给待处理槽位逻辑。
         return rules_decision
 
     from ..assessment import (
@@ -491,7 +491,7 @@ def identify_intent_rules(
             reason_code=f"mbti_{action}",
         )
     if is_tool_instruction_question(question):
-        # Keep tutorials as knowledge and retain resolved follow-up context.
+        # 将教程保留为知识，并保留已解析的追问上下文。
         return IntentDecision(
             kind=IntentKind.KNOWLEDGE,
             retrieval_query=rules_decision.retrieval_query or question.strip(),
@@ -501,7 +501,7 @@ def identify_intent_rules(
 
 
 def _validate_manual_skill_selection(skill_id: str | None) -> None:
-    """Validate an explicitly selected Skill without applying or auto-selecting one."""
+    """校验显式选中的 Skill，但不应用或自动选择。"""
     if skill_id is None:
         return
 
