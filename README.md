@@ -214,7 +214,6 @@ Person_A/
 │  │  │  ├─ model_loop.py       # 模型与工具循环
 │  │  │  ├─ prompts.py          # 系统提示词
 │  │  │  ├─ assessment.py       # MBTI会话流程
-│  │  │  ├─ intent.py           # 原意图接口的兼容导出
 │  │  │  ├─ dialogue/           # 意图、待补参数和业务状态
 │  │  │  ├─ browser/            # actions、semantic、execution
 │  │  │  ├─ answering/          # answers、contract、diagnostics、citations
@@ -227,9 +226,7 @@ Person_A/
 │  │  ├─ tools/                # 工具注册与本地知识工具
 │  │  ├─ mcp/                  # 外部MCP客户端及适配
 │  │  ├─ http/                 # HTTP应用、序列化、SSE及routes/
-│  │  ├─ evaluation.py         # 现有评估实现
-│  │  ├─ session_store.py      # 旧存储导入路径的兼容入口
-│  │  └─ skill_loader.py       # 旧技能加载路径的兼容入口
+│  │  └─ evaluation.py         # 现有评估实现
 │  ├─ browser_mcp/             # 独立浏览器MCP服务
 │  └─ mbti_mcp/                # 独立MBTI服务、题库及评分
 ├─ web/                       # 前端页面、JS和CSS
@@ -257,7 +254,7 @@ Person_A/
 
 本轮按职责迁移现有文件，内部导入和默认 MCP 启动配置已同步。根目录 `skills/` 保存技能正文，`src/knowledge_agent/skills/` 保存加载与选择代码；`docs/` 仍是知识库材料，不与开发说明混用。索引、会话数据库、真实 `.env`、用户教材及评估报告未移动或修改。
 
-`api.py`、`agent/intent.py` 保留原入口，模型公共 API、旧存储与技能加载导入路径保留兼容。`person-a`、`python -m knowledge_agent.cli`、`uvicorn knowledge_agent.api:create_app` 的启动方式不变；默认配置的 MCP 启动脚本已由 `examples/` 调整到 `scripts/`。完整映射见 [目录与迁移说明](project_docs/architecture/LAYOUT.md)。**本轮未运行测试、项目导入、编译或服务联调，重启后端后需按清单统一验证。**
+`api.py` 和模型公共 API 保留原入口；存储、技能加载与意图直接从 `session/store.py`、`skills/loader.py` 和 `agent/dialogue/` 导入，三个旧兼容文件已移除。`person-a`、`python -m knowledge_agent.cli`、`uvicorn knowledge_agent.api:create_app` 的启动方式不变；默认配置的 MCP 启动脚本已由 `examples/` 调整到 `scripts/`。完整映射见 [目录与迁移说明](project_docs/architecture/LAYOUT.md)。**本轮未运行测试、项目导入、编译或服务联调，重启后端后需按清单统一验证。**
 
 2 个旧测试临时目录已完整归入 `.tmp/legacy-pytest/`；其他目录移动中因 Windows 拒绝访问而未完全整理，原路径和归档路径可能各有残余。后续 pytest 缓存写入 `.tmp/pytest-cache/`。
 

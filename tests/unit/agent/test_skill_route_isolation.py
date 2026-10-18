@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 from knowledge_agent import config
 from knowledge_agent.agent import model_loop, preparation, runner
 from knowledge_agent.agent.assessment import TOOLS as MBTI_TOOLS
-from knowledge_agent.agent.intent import IntentDecision, IntentKind
+from knowledge_agent.agent.dialogue.intent_types import IntentDecision, IntentKind
 from knowledge_agent.skills.selector import SkillSelectionSettings
 from knowledge_agent.config import AgentConfig, IntentSettings
 from knowledge_agent.schemas import DocumentChunk, RetrievalResult

@@ -51,7 +51,9 @@
 | `model_diagnostics.py` | `models/diagnostics.py` |
 | `agent/trace.py` | `observability/trace.py` |
 
-`api.py` 和 `agent/intent.py` 保留原兼容入口；`session_store.py`、`skill_loader.py` 仅转发到新模块，类和函数使用同一份实现。`knowledge_agent.models` 改为包，其公共模型 API 通过 `models/__init__.py` 延迟导出。其他已迁移的内部模块直接使用表中的新路径。
+`session_store.py`、`skill_loader.py`、`agent/intent.py` 三个兼容文件已删除，项目内引用及现有测试导入已迁移。存储使用 `knowledge_agent.session.store`，技能加载使用 `knowledge_agent.skills.loader`；意图类型使用 `agent.dialogue.intent_types`，分类使用 `agent.dialogue.classifier`，规则使用 `agent.dialogue.rules`，会话入口使用 `agent.dialogue.resolver`。项目外脚本若使用这三个旧路径，也需同步修改。
+
+`api.py` 保留原 HTTP 启动入口。`knowledge_agent.models` 改为包，其公共模型 API 通过 `models/__init__.py` 延迟导出。本次移除的是导入转发层，实际业务实现保持在各自模块中；未运行测试或服务。
 
 ## 项目根目录
 

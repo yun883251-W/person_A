@@ -12,7 +12,7 @@
     transitions.py     纯状态转换和执行结果归并。
     browser_dispatch.py 校验待执行搜索、提交派发保护、调用工具并核对结果。
 
-agent/intent.py 仅保留兼容导出，不再维护独立分类逻辑。
+原 agent/intent.py 兼容层已移除，调用方直接导入本包中的具体模块。
 接入记录和未执行验收项见 project_docs/architecture/DIALOGUE_INTENT_TODO.md。
 公开调用入口由 ``contracts``、``resolver`` 与 ``transitions`` 各模块显式提供；
 runner 只消费校验后的决定与状态提案，不把本包注册成工具或 Skill。

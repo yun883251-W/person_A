@@ -27,7 +27,7 @@
 
 - [`agent/assessment.py`](../../src/knowledge_agent/agent/assessment.py)：完整控制指令与测试状态转换。
 - [`agent/dialogue/resolver.py`](../../src/knowledge_agent/agent/dialogue/resolver.py)：统一处理生命周期、待补参数和最终会话决策。
-- [`agent/dialogue/classifier.py`](../../src/knowledge_agent/agent/dialogue/classifier.py)：共用规则及模型分类策略；原 `agent/intent.py` 仅保留兼容导出。
+- [`agent/dialogue/classifier.py`](../../src/knowledge_agent/agent/dialogue/classifier.py)：共用规则及模型分类策略；调用方直接导入此模块，原 `agent/intent.py` 兼容层已移除。
 - [`agent/router.py`](../../src/knowledge_agent/agent/router.py)：根据有效意图和当前可用工具确定执行路线。
 - [`agent/runner.py`](../../src/knowledge_agent/agent/runner.py)：将会话状态与上述节点接入一次问答。
 

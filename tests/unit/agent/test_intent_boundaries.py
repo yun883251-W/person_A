@@ -5,7 +5,8 @@ import json
 import pytest
 from langchain_core.messages import AIMessage
 
-from knowledge_agent.agent.intent import IntentKind, identify_intent
+from knowledge_agent.agent.dialogue.intent_types import IntentKind
+from knowledge_agent.agent.dialogue.classifier import identify_intent
 from knowledge_agent.config import IntentSettings
 
 

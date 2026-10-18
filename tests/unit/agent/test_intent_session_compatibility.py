@@ -3,7 +3,8 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, HumanMessage
 
 from knowledge_agent.agent import assessment, preparation
-from knowledge_agent.agent.intent import IntentKind, identify_intent
+from knowledge_agent.agent.dialogue.intent_types import IntentKind
+from knowledge_agent.agent.dialogue.classifier import identify_intent
 from knowledge_agent.agent.state import ConversationHistory, ConversationTurn
 from knowledge_agent.config import IntentSettings
 from knowledge_agent.schemas import AnswerResult, RouteSummary

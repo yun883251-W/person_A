@@ -12,7 +12,7 @@ from knowledge_agent.agent.dialogue.contracts import (
     ExecutionMode,
 )
 from knowledge_agent.agent.dialogue.resolver import resolve_dialogue
-from knowledge_agent.agent.intent import McpCapability
+from knowledge_agent.agent.dialogue.intent_types import McpCapability
 from knowledge_agent.config import IntentSettings
 
 
