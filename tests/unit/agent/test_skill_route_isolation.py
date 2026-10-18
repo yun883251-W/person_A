@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage
 from knowledge_agent import config
 from knowledge_agent.agent import model_loop, preparation, runner
 from knowledge_agent.agent.assessment import TOOLS as MBTI_TOOLS
+from knowledge_agent.agent.dialogue import resolver
 from knowledge_agent.agent.dialogue.intent_types import IntentDecision, IntentKind
 from knowledge_agent.skills.selector import SkillSelectionSettings
 from knowledge_agent.config import AgentConfig, IntentSettings
@@ -114,7 +115,8 @@ def test_mcp_route_bypasses_knowledge_and_skill_preparation(monkeypatch) -> None
         reason_code="test_mcp_action",
         authorized_user_input="run test action",
     )
-    monkeypatch.setattr(runner, "identify_intent", lambda *_args, **_kwargs: decision)
+    # ask() 现在经由 resolve_dialogue 决策；规则结果在 resolver 内注入。
+    monkeypatch.setattr(resolver, "identify_intent_rules", lambda *_args, **_kwargs: decision)
     monkeypatch.setattr(
         preparation,
         "select_skill_for_step",

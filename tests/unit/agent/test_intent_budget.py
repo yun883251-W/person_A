@@ -93,6 +93,8 @@ def test_single_call_budget_skips_classifier_and_stops_before_retrieval(monkeypa
     `test_intent_and_answer_share_budget_and_classify_once`。
     """
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
+    # runner 在导入时绑定了该函数，ask() 取用的是 runner 模块里的名字。
+    monkeypatch.setattr(runner, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
     model = object()
     calls = []
 
@@ -125,6 +127,7 @@ def test_single_call_budget_skips_classifier_and_stops_before_retrieval(monkeypa
 @pytest.mark.parametrize("session_id", [None, "test-session"])
 def test_intent_and_answer_share_budget_and_classify_once(monkeypatch, session_id) -> None:
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
+    monkeypatch.setattr(runner, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
     model, bound_model = object(), object()
     calls = []
 
@@ -159,6 +162,7 @@ def test_failed_intent_counts_once_and_records_only_safe_error_code(monkeypatch)
     分类失败不终止本轮：判定降级后仍照常检索和回答，所以预算要够分类加回答两次。
     """
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
+    monkeypatch.setattr(runner, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
     model, bound_model = object(), object()
     calls = []
 
@@ -221,6 +225,7 @@ def test_classifier_disables_transport_retries_and_counts_failed_call(monkeypatc
     传输尝试，如果分类没有关闭重试，attempts 会是 2。
     """
     monkeypatch.setattr(config, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
+    monkeypatch.setattr(runner, "get_intent_settings", lambda: IntentSettings(mode="hybrid"))
 
     class TimeoutModel:
         _knowledge_agent_max_retries = 1
