@@ -36,7 +36,8 @@ from ..tools.registry import InMemoryToolRegistry, create_tool_registry
 from .answer_contract import ANSWER_CONTRACT_INSTRUCTION
 from .answers import _public_failure_answer
 from .dependencies import DependencyContext, evidence_identity, unique_evidence
-from .intent import IntentDecision, IntentModelBudgetError, identify_intent
+from .dialogue.classifier import identify_intent
+from .dialogue.intent_types import IntentDecision, IntentModelBudgetError
 from .prompts import SYSTEM_PROMPT
 from .router import RouteKind
 from .skill_selector import (

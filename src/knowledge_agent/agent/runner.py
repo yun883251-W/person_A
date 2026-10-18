@@ -34,17 +34,17 @@ from ..tools.registry import InMemoryToolRegistry
 from . import assessment, planner
 from .answers import _attach_completed_trace, _attach_routing, finalize_answer, finalize_mcp_answer
 from .dependencies import DependencyContext, cited_evidence, is_dependency_transform
-from .intent import (
-    IntentDecision, IntentKind, IntentModelBudgetError, McpCapability, identify_intent,
+from .dialogue.classifier import identify_intent
+from .dialogue.intent_types import (
+    IntentDecision, IntentKind, IntentModelBudgetError, McpCapability,
 )
 from .dialogue.contracts import (
     BusinessPhase, BusinessType, DialogueDecision, DialogueIntent, ExecutionMode,
     SessionBusinessState, StateTransition, empty_business_state, public_business_state,
 )
 from .dialogue.resolver import DialogueResolution, resolve_dialogue
-from .dialogue.transitions import (
-    ExecutionOutcome, apply_execution_outcome, apply_mbti_outcome, mark_dispatching,
-)
+from .dialogue.browser_dispatch import dispatch_pending_search
+from .dialogue.transitions import apply_mbti_outcome
 from .model_loop import (
     _model_error_code,
     continue_model_loop,
@@ -65,7 +65,7 @@ from .preparation import (
     prepare_question,
 )
 from .prompts import SYSTEM_PROMPT
-from .router import RouteDecision, RouteKind, resolve_route
+from .router import RouteDecision, RouteKind, intent_from_dialogue, resolve_route
 from .skill_selector import SkillSelectionSettings, normalize_skill_request
 from .state import (
     ConversationHistory,
@@ -275,36 +275,6 @@ class KnowledgeAgent:
         self.business_states[session_id] = transition.next_state
         return transition.next_state
 
-    @staticmethod
-    def _legacy_intent(question: str, decision: DialogueDecision) -> IntentDecision:
-        legacy = decision.legacy_intent_decision
-        if isinstance(legacy, IntentDecision):
-            return legacy
-        source = decision.decision_source.value
-        if decision.business_type is BusinessType.KNOWLEDGE:
-            return IntentDecision(
-                IntentKind.KNOWLEDGE, retrieval_query=question.strip(),
-                decision_source=source, reason_code=decision.reason_code,
-            )
-        if decision.business_type in {BusinessType.BILIBILI_SEARCH, BusinessType.MCP_TOOL, BusinessType.MBTI}:
-            tools = decision.allowed_tool_names
-            if decision.business_type is BusinessType.MBTI:
-                tools = assessment.TOOLS
-            return IntentDecision(
-                IntentKind.MCP_TOOL, allowed_tool_names=tools,
-                decision_source=source, reason_code=decision.reason_code,
-                authorized_user_input=question.strip(),
-            )
-        if decision.intent is DialogueIntent.CHITCHAT:
-            return IntentDecision(IntentKind.GREETING, decision_source=source, reason_code=decision.reason_code)
-        if decision.intent is DialogueIntent.UNSUPPORTED:
-            return IntentDecision(IntentKind.OUT_OF_SCOPE, decision_source=source, reason_code=decision.reason_code)
-        return IntentDecision(
-            IntentKind.NEEDS_CLARIFICATION, decision_source=source,
-            clarification_question=decision.clarification_question,
-            reason_code=decision.reason_code,
-        )
-
     def _summary_messages(self, session_id: str | None) -> tuple[BaseMessage, ...]:
         """Provide bounded background only; callers never pass this to MCP."""
         if session_id is None:
@@ -451,20 +421,36 @@ class KnowledgeAgent:
             remaining_model_calls=self.config.max_model_calls,
             model_invoker=invoke_intent_model,
             updated_at=_utc_now(), turn_id=turn_id,
-            legacy_classifier=lambda: identify_intent(
-                question.strip(),
-                context=self.history.turns(session_id) if session_id is not None else (),
-                available_tools=dialogue_capabilities,
-                assessment_state=None,
-                model_invoker=invoke_intent_model,
-                max_history_turns=self.config.max_history_turns,
-                max_context_chars=self.config.max_context_chars,
-            ),
+            settings=get_intent_settings(),
+            max_history_turns=self.config.max_history_turns,
+            max_context_chars=self.config.max_context_chars,
         )
         # The resolver reports its own bounded classifier call count. The local
         # counter is authoritative for provider budget accounting.
         model_calls = max(model_calls, resolution.model_calls)
         decision = resolution.decision
+
+        if (
+            request.mode == "manual"
+            and decision.business_type is BusinessType.BILIBILI_SEARCH
+            and decision.intent in {DialogueIntent.NEW_BUSINESS, DialogueIntent.CONTINUE_BUSINESS}
+        ):
+            # Apply the same Skill boundary as resolve_route before committing
+            # a pending task or entering the host-controlled browser executor.
+            blocked = DialogueDecision(
+                intent=DialogueIntent.UNCLEAR, business_type=None,
+                clarification_question=(
+                    "当前选择的 Skill 只能用于知识问答。请取消 Skill 后重新请求工具操作，"
+                    "或保留 Skill 并将问题改为知识问答。"
+                ),
+                reason_code="manual_skill_mcp_conflict",
+                expected_revision=decision.expected_revision,
+            )
+            return self._direct_dialogue_result(
+                question.strip(), session_id, DialogueResolution(blocked),
+                blocked.clarification_question, status="needs_clarification",
+                turn_id=turn_id, model_calls=model_calls,
+            )
 
         if (
             decision.business_type is BusinessType.BILIBILI_SEARCH
@@ -491,7 +477,7 @@ class KnowledgeAgent:
                 return self._ask_single(
                     question, session_id, skill_id=request.skill_id,
                     skill_mode=request.mode,
-                    intent_decision=self._legacy_intent(question, decision),
+                    intent_decision=intent_from_dialogue(decision, current_input=question),
                     intent_model_calls=model_calls,
                     dialogue_resolution=resolution, turn_id=turn_id,
                 )
@@ -514,7 +500,7 @@ class KnowledgeAgent:
             )
         return self._ask_single(
             question, session_id, skill_id=request.skill_id, skill_mode=request.mode,
-            intent_decision=self._legacy_intent(question, decision),
+            intent_decision=intent_from_dialogue(decision, current_input=question),
             intent_model_calls=model_calls, dialogue_resolution=resolution,
             turn_id=turn_id,
         )
@@ -560,76 +546,11 @@ class KnowledgeAgent:
         self, question: str, session_id: str, ready: SessionBusinessState,
         decision: DialogueDecision, *, turn_id: str, model_calls: int,
     ) -> AnswerResult:
-        pending = ready.pending
-        if pending is None:
-            raise ValueError("ready Bilibili business has no pending request")
-        dispatch = mark_dispatching(
-            ready, expected_revision=ready.revision, updated_at=_utc_now(),
-        )
-        dispatching = self._save_transition(session_id, dispatch)
-        trace = TraceRecorder()
-        intent_event = trace.start_event("intent", "program")
-        trace.finish_event(
-            intent_event, "success", decision_source=decision.decision_source.value,
-            intent_kind="mcp_tool", reason_code=decision.reason_code,
-            dialogue_action=decision.intent.value,
-            business_type=decision.business_type.value if decision.business_type else None,
-            execution_mode=decision.execution_mode.value,
-        )
-        state = TurnState(original_question=question, trace_recorder=trace)
-        state.model_calls = model_calls
-        outcome = ExecutionOutcome.UNKNOWN
-        try:
-            state.tool_calls += 1
-            output = self.mcp_registry.execute(
-                SEARCH_BILIBILI_TOOL, dict(pending.confirmed_slots), context=state,
-            )
-            if isinstance(output, Mapping) and output.get("status") == "success":
-                outcome = ExecutionOutcome.SUCCEEDED
-                text = output.get("text")
-                answer = str(text).strip() if isinstance(text, str) and text.strip() else "已执行 B 站搜索。"
-                status: AnswerStatus = "success"
-            else:
-                error = output.get("error", {}) if isinstance(output, Mapping) else {}
-                error_code = str(error.get("code", "")) if isinstance(error, Mapping) else ""
-                uncertain = any(marker in error_code.casefold() for marker in (
-                    "timeout", "disconnect", "connection_lost", "result_unknown",
-                ))
-                outcome = ExecutionOutcome.UNKNOWN if uncertain else ExecutionOutcome.FAILED
-                answer = (
-                    "B 站搜索结果尚未确认；为避免重复操作，不会自动重试。"
-                    if uncertain else "B 站搜索执行失败，未自动重试。"
-                )
-                status = "service_error"
-        except TimeoutError:
-            outcome = ExecutionOutcome.TIMED_OUT
-            answer = "B 站搜索结果尚未确认；为避免重复操作，不会自动重试。"
-            status = "service_error"
-        except Exception:
-            answer = "B 站搜索是否完成尚未确认；为避免重复操作，不会自动重试。"
-            status = "service_error"
-        final_transition = apply_execution_outcome(
-            dispatching, expected_revision=dispatching.revision,
-            outcome=outcome, updated_at=_utc_now(),
-        )
-        result = AnswerResult(
-            question=question, answer=answer, status=status,
-            model_calls=state.model_calls, tool_calls=state.tool_calls,
-            stop_reason=final_transition.reason_code if final_transition else "execution_unknown",
-            routing=RouteSummary(
-                route="mcp", intent="mcp_tool",
-                decision_source=decision.decision_source.value,
-                reason_code=decision.reason_code,
-            ),
-            dialogue=_dialogue_summary(decision),
-        )
-        result = _attach_completed_trace(result, state)
-        return self._commit_turn(
-            session_id, state, result,
-            (HumanMessage(content=question), AIMessage(content=answer)),
-            business_transition=final_transition,
-            dialogue_decision=decision, turn_id=turn_id,
-            allow_failure=True,
+        return dispatch_pending_search(
+            question, session_id, ready, decision,
+            turn_id=turn_id, model_calls=model_calls,
+            registry=self.mcp_registry, config=self.config,
+            save_transition=self._save_transition, commit_turn=self._commit_turn,
         )
 
     def _ask_plan(
@@ -1085,6 +1006,13 @@ class KnowledgeAgent:
                 trace_recorder=trace_recorder,
             )
             state.model_calls = intent_model_calls
+            if route.allowed_tool_names == (SEARCH_BILIBILI_TOOL,):
+                # Stateless searches also preserve the topic accepted by the
+                # single dialogue decision when the model builds tool args.
+                state.browser_search_topic = (
+                    dialogue_resolution.decision.confirmed_slots.get("query")
+                    if dialogue_resolution is not None else intent.search_topic or None
+                )
             turn = prepare_mcp_model_turn(
                 state,
                 model=self.model,

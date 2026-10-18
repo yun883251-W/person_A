@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+from types import SimpleNamespace
+
+from browser_mcp.contracts import (
+    SEARCH_BILIBILI_TOOL, build_search_url, validate_search_arguments,
+)
 
 from knowledge_agent.agent.dialogue.contracts import BusinessPhase
 from knowledge_agent.agent.runner import KnowledgeAgent
@@ -24,9 +28,24 @@ class _Registry:
     def list_definitions(self):
         return (_Definition(),)
 
+    def get(self, name):
+        if name != SEARCH_BILIBILI_TOOL:
+            return None
+        return SimpleNamespace(
+            definition=_Definition(), argument_validator=validate_search_arguments,
+        )
+
     def execute(self, name, arguments, *, context):
         self.calls.append((name, dict(arguments)))
-        return {"status": "success", "text": "B 站搜索已打开"}
+        query = arguments["query"]
+        return {
+            "status": "success", "tool_name": name, "server_name": "browser",
+            "structured_content": {
+                "status": "success", "action": "browser_launch_requested",
+                "site": "bilibili", "query": query, "url": build_search_url(query),
+                "browser_launch_requested": True, "page_verified": False,
+            },
+        }
 
 
 class _UnusedRetriever:
@@ -43,14 +62,15 @@ def test_pending_bilibili_request_is_consumed_once_before_dispatch(tmp_path) -> 
         session_store=store, mcp_registry=registry,
     )
 
-    clarification = agent.ask("在 B 站搜索", session_id=session_id)
+    clarification = agent.ask("帮我在B站找点视频", session_id=session_id)
     assert clarification.status == "needs_clarification"
     assert clarification.business_state is not None
     assert clarification.business_state.waiting_for_input is True
 
-    completed = agent.ask("Python 装饰器", session_id=session_id)
+    completed = agent.ask("火影忍者", session_id=session_id)
     assert completed.status == "success"
-    assert registry.calls == [(SEARCH_BILIBILI_TOOL, {"query": "Python 装饰器"})]
+    assert registry.calls == [(SEARCH_BILIBILI_TOOL, {"query": "火影忍者"})]
+    assert completed.stop_reason == "browser_launch_requested"
     assert store.load_business_state(session_id).focus.phase is BusinessPhase.COMPLETED
 
     restored = KnowledgeAgent(

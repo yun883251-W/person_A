@@ -20,7 +20,7 @@ from .answer_diagnostics import validate_public_answer_diagnostics
 from .topic_references import TopicBinding, TopicReferenceError, resolve_topic_reference, validate_topic_binding
 
 if TYPE_CHECKING:
-    from .intent import IntentDecision
+    from .dialogue.intent_types import IntentDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,7 +476,7 @@ def _clause_authorizations(
     The optional resolver belongs to runner, including all classification costs.
     Neither a planner response nor an earlier answer can produce authorization.
     """
-    from .intent import IntentDecision, IntentKind
+    from .dialogue.intent_types import IntentDecision, IntentKind
 
     available = {item["name"] for item in capabilities}
     authorized: dict[str, tuple[str, ...]] = {}

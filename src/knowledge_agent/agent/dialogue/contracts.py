@@ -141,7 +141,11 @@ def _slot_names(value: Sequence[str], code: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class IntentProposal:
-    """Strict, untrusted classifier output; it contains no execution authority."""
+    """Legacy proposal DTO kept for compatibility, never execution authority.
+
+    The unified runtime uses intent_types.IntentDecision plus host lifecycle
+    rules; it does not run a second model to emit this conversation schema.
+    """
 
     intent: DialogueIntent
     business_type: BusinessType | None
@@ -423,7 +427,11 @@ class DialogueDecision:
     expected_revision: int = 0
     allowed_tool_names: tuple[str, ...] = ()
     raw_plan_request: str = ""
-    legacy_intent_decision: object | None = field(default=None, compare=False, repr=False)
+    # Accepted routing data only. Never retain an earlier classifier decision:
+    # it must not override this decision after semantic clarification.
+    retrieval_query: str = ""
+    direct_response_kind: str = ""
+    authorized_user_input: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.intent, DialogueIntent) or (
@@ -458,6 +466,14 @@ class DialogueDecision:
         for text in (self.clarification_question, self.reason_code, self.raw_plan_request):
             if type(text) is not str or len(text) > MAX_STRING_LENGTH:
                 _fail("invalid_dialogue_decision")
+        if type(self.retrieval_query) is not str or len(self.retrieval_query) > 200_000:
+            _fail("invalid_retrieval_query")
+        if type(self.direct_response_kind) is not str or self.direct_response_kind not in {"", "greeting", "scope"}:
+            _fail("invalid_direct_response_kind")
+        if self.direct_response_kind and self.intent is not DialogueIntent.CHITCHAT:
+            _fail("invalid_direct_response_kind")
+        if type(self.authorized_user_input) is not str or len(self.authorized_user_input) > 200_000:
+            _fail("invalid_authorized_input")
         tools = tuple(self.allowed_tool_names)
         if len(tools) != len(set(tools)) or any(type(name) is not str or not name for name in tools):
             _fail("invalid_allowed_tools")

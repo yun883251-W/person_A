@@ -21,7 +21,11 @@ from collections.abc import Sequence
 
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
-from .intent import IntentDecision, IntentKind, snapshot_mcp_capabilities
+from .dialogue.intent_types import IntentDecision, IntentKind
+from .dialogue.rules import snapshot_mcp_capabilities
+from .dialogue.contracts import (
+    BusinessType, DialogueDecision, DialogueIntent, validate_dialogue_decision,
+)
 
 
 class RouteKind(str, Enum):
@@ -46,6 +50,49 @@ _ROUTE_BY_INTENT = {
     IntentKind.NEEDS_CLARIFICATION: RouteKind.DIRECT,
     IntentKind.OUT_OF_SCOPE: RouteKind.DIRECT,
 }
+
+
+def intent_from_dialogue(decision: DialogueDecision, *, current_input: str) -> IntentDecision:
+    """Project the final dialogue decision into the stable executor contract.
+
+    This boundary does not classify again or consult an obsolete decision.
+    Existing history/API routing enums remain compatible with stored turns.
+    Cross-turn browser dispatch validates its separate source binding.
+    """
+    validate_dialogue_decision(decision)
+    source = decision.decision_source.value
+    if source == "program":
+        source = "rules"
+    common = {"decision_source": source, "reason_code": decision.reason_code}
+    if decision.intent is DialogueIntent.UNCLEAR or decision.missing_slots:
+        return IntentDecision(
+            IntentKind.NEEDS_CLARIFICATION,
+            clarification_question=decision.clarification_question,
+            **common,
+        )
+    if decision.intent is DialogueIntent.UNSUPPORTED:
+        return IntentDecision(IntentKind.OUT_OF_SCOPE, **common)
+    if decision.intent is DialogueIntent.CHITCHAT:
+        kind = IntentKind.SCOPE if decision.direct_response_kind == "scope" else IntentKind.GREETING
+        return IntentDecision(kind, **common)
+    if decision.business_type is BusinessType.KNOWLEDGE:
+        return IntentDecision(
+            IntentKind.KNOWLEDGE,
+            retrieval_query=decision.retrieval_query or current_input.strip(), **common,
+        )
+    if decision.business_type in {BusinessType.BILIBILI_SEARCH, BusinessType.MCP_TOOL, BusinessType.MBTI}:
+        from .assessment import TOOLS
+
+        return IntentDecision(
+            IntentKind.MCP_TOOL,
+            allowed_tool_names=TOOLS if decision.business_type is BusinessType.MBTI else decision.allowed_tool_names,
+            authorized_user_input=decision.authorized_user_input, **common,
+        )
+    return IntentDecision(
+        IntentKind.NEEDS_CLARIFICATION,
+        clarification_question=decision.clarification_question or "请说明要完成的任务。",
+        **common,
+    )
 
 
 def resolve_route(

@@ -17,9 +17,9 @@ Person_A 增加本地 `browser` MCP 服务。用户明确提出在 B 站搜索�
 我想在 bilibili 观看三体
 ```
 
-这些问题走 MCP 路线，模型产生类似 `{"query":"数据结构"}` 的工具参数，目标工具为 `mcp__browser__search_bilibili`。主题参数由模型根据本次用户请求提取；意图规则负责识别路线，不从问题中拼装可直接执行的参数。
+这些问题走 MCP 路线，目标工具为 `mcp__browser__search_bilibili`。会话请求由统一意图节点确认主题、保存来源，再由 `dialogue/browser_dispatch.py` 校验并使用 `{"query":"数据结构"}` 这样的参数；无会话请求和计划子步骤仍使用模型原生工具调用生成参数。程序不会从未经确认的历史答案推测授权。
 
-“我想在 B站看火影忍者”会按观看意图进入搜索流程，模型应提取 `{"query":"火影忍者"}`。支持“看、看看、看一下、观看”，沿用学习请求的明确意图检查；当前动作止于打开搜索结果页，不自动选择集数或播放视频。
+“我想在 B站看火影忍者”会按观看意图进入搜索流程，主题为“火影忍者”。支持“看、看看、看一下、观看、找点、找些”；当前动作止于打开搜索结果页，不自动选择集数或播放视频。同一会话中也可以先发“帮我在B站找点视频”，再补充“火影忍者”；明确缺主题的规则会创建待补任务，短回复先补参，不进入知识检索。泛化的语义澄清仍不能自动成为可执行授权。
 
 可以使用原 CLI 入口：
 
@@ -28,7 +28,7 @@ person-a ask "我想在 bili 学习数据结构"
 person-a chat
 ```
 
-网页仍使用原 HTTP 服务；完整 JSON 和 SSE 提问接口复用同一 Agent 流程，不新增浏览器专用 HTTP 接口。浏览器工具需要聊天模型提取工具参数，因此应沿用现有 DeepSeek 配置。页面选择“普通问答”或“自动选择 Skill”均可按意图进入 MCP；手动指定知识 Skill 与 MCP 操作冲突时，沿用现有冲突提示。
+网页仍使用原 HTTP 服务；完整 JSON 和 SSE 提问接口复用同一 Agent 流程，不新增浏览器专用 HTTP 接口。未知表达的语义分类、无会话请求和计划子步骤使用现有聊天模型配置；明确的会话搜索与补参不额外调用分类模型。页面选择“普通问答”或“自动选择 Skill”均可按意图进入 MCP；手动指定知识 Skill 与 MCP 操作冲突时提示切换回答方式。
 
 普通知识问题，例如“Python 列表如何使用”，仍使用知识问答流程，不打开浏览器。仅咨询工具实现方式、否定操作或引用一段搜索指令，也不应被当作执行请求。缺少搜索主题时需要澄清，不替用户猜测主题。
 
@@ -69,7 +69,7 @@ MCP 服务名称是 `browser`，服务端工具名称是 `search_bilibili`，宿
 
 服务端将关键词进行 URL 查询编码，固定生成 `https://search.bilibili.com/all?keyword=...`，再调用 `webbrowser.open_new_tab()`。不会把模型参数交给 Shell，不支持切换网站、运行代码或访问任意本地文件。
 
-专用浏览器执行分支关闭模型传输层重试，最多发送两次模型请求：第一次生成参数，必要时再修正一次；它不意味着执行失败后重试。只有模型给出一个有效的目标工具调用，宿主才允许执行。实际调用已发生后，无论返回成功、失败还是无法确认结果，本轮不再次打开。
+无会话与计划子步骤的浏览器执行分支关闭模型传输层重试，最多发送两次模型请求：第一次生成参数，必要时再修正一次；它不意味着执行失败后重试。有状态分支使用已确认的主题与来源，执行前核对会话、轮次、修订号和参数，先提交派发保护再调用工具。实际调用已发生后，无论返回成功、失败还是无法确认结果，本轮不再次打开。
 
 **最终回答由程序根据工具的结构化结果生成，不再调用模型改写。** 模型产生的 `{"query":"数据结构"}` 是调用参数；MCP 返回的结构化 JSON 是实际执行结果，二者不能混为一谈。程序只依据执行结果报告请求状态和链接，不声称已看到网页内容。客户端断线或宿主超时也不能证明浏览器未打开；本功能没有新增请求 ID、断线恢复或自动重发。
 
@@ -82,7 +82,8 @@ MCP 服务名称是 `browser`，服务端工具名称是 `search_bilibili`，宿
 | [`config/mcp_servers.json`](../config/mcp_servers.json) | 启用 browser，并保留 MBTI 配置 |
 | [`config/mcp_servers.browser.example.json`](../config/mcp_servers.browser.example.json) | 默认禁用的浏览器工具示例 |
 | [`agent/browser_actions.py`](../src/knowledge_agent/agent/browser_actions.py) | B 站搜索意图、操作请求与咨询、否定和引用的边界 |
-| [`agent/intent.py`](../src/knowledge_agent/agent/intent.py)、[`agent/router.py`](../src/knowledge_agent/agent/router.py) | 接入搜索意图、工具可用性和 MCP 路线 |
+| [`agent/dialogue/resolver.py`](../src/knowledge_agent/agent/dialogue/resolver.py)、[`agent/router.py`](../src/knowledge_agent/agent/router.py) | 统一搜索意图、待补参数、工具可用性和 MCP 路线 |
+| [`agent/dialogue/browser_dispatch.py`](../src/knowledge_agent/agent/dialogue/browser_dispatch.py) | 有状态搜索来源校验、派发前消费和真实结果核对 |
 | [`agent/browser_execution.py`](../src/knowledge_agent/agent/browser_execution.py) | 专用单动作分支、至多两次模型请求、一次实际调用和程序生成最终回答 |
 | [`agent/model_loop.py`](../src/knowledge_agent/agent/model_loop.py) | 将浏览器操作交给专用执行分支，其他问答继续使用原模型循环 |
 | [`mcp/`](../src/knowledge_agent/mcp/) 与 [`tools/registry.py`](../src/knowledge_agent/tools/registry.py) | 原有工具发现、白名单、参数校验、调用和资源清理 |

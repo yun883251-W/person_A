@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 from browser_mcp.contracts import validate_search_arguments
 
-from .browser_actions import BrowserActionDecision, is_explicit_bilibili_topic
+from .browser_actions import (
+    BrowserActionDecision,
+    classify_bilibili_request,
+    is_explicit_bilibili_topic,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -68,7 +72,19 @@ def classify_bilibili_semantics(
     model: BaseChatModel | None = None,
     model_invoker: Callable[[Sequence[BaseMessage]], object] | None = None,
 ) -> BrowserActionDecision:
-    """Make at most one classification attempt and strictly validate its JSON."""
+    """Make at most one classification attempt and strictly validate its JSON.
+
+    Reuse the deterministic boundary even when invoked directly. A broad
+    semantic needs_clarification result cannot establish a pending search:
+    it also covers compound, unsupported and ambiguous actions. Only the
+    deterministic browser_bilibili_missing_topic result has that meaning.
+    """
+    boundary = classify_bilibili_request(question)
+    if boundary is None:
+        return BrowserActionDecision("knowledge", "browser_bilibili_semantic_discussion")
+    if boundary.kind != "semantic_candidate":
+        return boundary
+
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from ..models import initialize_chat_model, invoke_chat_model
@@ -108,11 +124,13 @@ def classify_bilibili_semantics(
             raise BrowserSemanticValidationError("browser_bilibili_semantic_missing_topic") from None
         if topic != normalized or topic not in question or not is_explicit_bilibili_topic(topic):
             raise BrowserSemanticValidationError("browser_bilibili_semantic_missing_topic")
-        return BrowserActionDecision("search", "browser_bilibili_semantic_search")
+        return BrowserActionDecision("search", "browser_bilibili_semantic_search", topic=topic)
     if topic:
         raise BrowserSemanticValidationError("browser_bilibili_semantic_invalid_fields")
     if kind == "knowledge":
         return BrowserActionDecision("knowledge", "browser_bilibili_semantic_discussion")
+    # Keep this distinct from browser_bilibili_missing_topic. The two-field
+    # classifier contract cannot prove that a topic is the only missing item.
     return BrowserActionDecision(
         "needs_clarification", "browser_bilibili_semantic_needs_clarification",
         "请说明你想在 B 站搜索的具体主题或作品名称；当前功能只打开搜索结果页。",

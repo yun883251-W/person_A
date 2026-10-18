@@ -4,12 +4,16 @@
 再把经过校验的决策交给已有知识问答、B 站搜索、MBTI、MCP 和规划流程。
 
 文件职责：
-    contracts.py   数据结构、字段约束、来源和公开投影的 TODO C01—C12。
-    transitions.py 纯状态转换和执行结果归并的 TODO T01—T12。
-    resolver.py    规则、可选模型分类及原有意图兼容的 TODO R01—R12。
+    intent_types.py    原分类与执行路由共用的轻量类型。
+    rules.py           确定性规则、历史追问和能力匹配，不调用模型。
+    classifier.py      统一 rules/hybrid 策略，至多选择一种语义补充。
+    contracts.py       会话决策、字段约束、参数来源和公开投影。
+    resolver.py        唯一会话决策入口，先处理生命周期和待补参数。
+    transitions.py     纯状态转换和执行结果归并。
+    browser_dispatch.py 校验待执行搜索、提交派发保护、调用工具并核对结果。
 
-开发顺序：先 contracts，再 transitions，再 resolver，最后完成现有模块接入。
-接入项 I01—I12、集中验收项 V01—V10 见 project_docs/DIALOGUE_INTENT_TODO.md。
+agent/intent.py 仅保留兼容导出，不再维护独立分类逻辑。
+接入记录和未执行验收项见 project_docs/DIALOGUE_INTENT_TODO.md。
 公开调用入口由 ``contracts``、``resolver`` 与 ``transitions`` 各模块显式提供；
 runner 只消费校验后的决定与状态提案，不把本包注册成工具或 Skill。
 

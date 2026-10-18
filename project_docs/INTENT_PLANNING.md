@@ -26,7 +26,8 @@
 相关文件：
 
 - [`agent/assessment.py`](../src/knowledge_agent/agent/assessment.py)：完整控制指令与测试状态转换。
-- [`agent/intent.py`](../src/knowledge_agent/agent/intent.py)：知识咨询、工具请求、追问与直接回复的意图边界。
+- [`agent/dialogue/resolver.py`](../src/knowledge_agent/agent/dialogue/resolver.py)：统一处理生命周期、待补参数和最终会话决策。
+- [`agent/dialogue/classifier.py`](../src/knowledge_agent/agent/dialogue/classifier.py)：共用规则及模型分类策略；原 `agent/intent.py` 仅保留兼容导出。
 - [`agent/router.py`](../src/knowledge_agent/agent/router.py)：根据有效意图和当前可用工具确定执行路线。
 - [`agent/runner.py`](../src/knowledge_agent/agent/runner.py)：将会话状态与上述节点接入一次问答。
 
@@ -41,7 +42,7 @@ flowchart TD
     A[用户提交问题] --> B{明确的 MBTI 控制或答题?}
     B -- 是 --> C[现有确定性测试流程]
     B -- 否 --> D{should_plan: 明确包含多个任务?}
-    D -- 否 --> E[原意图识别与知识 / MCP / 直接回复流程]
+    D -- 否 --> E[统一规则 / 待补参数 / 可选分类 → 知识 / MCP / 直接回复]
     D -- 是 --> F[build_plan: 原始子句和显式引用构造计划]
     F --> T[按规则补全明确的 B 站主题指代]
     T --> G{步骤与能力校验通过?}

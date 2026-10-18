@@ -26,6 +26,9 @@ Python 路径以下均相对 `src/knowledge_agent/`。调整按职责拆分现�
 | `agent/runner.py` 的模型和工具调用循环 | `agent/model_loop.py` |
 | `agent/runner.py` 的回答、引用校验与结果摘要 | `agent/answers.py` |
 | `agent/runner.py` 的 KnowledgeAgent 编排 | 继续位于 `agent/runner.py` |
+| `agent/intent.py` 的规则、类型和模型分类 | `agent/dialogue/rules.py`、`intent_types.py`、`classifier.py`；原路径保留兼容导出 |
+| 原意图与会话意图的重复分类 | 统一由 `agent/dialogue/resolver.py` 调度，最终决定交给 `agent/router.py` |
+| runner 内的会话 B 站搜索派发 | `agent/dialogue/browser_dispatch.py`，保留来源、修订号和实际结果校验 |
 | `api.py` 的应用创建和生命周期 | `http/app.py` |
 | `api.py` 的请求及公开响应模型 | `http/schemas.py` |
 | `api.py` 的领域结果到公开响应转换 | `http/serialization.py` |
