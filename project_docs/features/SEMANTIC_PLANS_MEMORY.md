@@ -116,4 +116,4 @@ MEMORY_SUMMARY_MAX_TURN_CHARS=3000
 
 主要文件：`agent/browser/actions.py`、`agent/browser/semantic.py`、`agent/intent.py`、`agent/planning/planner.py`、`agent/planning/executor.py`、`agent/runner.py`、`session/memory.py`、`application.py`、`session/store.py`。配置在 `config.py` 和根目录 `.env.example`，摘要接口与页面在 `http/`、`web/`。
 
-评估模块、请求标识与断线恢复、图片提问继续暂缓。上面所有用例均未执行。
+评估模块、请求标识与断线恢复继续暂缓；图片提问骨架已归档到 `archive/image-qa` 分支，不参与主线合并。上面所有用例均未执行。

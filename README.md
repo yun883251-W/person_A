@@ -227,7 +227,6 @@ Person_A/
 │  │  ├─ tools/                # 工具注册与本地知识工具
 │  │  ├─ mcp/                  # 外部MCP客户端及适配
 │  │  ├─ http/                 # HTTP应用、序列化、SSE及routes/
-│  │  ├─ images/               # 图片提问扩展预留
 │  │  ├─ evaluation.py         # 现有评估实现
 │  │  ├─ session_store.py      # 旧存储导入路径的兼容入口
 │  │  └─ skill_loader.py       # 旧技能加载路径的兼容入口

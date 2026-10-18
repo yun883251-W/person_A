@@ -24,7 +24,6 @@
 | `tools/` | 宿主工具注册与本地知识工具 |
 | `mcp/` | 外部 MCP 连接、发现、适配和生命周期 |
 | `http/` | HTTP 路由、序列化、错误和 SSE |
-| `images/` | 图片提问扩展预留 |
 | `evaluation.py` | 现有离线评估实现 |
 
 包初始化保持轻量。内部调用从具体实现模块导入，不通过兼容入口绕行。`agent/dialogue/browser_dispatch.py` 继续负责跨轮待办的状态和来源，`agent/browser/execution.py` 负责模型工具调用；两者没有被合并成重复的会话入口。
