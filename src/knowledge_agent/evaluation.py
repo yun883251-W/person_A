@@ -4,10 +4,9 @@
 为人工判断答案正确性、完整性和忠实度提供报告。
 本模块只统计运行与引用来源覆盖，不自动评判答案质量。
 
-前置工作：先完成 agent/prompts.py 中修改 SYSTEM_PROMPT 第三节的 TODO，
-统一为模型输出本轮 [S1] 等标记，由 Agent 校验并生成最终引用。
-评估运行器已实现；对应 CLI 接入见 cli.py 的评估开发 TODO。
-其余验证在批处理与 CLI 接入完成后集中执行，不逐项调用真实模型。
+SYSTEM_PROMPT 已统一为模型输出本轮 [S1] 等标记，由 Agent 校验并生成最终引用。
+评估运行器与 CLI 的 evaluate 子命令均已接入。
+真实模型下的效果评估尚未执行。
 """
 
 from __future__ import annotations

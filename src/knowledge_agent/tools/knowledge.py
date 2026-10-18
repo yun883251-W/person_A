@@ -17,7 +17,7 @@ from typing import Any, Literal, Protocol
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..knowledge.retrieval import IndexNotBuiltError
+from ..knowledge.index_reader import IndexNotBuiltError
 from ..schemas import DocumentChunk, RetrievalResult
 from .registry import InMemoryToolRegistry, ToolRegistration
 
@@ -399,7 +399,7 @@ def create_knowledge_tool_registry(
         )
     )
 
-# 第二阶段：开发完成后统一验证，本阶段不执行。
+# 验证项：以下 TODO 尚未统一执行。
 
 # TODO 07：验证迁移后的搜索、小节补查和来源一致性。
 # 覆盖无命中、无索引、非法 chunk_id、非本轮片段和资料长度限制。

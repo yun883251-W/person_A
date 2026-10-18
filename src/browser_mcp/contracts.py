@@ -53,6 +53,16 @@ def build_search_url(query: str) -> str:
     return BILIBILI_SEARCH_ENDPOINT + "?" + urlencode({"keyword": normalized})
 
 
+def search_success_payload(query: str) -> dict[str, Any]:
+    """构造统一的成功契约；构造结果本身不代表浏览器操作已执行。"""
+    normalized = validate_search_arguments({"query": query})["query"]
+    return {
+        "status": "success", "action": "browser_launch_requested", "site": "bilibili",
+        "query": normalized, "url": build_search_url(normalized),
+        "browser_launch_requested": True, "page_verified": False,
+    }
+
+
 def search_input_schema() -> dict[str, Any]:
     """返回模型兼容的 Schema 新对象；完整执行约束由 Python 校验保证。"""
     return {

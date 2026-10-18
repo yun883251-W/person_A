@@ -371,7 +371,7 @@ def bind_chat_tools(model: BaseChatModel, tools: Sequence[Any]) -> Any:
 CHAT_STREAMING_SUPPORTED: Final = False
 
 
-# 第二阶段：开发全部完成后统一验证。以下 TODO 暂不执行。
+# 验证项：以下 TODO 尚未统一执行。
 
 # TODO 11：集中验证配置与工厂初始化。
 # 在独立的模型测试文件中使用假客户端，覆盖配置读取优先级及参数映射。

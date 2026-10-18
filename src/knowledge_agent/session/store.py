@@ -59,7 +59,7 @@ from knowledge_agent.agent.dialogue.contracts import (
 )
 
 
-# 第一阶段：存储层及应用接入开发。
+# 存储层及应用接入。
 
 DATABASE_SCHEMA_VERSION = 3
 MESSAGE_SERIALIZATION_VERSION = 1

@@ -4,7 +4,7 @@
 
 **一期开发接入已完成。** 契约、状态转换、统一决策入口、SQLite 持久化、B 站跨轮补参、生命周期及公开投影已经接入。开发完成不等于真实模型与真实浏览器联调完成；验收状态见文末。
 
-目标是在已有知识问答、B 站搜索、MBTI 和单轮多任务能力上，统一处理“新任务、继续当前任务、取消、闲聊、需要澄清”。2026-10-18 已合并原 `agent/intent.py` 与会话解析入口：旧路径保留兼容导出，实际规则和分类策略集中到 `agent/dialogue/`。本轮只开发和文本审阅，未运行测试、导入检查、服务或模型联调。
+目标是在已有知识问答、B 站搜索、MBTI 和单轮多任务能力上，统一处理“新任务、继续当前任务、取消、闲聊、需要澄清”。2026-10-18 已合并原 `agent/intent.py` 与会话解析入口；后续清理已移除旧兼容文件，实际规则、分类策略和调用入口均集中到 `agent/dialogue/`。本轮只开发和文本审阅，未运行测试、导入检查、服务或模型联调。
 
 一期每个会话只有一个当前业务焦点，以及至多一个等待补充参数的任务。MBTI 仍使用现有测试快照，通用状态仅关联 `test_id`。知识追问、补充 B 站搜索主题、继续 MBTI 作答的含义不同，不能统一解释为“重新执行上一轮”。
 
@@ -54,7 +54,7 @@ src/knowledge_agent/agent/dialogue/
 ## 集成开发 TODO
 
 - [x] **I01：接入既有意图识别，统一语义但保留执行边界。**
-  - 位置：`agent/intent.py`、新增 `agent/dialogue/contracts.py` 与 `resolver.py`。
+  - 位置：`agent/dialogue/intent_types.py`、`rules.py`、`classifier.py`、`contracts.py` 与 `resolver.py`。
   - 区分会话动作 `new_business / continue_business / cancel_business / pause_business / resume_business / chitchat / unclear / unsupported`、业务类型与执行模式；将它们转换为已有路由可接受的决定，不把新枚举直接塞入旧 `IntentKind`。
   - 程序先结合业务焦点处理生命周期和待补参数，再对仍未确定的当前输入选择一种分类器。通用分类只提供受限知识历史和能力元数据，浏览器分类只提供当前输入；模型 JSON 必须严格校验，不能直接写会话状态。
   - 未知、非法或超时输出不能消费 pending，也不能触发工具；仅按既有合法分支降级或澄清。现有其他显式 MCP 请求保持原权限边界，未纳入一期状态的能力不自动获得跨轮继续执行能力。

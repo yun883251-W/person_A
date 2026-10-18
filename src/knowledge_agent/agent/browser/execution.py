@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from browser_mcp.contracts import (
     SEARCH_BILIBILI_TOOL,
     build_search_url,
+    search_success_payload,
     validate_search_arguments,
 )
 
@@ -85,7 +86,7 @@ def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, 
     return call, arguments
 
 
-def _verified_payload(output: object, arguments: Mapping[str, str]) -> dict[str, Any] | None:
+def verified_search_payload(output: object, arguments: Mapping[str, str]) -> dict[str, Any] | None:
     """只接受该工具针对所提交查询的精确结果契约。"""
     if not isinstance(output, Mapping) or output.get("status") != "success" or output.get("truncated"):
         return None
@@ -97,21 +98,52 @@ def _verified_payload(output: object, arguments: Mapping[str, str]) -> dict[str,
             payload = json.loads(output.get("text", ""))
         except (TypeError, ValueError):
             return None
-    if not isinstance(payload, dict) or set(payload) != {
-        "status", "action", "site", "query", "url", "browser_launch_requested", "page_verified",
-    }:
-        return None
+    expected = search_success_payload(arguments["query"])
     if (
-        payload.get("status") != "success"
-        or payload.get("action") != "browser_launch_requested"
-        or payload.get("site") != "bilibili"
-        or payload.get("query") != arguments["query"]
-        or payload.get("url") != build_search_url(arguments["query"])
+        not isinstance(payload, dict)
+        or payload != expected
         or payload.get("browser_launch_requested") is not True
         or payload.get("page_verified") is not False
     ):
         return None
     return payload
+
+
+# 只有明确发生于执行前的错误，才可向用户声明未执行。
+SEARCH_NOT_DISPATCHED_ERRORS = frozenset({
+    "unknown_tool", "unavailable", "invalid_tool_arguments", "invalid_arguments",
+    "tool_budget_exhausted",
+})
+_SEARCH_PUBLIC_ERRORS = SEARCH_NOT_DISPATCHED_ERRORS | {
+    "timeout", "tool_timeout", "connection_lost", "remote_error",
+}
+
+
+def search_error_code(output: object) -> str:
+    """只暴露允许的错误码；畸形或未知返回统一视为未获确认。"""
+    if isinstance(output, Mapping) and output.get("status") == "error":
+        error = output.get("error")
+        code = error.get("code") if isinstance(error, Mapping) else None
+        if isinstance(code, str) and code in _SEARCH_PUBLIC_ERRORS:
+            return code
+    return "browser_result_unconfirmed"
+
+
+def search_result_answer(query: str, *, success: bool, code: str) -> str:
+    """两种执行入口共用公开文案，不宣称页面已经加载。"""
+    url = build_search_url(query)
+    if success:
+        return (
+            "已向本机默认浏览器发送 B 站搜索打开请求。\n\n"
+            f"关键词：{query}\n\n[B站搜索页]({url})\n\n"
+            "尚未检查页面是否加载，也未读取视频结果。"
+        )
+    message = (
+        "B 站搜索未能执行，本轮没有重复调用。"
+        if code in SEARCH_NOT_DISPATCHED_ERRORS else
+        "浏览器打开请求未获成功确认，本轮没有重复调用。请先查看浏览器窗口。"
+    )
+    return message + f"\n\n关键词：{query}\n\n也可以打开：[B站搜索页]({url})。"
 
 
 def run_browser_search(
@@ -171,7 +203,6 @@ def run_browser_search(
 
     if proposal is None or arguments is None:
         raise RuntimeError("browser_parameter_generation_incomplete")
-    url = build_search_url(arguments["query"])
     if state.tool_calls >= max_tool_calls:
         state.messages[:] = initial_messages
         return _finish(
@@ -180,11 +211,7 @@ def run_browser_search(
         )
     # 在执行外部操作前限制存储的工具消息大小。规范结果很小，
     # 最终回答也不需要更多模型上下文。
-    canonical = {
-        "status": "success", "action": "browser_launch_requested", "site": "bilibili",
-        "query": arguments["query"], "url": url,
-        "browser_launch_requested": True, "page_verified": False,
-    }
+    canonical = search_success_payload(arguments["query"])
     if state.context_chars + len(json.dumps(canonical, ensure_ascii=False)) > max_context_chars:
         state.messages[:] = initial_messages
         return _finish(
@@ -200,21 +227,13 @@ def run_browser_search(
         max_tool_calls=max_tool_calls,
     )
     result = results[0] if len(results) == 1 else None
-    payload = _verified_payload(result.output, arguments) if result is not None and result.status == "success" else None
+    payload = verified_search_payload(result.output, arguments) if result is not None and result.status == "success" else None
     if payload is not None:
         state.successful_tool_calls += 1
         public_output: dict[str, Any] = payload
     else:
         state.failed_tool_calls += 1
-        code = "browser_result_unconfirmed"
-        output = result.output if result is not None else None
-        if isinstance(output, Mapping) and output.get("status") == "error":
-            error = output.get("error")
-            if isinstance(error, Mapping) and error.get("code") in {
-                "timeout", "tool_timeout", "connection_lost", "unavailable", "remote_error",
-                "invalid_tool_arguments", "invalid_arguments", "tool_budget_exhausted",
-            }:
-                code = str(error["code"])
+        code = search_error_code(result.output if result is not None else None)
         state.last_tool_error_code = code
         public_output = {"status": "error", "error": {"code": code}}
 
@@ -226,17 +245,9 @@ def run_browser_search(
         name=SEARCH_BILIBILI_TOOL,
         status="success" if payload is not None else "error",
     ))
-    if payload is not None:
-        return _finish(
-            state,
-            "已向本机默认浏览器发送 B 站搜索打开请求。\n\n"
-            f"关键词：{arguments['query']}\n\n[B站搜索页]({url})\n\n"
-            "尚未检查页面是否加载，也未读取视频结果。",
-            status="success", code="browser_launch_requested",
-        )
+    success = payload is not None
+    code = "browser_launch_requested" if success else state.last_tool_error_code or "browser_result_unconfirmed"
     return _finish(
-        state,
-        "浏览器打开请求未获成功确认，本轮没有重复调用。请先查看浏览器窗口；"
-        f"也可以使用此链接：[B站搜索页]({url})。",
-        status="service_error", code=state.last_tool_error_code or "browser_result_unconfirmed",
+        state, search_result_answer(arguments["query"], success=success, code=code),
+        status="success" if success else "service_error", code=code,
     )

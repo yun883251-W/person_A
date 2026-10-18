@@ -1,4 +1,4 @@
-"""知识库管理服务模块（待开发）。
+"""知识库管理服务模块。
 
 模块功能：为页面提供文档列表、原文预览、索引状态、Markdown 上传和手动更新。
 输入：服务端配置的文档/索引目录、受控的文档标识、上传内容或建库操作。
@@ -6,14 +6,14 @@
 
 职责分工：
 1. 本模块管理文档文件及知识库操作，不负责对话生成或 HTTP 请求解析。
-2. knowledge/ingest.py 继续负责文档解析、切分、向量化、完整建库和增量更新。
+2. knowledge/markdown.py 负责文档解析与切分；knowledge/ingest.py 负责入库编排、向量化、完整建库和增量更新。
 3. api.py 负责请求校验、响应转换和 ServiceRuntime 的工作线程调度。
 4. Agent 通过已有 refresh_index() 加载新索引，前端负责展示状态和操作入口。
 
-当前仅创建职责说明和 TODO，不包含业务实现，不改变已有问答、文件或索引。
-第一版只管理 Markdown；暂不提供删除文档、在线编辑或后台任务队列。
-开发顺序：TODO 01—07 只读功能 → TODO 08—12 上传与更新 → TODO 13—14 接入。
-全部开发完成后统一执行 TODO 15—18，本阶段不测试、不建库、不调用模型。
+已实现文档列表、原文预览、索引状态、Markdown 上传与手动更新，
+并已接入 HTTP 路由和页面。第一版只管理 Markdown，
+不提供删除文档、在线编辑或后台任务队列。
+TODO 15—18 保留为统一验证项，尚未执行。
 """
 
 
@@ -455,7 +455,7 @@ def _list_documents(
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         raise ValueError("limit must be a positive integer")
 
-    from .ingest import get_document_identity, read_markdown_file
+    from .markdown import get_document_identity, read_markdown_file
 
     docs_root = _require_readable_directory(
         Path(config.docs_dir).resolve(strict=True), description="文档目录"
@@ -608,7 +608,7 @@ def _read_document(
     ):
         raise ValueError("content_hash must be a non-empty string")
 
-    from .ingest import get_document_identity, read_markdown_file
+    from .markdown import get_document_identity, read_markdown_file
 
     try:
         path = resolve_document_path(config.docs_dir, document_path)
@@ -982,9 +982,9 @@ def _run_index_operation(
         active_version=getattr(snapshot, "index_version", None),
     )
 
-# 第三阶段：开发后接入 API 和页面，本次不修改其他文件。
+# 第三阶段：HTTP 路由与页面接入。
 
-# 第四阶段：开发完成后统一验证，本阶段不执行。
+# 验证项：以下 TODO 尚未统一执行。
 
 # TODO 15：验证文档列表、变化识别与预览。
 # 使用独立临时目录，覆盖空目录、未建库、新增/修改/删除、坏清单和单个文件不可读。

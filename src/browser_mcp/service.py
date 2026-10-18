@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .contracts import build_search_url, validate_search_arguments
+from .contracts import search_success_payload
 
 
 class BrowserLaunchError(RuntimeError):
@@ -30,8 +30,8 @@ class BrowserService:
 
     def search_bilibili(self, query: str) -> dict[str, Any]:
         """校验全部参数后调用一次 opener；不能据此声称页面已打开或视频已读取。"""
-        normalized = validate_search_arguments({"query": query})["query"]
-        url = build_search_url(normalized)
+        payload = search_success_payload(query)
+        url = payload["url"]
 
         try:
             opener = self._opener
@@ -47,12 +47,4 @@ class BrowserService:
         if accepted is not True:
             raise BrowserLaunchError("browser_launch_not_accepted")
 
-        return {
-            "status": "success",
-            "action": "browser_launch_requested",
-            "site": "bilibili",
-            "query": normalized,
-            "url": url,
-            "browser_launch_requested": True,
-            "page_verified": False,
-        }
+        return payload

@@ -95,7 +95,7 @@ def create_app(
     return application
 
 
-# 第二阶段：开发完成后集中验证；本阶段不执行。
+# 验证项：以下 TODO 尚未统一执行。
 
 # TODO 17：集中验证 HTTP 参数、状态码与响应格式。
 # 使用 FastAPI TestClient 和假运行时，覆盖健康检查、会话 CRUD、分页、空问题及非法参数。

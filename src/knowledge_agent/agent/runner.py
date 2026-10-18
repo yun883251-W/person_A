@@ -3,7 +3,7 @@
 state 保存阶段数据，preparation 准备检索与提示词，model_loop 执行模型工具循环，
 answering/answers 校验引用并生成结果，应用生命周期由 knowledge_agent.application 管理。
 本模块保留原公共类型与函数导入入口，已有 CLI/API 调用方式保持兼容。
-验证 TODO 18—21 留待统一执行；本次整理不运行测试或真实模型联调。
+验证项 TODO 18—21 保留在文件末尾，尚未统一执行。
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from ..tools.registry import InMemoryToolRegistry
 from knowledge_agent.agent import assessment
 from knowledge_agent.agent.planning import planner
 from knowledge_agent.agent.answering.answers import _attach_completed_trace, _attach_routing, finalize_answer, finalize_mcp_answer
-from knowledge_agent.agent.planning.dependencies import DependencyContext, cited_evidence, is_dependency_transform
 from .dialogue.classifier import identify_intent
 from .dialogue.intent_types import (
     IntentDecision, IntentKind, IntentModelBudgetError, McpCapability,
@@ -53,9 +52,9 @@ from .model_loop import (
     invoke_model_turn,
     run_model_loop,
 )
-from knowledge_agent.agent.planning.executor import StepBudget, StepOutcome, execute_plan, minimum_step_budget
+from knowledge_agent.agent.planning.executor import execute_plan, minimum_step_budget
+from knowledge_agent.agent.planning.steps import run_planned_step
 from .preparation import (
-    _PLAN_STEP_CONTEXT_INSTRUCTION,
     PreparedContextLimitError,
     classify_question,
     create_knowledge_tools,
@@ -86,7 +85,6 @@ from .state import (
     _complete_history_messages,
 )
 from knowledge_agent.observability.trace import TraceRecorder, finish_trace_safely
-from knowledge_agent.agent.planning.topic_references import validate_topic_binding
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 
@@ -124,57 +122,6 @@ def _business_summary(state: SessionBusinessState) -> BusinessStateSummary:
         parameters=dict(public["parameters"]),
         allowed_actions=tuple(public["allowed_actions"]),
     )
-
-
-_PLAN_RESPONSE_ERRORS = frozenset({
-    "plan_invalid_response", "plan_unexpected_tool_call", "plan_invalid_json",
-    "plan_invalid_structure", "plan_response_step_count", "plan_invalid_step_id",
-    "plan_invalid_goal", "plan_invalid_kind", "plan_invalid_dependencies",
-    "plan_ungrounded_step_goal", "plan_unauthorized_tool", "plan_invalid_step_tools",
-    "plan_ungrounded_tool_goal", "plan_missing_requested_tool",
-})
-_PLAN_REQUEST_MESSAGES = {
-    "plan_invalid_question": "请提供要执行的任务，并写清每一步的目标。",
-    "plan_invalid_request_goal": "每一步的目标必须是非空文本，不超过 2000 个字符，且不能包含非法控制字符。",
-    "plan_invalid_numbering": "请从 1 开始连续编号，每个编号对应一个任务。",
-    "plan_invalid_dependency_reference": "任务引用了尚不存在、当前或后续的步骤。请明确引用当前请求中已经列出的前置步骤。",
-    "plan_ambiguous_dependency": "某一步的“它、上述内容”等指代不明确。请写出具体主题，或明确说明“第一步的结果”“上一步的回答”。",
-    "plan_tool_dependency_unsupported": "工具步骤需要在当前子句中写明完整参数，暂不支持从前一步回答中提取工具参数。",
-    "plan_knowledge_tool_dependency_unsupported": "暂不支持把工具结果作为知识步骤的前置资料，请拆开处理，或让该步骤依赖已完成的知识问答。",
-    "plan_manual_skill_mcp_conflict": "手动指定的 Skill 只适用于知识问答。请切换为自动选择或普通问答后，再发送包含工具操作的计划。",
-    "plan_not_requested": "请用“先……再……”或编号列出需要执行的任务。",
-    "plan_invalid_step_count": "每轮计划支持 2～3 个不同任务，请调整任务数量或拆开重复任务。",
-    "plan_stateful_assessment": "MBTI 开始、作答、暂停和评分需要单独操作，请从多任务请求中拆出这些操作。",
-    "plan_repeated_tool": "同一轮计划暂不支持重复调用同一个工具，请把重复的工具任务分开发送。",
-    "plan_unavailable_tool": "请求中包含当前不可用的工具，请改用已接入的工具或单独说明要完成的任务。",
-    "plan_clause_needs_clarification": "某一步的操作目标不明确，请写清要搜索的平台和主题。",
-    "plan_topic_reference_missing": "已识别到 B 站搜索请求，但当前这条消息的前面没有可唯一确定的主题，请补充要搜索的主题。",
-    "plan_topic_reference_ambiguous": "已识别到 B 站搜索请求，但“相关视频”可能对应多个主题，请明确要搜索哪一个。",
-    "plan_topic_reference_invalid": "搜索主题与当前任务的原始描述不一致，请明确要搜索的主题。",
-    "plan_unconfirmed_clause_action": "某一步尚不能确认为可执行操作，请明确是否需要打开搜索页面，并写清平台和主题。",
-    "plan_requested_clarification": "规划模型未能确定各步的执行目标。请明确每一步要完成的任务，或拆成独立问题。",
-    "plan_context_too_long": "任务描述超出本轮规划的上下文限制，请缩短描述或拆成独立问题。",
-}
-
-
-def _plan_validation_failure(code: str) -> tuple[AnswerStatus, str]:
-    """把模型契约失败与需要澄清的请求区分开。"""
-    if code in {"plan_model_budget_exhausted", "browser_bilibili_semantic_budget_exhausted"}:
-        return "limit_reached", "本轮模型调用预算不足以识别并执行任务，尚未执行任何步骤。请拆成单独问题。"
-    if code == "browser_bilibili_semantic_timeout":
-        return "service_error", "某一步的浏览器意图识别超时，尚未执行任何步骤。请稍后重试。"
-    if code == "browser_bilibili_unavailable":
-        return "service_error", "计划需要的 B 站浏览器工具当前不可用，尚未执行任何步骤。请检查 MCP 服务配置。"
-    if code.startswith("browser_bilibili_semantic_") or code == "plan_clause_intent_failed":
-        return "service_error", "某一步的浏览器意图识别服务失败或返回内容未通过校验，尚未执行任何步骤。请稍后重试。"
-    if code in _PLAN_RESPONSE_ERRORS:
-        return "service_error", (
-            "规划模型返回的计划未通过校验，尚未执行任何步骤。请重试；"
-            "若持续出现，请检查模型的结构化输出配置。"
-        )
-    if code in _PLAN_REQUEST_MESSAGES:
-        return "needs_clarification", _PLAN_REQUEST_MESSAGES[code] + "尚未执行任何步骤。"
-    return "service_error", "任务规划配置或准备过程异常，尚未执行任何步骤。请检查模型与能力配置。"
 
 
 def resolve_followup_question(
@@ -461,9 +408,11 @@ class KnowledgeAgent:
             and session_id is not None
         ):
             ready = self._save_transition(session_id, resolution.state_transition)
-            return self._dispatch_bilibili(
+            return dispatch_pending_search(
                 question.strip(), session_id, ready, decision,
                 turn_id=turn_id, model_calls=model_calls,
+                registry=self.mcp_registry, config=self.config,
+                save_transition=self._save_transition, commit_turn=self._commit_turn,
             )
 
         if decision.execution_mode is ExecutionMode.PLAN:
@@ -543,17 +492,6 @@ class KnowledgeAgent:
             dialogue_decision=resolution.decision, turn_id=turn_id,
         )
 
-    def _dispatch_bilibili(
-        self, question: str, session_id: str, ready: SessionBusinessState,
-        decision: DialogueDecision, *, turn_id: str, model_calls: int,
-    ) -> AnswerResult:
-        return dispatch_pending_search(
-            question, session_id, ready, decision,
-            turn_id=turn_id, model_calls=model_calls,
-            registry=self.mcp_registry, config=self.config,
-            save_transition=self._save_transition, commit_turn=self._commit_turn,
-        )
-
     def _ask_plan(
         self, question: str, session_id: str | None, *, skill_id: str | None,
         skill_mode: str | None = None,
@@ -619,7 +557,7 @@ class KnowledgeAgent:
             code = exc.code
             failure_source = exc.decision_source
             failure_reason = exc.reason_code
-            failure_status, answer = _plan_validation_failure(code)
+            failure_status, answer = planner.plan_validation_failure(code)
         except ChatModelInvocationError as exc:
             code = _model_error_code(exc)
             failure_source = "fallback"
@@ -650,8 +588,11 @@ class KnowledgeAgent:
             result = execute_plan(
                 plan, question=question, config=self.config,
                 initial_model_calls=planning_calls, trace=trace,
-                run_step=lambda step, budget, context, recorder: self._run_planned_step(
+                run_step=lambda step, budget, context, recorder: run_planned_step(
                     step, budget, context, recorder, original_question=question, skill_id=skill_id,
+                    model=self.model, retriever=self.retriever, registry=self.mcp_registry,
+                    config=self.config, system_prompt=self.system_prompt,
+                    selection_settings=self.skill_selection_settings,
                     skill_mode=skill_mode, conversation_summary=summary_text,
                     knowledge_history=self.history.turns(session_id) if session_id is not None else (),
                 ),
@@ -713,171 +654,6 @@ class KnowledgeAgent:
                 dialogue_resolution.decision if dialogue_resolution else None
             ), turn_id=turn_id)
         return result
-
-    def _run_planned_step(
-        self, step: planner.PlanStep, budget: StepBudget, dependency_context: DependencyContext,
-        trace: TraceRecorder, *, original_question: str, skill_id: str | None,
-        skill_mode: str | None = None,
-        conversation_summary: str = "",
-        knowledge_history: Sequence[object] = (),
-    ) -> StepOutcome:
-        """用剩余预算执行一个叶子；绝不提交子轮次。"""
-        state = TurnState(original_question=step.goal, trace_recorder=trace, step_id=step.step_id)
-        try:
-            if step.kind == "knowledge":
-                # 每个步骤只看到自己的问题、相关知识
-                # 历史和显式依赖，绝不看到兄弟步骤的指令。
-                background_limit = min(2000, max(1, budget.context_chars // 4))
-                summary_text = conversation_summary[:background_limit]
-                context_data: dict[str, Any] = {}
-                clause_history = list(knowledge_history[-self.config.max_history_turns:])
-                dependency_transform = is_dependency_transform(step.goal, bool(step.depends_on))
-                if dependency_context.steps:
-                    bounded_dependencies = []
-                    for dependency in dependency_context.steps:
-                        goal = dependency.goal[:1000]
-                        bounded_dependencies.append({
-                            "step_id": dependency.step_id, "goal": goal,
-                            "answer": dependency.answer[:background_limit],
-                            "may_be_truncated": len(dependency.answer) > background_limit,
-                        })
-                        clause_history.append({"question": goal, "route": "knowledge", "complete": True})
-                    context_data["completed_steps"] = bounded_dependencies
-                decision = identify_intent(
-                    step.goal, context=tuple(clause_history),
-                    settings=replace(get_intent_settings(), mode="rules", browser_mode="rules"),
-                    max_context_chars=background_limit,
-                    max_history_turns=self.config.max_history_turns,
-                )
-                if dependency_transform and decision.kind in {
-                    IntentKind.KNOWLEDGE, IntentKind.NEEDS_CLARIFICATION,
-                }:
-                    # 显式计划引用解析指代对象；只有下面的
-                    # 知识快照才能提供事实证据。
-                    # 若前置步骤仅涉及 MCP，准备阶段会报告
-                    # 缺少证据，而不是消耗未预留的搜索。
-                    decision = replace(
-                        decision, kind=IntentKind.KNOWLEDGE, clarification_question="",
-                        retrieval_query=step.goal, reason_code="plan_dependency_transform",
-                    )
-                if decision.kind is IntentKind.MCP_TOOL:
-                    decision = IntentDecision(
-                        kind=IntentKind.NEEDS_CLARIFICATION,
-                        clarification_question="此步骤没有获得工具操作授权，请单独明确需要执行的操作。",
-                        reason_code="plan_unconfirmed_clause_action",
-                    )
-                if summary_text:
-                    context_data["session_summary_data"] = summary_text
-                    if decision.reason_code == "followup_without_context":
-                        decision = replace(
-                            decision, kind=IntentKind.KNOWLEDGE, clarification_question="",
-                            retrieval_query=step.goal + "\n历史知识背景：" + summary_text,
-                            reason_code="knowledge_summary_followup",
-                        )
-                if decision.reason_code == "knowledge_followup":
-                    context_data["recent_knowledge_questions"] = decision.retrieval_query
-                context = json.dumps(context_data, ensure_ascii=False) if context_data else ""
-                history = (HumanMessage(content="PLAN_CONTEXT_DATA\n" + context + "\nEND_PLAN_CONTEXT_DATA"),) if context else ()
-                prepared = prepare_question(
-                    step.goal, retriever=self.retriever,
-                    max_context_chars=budget.context_chars,
-                    trace_recorder=trace, intent_decision=decision,
-                    max_model_calls=budget.model_calls,
-                    max_tool_calls=budget.tool_calls,
-                    max_followup_searches=budget.followup_searches,
-                    skill_id=skill_id,
-                    skill_mode=skill_mode,
-                    model=self.model,
-                    selection_settings=self.skill_selection_settings,
-                    step_id=step.step_id,
-                    visible_context=context,
-                    dependency_context=dependency_context,
-                    dependency_transform=dependency_transform,
-                )
-                state = prepared.state
-                if prepared.terminal_result is not None:
-                    return StepOutcome(prepared.terminal_result, state.followup_searches, state.context_chars)
-                turn = prepare_model_turn(
-                    prepared, model=self.model, retriever=self.retriever,
-                    system_prompt=self.system_prompt + _PLAN_STEP_CONTEXT_INSTRUCTION,
-                    history=history,
-                    skill_id=skill_id, max_retries=0,
-                    allow_tool_calls=(
-                        budget.model_calls - state.model_calls > 1
-                        and budget.tool_calls > state.tool_calls
-                    ),
-                    max_context_chars=budget.context_chars,
-                )
-            else:
-                if step.intent is not None and (
-                    step.intent.kind is not IntentKind.MCP_TOOL
-                    or step.intent.authorized_user_input != step.goal
-                    or step.intent.allowed_tool_names != step.allowed_tool_names
-                ):
-                    raise ValueError("Plan step differs from the authorized user clause")
-                if step.topic_binding is not None:
-                    from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
-
-                    event = trace.start_event("intent", "program", step_id=step.step_id)
-                    valid_binding = (
-                        step.topic_binding.original_clause == step.goal
-                        and step.allowed_tool_names == (SEARCH_BILIBILI_TOOL,)
-                        and step.intent is not None
-                        and validate_topic_binding(step.topic_binding, planner.raw_plan_clauses(original_question))
-                    )
-                    trace.finish_event(
-                        event, "success" if valid_binding else "error", decision_source="rules",
-                        intent_kind="mcp_tool", route_kind="mcp",
-                        reason_code="browser_bilibili_topic_reference" if valid_binding else "plan_topic_reference_invalid",
-                        error_code=None if valid_binding else "plan_topic_reference_invalid",
-                    )
-                    if not valid_binding:
-                        return StepOutcome(AnswerResult(
-                            question=step.goal, answer="搜索主题绑定无法核验，尚未执行浏览器操作。",
-                            status="service_error", stop_reason="plan_topic_reference_invalid",
-                        ))
-                    state.browser_search_topic = step.topic_binding.topic
-                turn = prepare_mcp_model_turn(
-                    state, model=self.model, registry=self.mcp_registry,
-                    allowed_tool_names=step.allowed_tool_names,
-                    max_retries=0,
-                )
-            model_result = run_model_loop(
-                turn, state, max_model_calls=budget.model_calls,
-                max_tool_calls=budget.tool_calls,
-                max_followup_searches=budget.followup_searches,
-                max_context_chars=budget.context_chars,
-            )
-            result = (
-                finalize_answer(model_result, state) if step.kind == "knowledge"
-                else finalize_mcp_answer(model_result, state)
-            )
-            # 混合的工具结果不算完成的前置步骤。
-            if result.stop_reason == "partial_tool_failure" and result.status == "success":
-                result = replace(result, status="insufficient_evidence")
-        except PreparedContextLimitError:
-            result = AnswerResult(
-                question=step.goal, answer="本步骤的资料与背景超出上下文限制，无法保留完整的可引用资料。",
-                status="limit_reached", model_calls=state.model_calls,
-                tool_calls=state.tool_calls, stop_reason="plan_context_budget_exhausted",
-            )
-        except ChatModelInvocationError as exc:
-            result = AnswerResult(
-                question=step.goal, answer="本步骤的模型调用失败，未自动重试。",
-                status="service_error", model_calls=state.model_calls,
-                tool_calls=state.tool_calls, stop_reason=_model_error_code(exc),
-            )
-        except Exception:
-            # 不要重试失败的工具步骤：超时可能已经执行了它。
-            result = AnswerResult(
-                question=step.goal, answer="本步骤执行失败，未自动重试。",
-                status="service_error", model_calls=state.model_calls,
-                tool_calls=state.tool_calls, stop_reason="plan_step_failed",
-            )
-        return StepOutcome(
-            result, state.followup_searches, state.context_chars,
-            evidence=cited_evidence(result, state.supplied_evidence) if step.kind == "knowledge" else (),
-        )
 
     def _ask_single(
         self,
@@ -1283,7 +1059,7 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-# 第三阶段：开发全部完成后统一验证。以下 TODO 暂不执行。
+# 验证项：以下 TODO 尚未统一执行。
 
 # TODO 18：集中执行可控的单轮流程测试。
 # 使用假模型与假检索服务覆盖：先搜索后回答、追加小节读取、多个工具请求及空结果。

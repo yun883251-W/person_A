@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
+from knowledge_agent.schemas import AnswerStatus
 from knowledge_agent.agent.answering.diagnostics import validate_public_answer_diagnostics
 from knowledge_agent.agent.planning.topic_references import TopicBinding, TopicReferenceError, resolve_topic_reference, validate_topic_binding
 
@@ -671,3 +672,54 @@ def validate_plan_summary(value: object) -> dict[str, Any]:
                 raise PlanValidationError("plan_invalid_summary_topic_binding")
             result[-1]["topic_binding"] = dict(binding)
     return {"version": 1, "status": status, "steps": result}
+
+
+_PLAN_RESPONSE_ERRORS = frozenset({
+    "plan_invalid_response", "plan_unexpected_tool_call", "plan_invalid_json",
+    "plan_invalid_structure", "plan_response_step_count", "plan_invalid_step_id",
+    "plan_invalid_goal", "plan_invalid_kind", "plan_invalid_dependencies",
+    "plan_ungrounded_step_goal", "plan_unauthorized_tool", "plan_invalid_step_tools",
+    "plan_ungrounded_tool_goal", "plan_missing_requested_tool",
+})
+_PLAN_REQUEST_MESSAGES = {
+    "plan_invalid_question": "请提供要执行的任务，并写清每一步的目标。",
+    "plan_invalid_request_goal": "每一步的目标必须是非空文本，不超过 2000 个字符，且不能包含非法控制字符。",
+    "plan_invalid_numbering": "请从 1 开始连续编号，每个编号对应一个任务。",
+    "plan_invalid_dependency_reference": "任务引用了尚不存在、当前或后续的步骤。请明确引用当前请求中已经列出的前置步骤。",
+    "plan_ambiguous_dependency": "某一步的“它、上述内容”等指代不明确。请写出具体主题，或明确说明“第一步的结果”“上一步的回答”。",
+    "plan_tool_dependency_unsupported": "工具步骤需要在当前子句中写明完整参数，暂不支持从前一步回答中提取工具参数。",
+    "plan_knowledge_tool_dependency_unsupported": "暂不支持把工具结果作为知识步骤的前置资料，请拆开处理，或让该步骤依赖已完成的知识问答。",
+    "plan_manual_skill_mcp_conflict": "手动指定的 Skill 只适用于知识问答。请切换为自动选择或普通问答后，再发送包含工具操作的计划。",
+    "plan_not_requested": "请用“先……再……”或编号列出需要执行的任务。",
+    "plan_invalid_step_count": "每轮计划支持 2～3 个不同任务，请调整任务数量或拆开重复任务。",
+    "plan_stateful_assessment": "MBTI 开始、作答、暂停和评分需要单独操作，请从多任务请求中拆出这些操作。",
+    "plan_repeated_tool": "同一轮计划暂不支持重复调用同一个工具，请把重复的工具任务分开发送。",
+    "plan_unavailable_tool": "请求中包含当前不可用的工具，请改用已接入的工具或单独说明要完成的任务。",
+    "plan_clause_needs_clarification": "某一步的操作目标不明确，请写清要搜索的平台和主题。",
+    "plan_topic_reference_missing": "已识别到 B 站搜索请求，但当前这条消息的前面没有可唯一确定的主题，请补充要搜索的主题。",
+    "plan_topic_reference_ambiguous": "已识别到 B 站搜索请求，但“相关视频”可能对应多个主题，请明确要搜索哪一个。",
+    "plan_topic_reference_invalid": "搜索主题与当前任务的原始描述不一致，请明确要搜索的主题。",
+    "plan_unconfirmed_clause_action": "某一步尚不能确认为可执行操作，请明确是否需要打开搜索页面，并写清平台和主题。",
+    "plan_requested_clarification": "规划模型未能确定各步的执行目标。请明确每一步要完成的任务，或拆成独立问题。",
+    "plan_context_too_long": "任务描述超出本轮规划的上下文限制，请缩短描述或拆成独立问题。",
+}
+
+
+def plan_validation_failure(code: str) -> tuple[AnswerStatus, str]:
+    """把模型契约失败与需要澄清的请求区分开。"""
+    if code in {"plan_model_budget_exhausted", "browser_bilibili_semantic_budget_exhausted"}:
+        return "limit_reached", "本轮模型调用预算不足以识别并执行任务，尚未执行任何步骤。请拆成单独问题。"
+    if code == "browser_bilibili_semantic_timeout":
+        return "service_error", "某一步的浏览器意图识别超时，尚未执行任何步骤。请稍后重试。"
+    if code == "browser_bilibili_unavailable":
+        return "service_error", "计划需要的 B 站浏览器工具当前不可用，尚未执行任何步骤。请检查 MCP 服务配置。"
+    if code.startswith("browser_bilibili_semantic_") or code == "plan_clause_intent_failed":
+        return "service_error", "某一步的浏览器意图识别服务失败或返回内容未通过校验，尚未执行任何步骤。请稍后重试。"
+    if code in _PLAN_RESPONSE_ERRORS:
+        return "service_error", (
+            "规划模型返回的计划未通过校验，尚未执行任何步骤。请重试；"
+            "若持续出现，请检查模型的结构化输出配置。"
+        )
+    if code in _PLAN_REQUEST_MESSAGES:
+        return "needs_clarification", _PLAN_REQUEST_MESSAGES[code] + "尚未执行任何步骤。"
+    return "service_error", "任务规划配置或准备过程异常，尚未执行任何步骤。请检查模型与能力配置。"

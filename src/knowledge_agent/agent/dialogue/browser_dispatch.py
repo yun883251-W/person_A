@@ -8,14 +8,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from browser_mcp.contracts import SEARCH_BILIBILI_TOOL, build_search_url, validate_search_arguments
+from browser_mcp.contracts import SEARCH_BILIBILI_TOOL, search_success_payload, validate_search_arguments
 
 from ...config import AgentConfig
 from ...schemas import AnswerResult, AnswerStatus, DialogueSummary, RouteSummary
@@ -24,7 +24,10 @@ from knowledge_agent.agent.answering.answers import _attach_completed_trace
 from knowledge_agent.agent.browser.actions import (
     classify_bilibili_request, extract_bilibili_topic, is_explicit_bilibili_topic,
 )
-from knowledge_agent.agent.browser.execution import _verified_payload
+from knowledge_agent.agent.browser.execution import (
+    SEARCH_NOT_DISPATCHED_ERRORS, search_error_code, search_result_answer,
+    verified_search_payload,
+)
 from ..state import TurnState
 from knowledge_agent.observability.trace import TraceRecorder
 from .contracts import (
@@ -35,11 +38,6 @@ from .contracts import (
 from .transitions import (
     ExecutionOutcome, apply_execution_outcome, mark_dispatching, prepare_execution,
 )
-
-
-_NOT_DISPATCHED_ERRORS = frozenset({
-    "unknown_tool", "unavailable", "invalid_tool_arguments", "invalid_arguments",
-})
 
 
 def _utc_now() -> str:
@@ -189,12 +187,7 @@ def dispatch_pending_search(
             raise DialogueContractError("model_call_budget_exhausted")
         if config.max_tool_calls < 1:
             raise DialogueContractError("tool_budget_exhausted")
-        url = build_search_url(arguments["query"])
-        canonical = {
-            "status": "success", "action": "browser_launch_requested", "site": "bilibili",
-            "query": arguments["query"], "url": url,
-            "browser_launch_requested": True, "page_verified": False,
-        }
+        canonical = search_success_payload(arguments["query"])
         state.context_chars = len(question) + len(json.dumps(canonical, ensure_ascii=False))
         if state.context_chars > config.max_context_chars:
             raise DialogueContractError("context_budget_exhausted")
@@ -242,17 +235,16 @@ def dispatch_pending_search(
     payload: dict[str, Any] | None = None
     try:
         output = registry.execute(SEARCH_BILIBILI_TOOL, arguments, context=state)
-        payload = _verified_payload(output, arguments)
+        payload = verified_search_payload(output, arguments)
         if payload is not None:
             outcome = ExecutionOutcome.SUCCEEDED
             code = "browser_launch_requested"
-        elif isinstance(output, Mapping) and output.get("status") == "error":
-            error = output.get("error")
-            error_code = error.get("code") if isinstance(error, Mapping) else None
-            if error_code in _NOT_DISPATCHED_ERRORS:
-                outcome, code = ExecutionOutcome.FAILED, str(error_code)
-            elif error_code in {"timeout", "tool_timeout"}:
-                outcome, code = ExecutionOutcome.TIMED_OUT, str(error_code)
+        else:
+            code = search_error_code(output)
+            if code in SEARCH_NOT_DISPATCHED_ERRORS:
+                outcome = ExecutionOutcome.FAILED
+            elif code in {"timeout", "tool_timeout"}:
+                outcome = ExecutionOutcome.TIMED_OUT
     except TimeoutError:
         outcome, code = ExecutionOutcome.TIMED_OUT, "tool_timeout"
     except Exception:
@@ -263,19 +255,10 @@ def dispatch_pending_search(
     success = payload is not None
     if success:
         state.successful_tool_calls += 1
-        answer = (
-            "已向本机默认浏览器发送 B 站搜索打开请求。\n\n"
-            f"关键词：{arguments['query']}\n\n[B站搜索页]({url})\n\n"
-            "尚未检查页面是否加载，也未读取视频结果。"
-        )
     else:
         state.failed_tool_calls += 1
         state.last_tool_error_code = code
-        answer = (
-            "B 站搜索未能执行，本轮没有重复调用。"
-            if outcome is ExecutionOutcome.FAILED else
-            "浏览器打开请求未获成功确认，本轮没有重复调用。请先查看浏览器窗口。"
-        ) + f"\n\n关键词：{arguments['query']}\n\n也可以打开：[B站搜索页]({url})。"
+    answer = search_result_answer(arguments["query"], success=success, code=code)
     trace.finish_event(
         tool_event, "success" if success else "error", result_count=1 if success else 0,
         reason_code=code, error_code=None if success else code,

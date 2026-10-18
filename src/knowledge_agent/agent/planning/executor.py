@@ -152,7 +152,7 @@ def execute_plan(
             tool_calls=min(remaining_tools, max(minimum_tools, remaining_tools - reserved_tools)),
             followup_searches=max(0, config.max_followup_searches - followup_searches),
             # 每个叶子都有自己的消息列表。之前消费过的证据
-            # 不驻留在这里；由 runner 负责实际依赖。
+            # 不驻留在这里；由步骤执行器负责准备实际上下文。
             context_chars=config.max_context_chars,
         )
         outcome = run_step(step, remaining, dependency_context, trace)
