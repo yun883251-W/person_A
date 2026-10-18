@@ -63,7 +63,7 @@ def register_routes(application: FastAPI) -> None:
         offset: PageOffset = 0,
     ) -> SessionListResponse:
         runtime: ServiceRuntime = application.state.runtime
-        records = await runtime.run_store(
+        records = await runtime.read_store(
             lambda store: store.list_sessions(limit=limit, offset=offset)
         )
         return SessionListResponse(
@@ -86,7 +86,7 @@ def register_routes(application: FastAPI) -> None:
     )
     async def get_session(session_id: SessionId) -> SessionResponse:
         runtime: ServiceRuntime = application.state.runtime
-        record = await runtime.run_store(
+        record = await runtime.read_store(
             lambda store: store.get_session(session_id)
         )
         if record is None:
@@ -119,7 +119,7 @@ def register_routes(application: FastAPI) -> None:
                 session_id=session_id, state=public_business_state(value),
             )
 
-        result = await runtime.run_store(read_state)
+        result = await runtime.read_store(read_state)
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
         return result
@@ -145,7 +145,7 @@ def register_routes(application: FastAPI) -> None:
                 updated_at=record.updated_at if record is not None else None,
             )
 
-        result = await runtime.run_store(read_summary)
+        result = await runtime.read_store(read_summary)
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
         return result

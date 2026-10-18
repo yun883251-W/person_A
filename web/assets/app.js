@@ -35,6 +35,8 @@
     knowledgePreviewReferenceHash: null, knowledgePreviewChanged: false,
     summaryRequestVersion: 0,
     businessState: null,
+    readOperation: false, activeSend: null, answerRevision: 0,
+    drafts: new Map(), uncertainSessions: new Set(), unsavedAnswers: new Map(),
   };
   const statusLabels = {
     success: "基于知识库回答", insufficient_evidence: "资料不足",
@@ -198,7 +200,14 @@
   }
 
   function isBusy() { return Boolean(state.operation || state.knowledgeBusy); }
-  function chatControlsLocked() { return isBusy() || state.knowledgeNeedsRefresh; }
+  function chatControlsLocked() { return isBusy() || state.readOperation || state.knowledgeNeedsRefresh; }
+  function readingLocked() {
+    return state.readOperation || state.knowledgeBusy ||
+      Boolean(state.operation && (state.operation !== "send" || !state.activeSend));
+  }
+  function setReadOperation(value) { state.readOperation = value; updateControls(); }
+  function saveDraft() { state.drafts.set(state.current?.session_id || "", ui.question.value); }
+  function pendingFor(id) { return state.activeSend?.sessionId === id && !state.activeSend.completed ? state.activeSend.question : ""; }
 
   function setKnowledgeOperation(operation) {
     state.knowledgeOperation = operation;
@@ -1347,6 +1356,7 @@
   }
 
   function renderLiveProgress() {
+    if (state.activeSend && state.activeSend.sessionId !== state.current?.session_id) return;
     const panel = ui.conversation.querySelector(".live-progress");
     if (!panel) return;
     const events = state.liveProgress.slice().sort((a, b) => a.sequence - b.sequence);
@@ -1389,9 +1399,9 @@
 
   async function refreshSummary() {
     const id = state.current?.session_id;
-    if (!id || chatControlsLocked()) return;
+    if (!id || readingLocked()) return;
     const version = ++state.summaryRequestVersion;
-    setOperation("summary");
+    setReadOperation(true);
     ui["session-summary-meta"].textContent = "正在读取摘要…";
     try {
       const result = await request(`/sessions/${encodeURIComponent(id)}/summary`);
@@ -1404,7 +1414,7 @@
       if (state.current?.session_id !== id || version !== state.summaryRequestVersion) return;
       ui["session-summary-meta"].textContent = `摘要暂未刷新：${error.message}`;
     } finally {
-      setOperation(null);
+      setReadOperation(false);
     }
   }
 
@@ -1418,7 +1428,7 @@
       button.dataset.sessionId = session.session_id;
       button.title = session.title || "未命名会话";
       button.setAttribute("aria-current", session.session_id === state.current?.session_id ? "true" : "false");
-      button.disabled = chatControlsLocked();
+      button.disabled = readingLocked();
       button.append(element("span", "session-item-title", session.title || "未命名会话"));
       button.append(element("span", "session-item-date", displayDate(session.updated_at)));
       button.addEventListener("click", () => selectSession(session.session_id));
@@ -1427,17 +1437,19 @@
     if (!sessions.length) fragment.append(element("li", "empty-sessions", search ? "已加载会话中没有匹配项" : "从一个问题，开始你的学习记录。"));
     ui["session-list"].replaceChildren(fragment);
     ui["load-more-sessions"].hidden = !state.hasMore;
-    ui["load-more-sessions"].disabled = chatControlsLocked();
+    ui["load-more-sessions"].disabled = readingLocked();
   }
 
   function updateControls() {
     const busy = chatControlsLocked();
     ui["session-summary"].hidden = !state.current;
-    ui["session-summary-refresh"].disabled = busy || !state.current;
-    for (const id of ["new-session", "refresh-sessions", "load-more-sessions"]) ui[id].disabled = busy;
-    for (const id of ["refresh-history", "clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
-    ui.question.disabled = busy;
-    ui["skill-select"].disabled = busy;
+    ui["session-summary-refresh"].disabled = readingLocked() || !state.current;
+    ui["new-session"].disabled = busy;
+    for (const id of ["clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
+    for (const id of ["refresh-sessions", "load-more-sessions"]) ui[id].disabled = readingLocked();
+    ui["refresh-history"].disabled = readingLocked() || !state.current;
+    ui.question.disabled = state.readOperation || Boolean(state.operation && state.operation !== "send");
+    ui["skill-select"].disabled = ui.question.disabled;
     ui["mbti-start"].disabled = busy || state.needsRefresh;
     ui["send-button"].disabled = busy || state.needsRefresh || !ui.question.value.trim();
     ui["send-button"].setAttribute("aria-label", state.operation === "send" ? "正在生成回答" : "发送问题");
@@ -1450,7 +1462,7 @@
         ? "上次操作结果尚未确认；不会自动重放，请明确发起新的操作。"
         : "";
     ui["composer-hint"].textContent = state.operation === "send"
-      ? "正在等待完整回答。离开页面不会取消后台任务。"
+      ? "正在生成回答；可输入草稿、切换会话或查看历史。完成后可继续发送，离开页面不会取消任务。"
       : state.knowledgeBusy ? "知识库操作进行中，完成后可继续提问。"
       : state.knowledgeNeedsRefresh ? "请先打开「知识库管理」刷新状态，确认上次操作结果。"
       : state.needsRefresh ? "请先点击上方「刷新历史」确认本轮结果，再继续提问。"
@@ -1503,38 +1515,43 @@
     renderConversation(); updateControls();
   }
 
-  async function selectSession(id) {
-    if (chatControlsLocked()) return;
-    closeSidebar(); notice(""); setOperation("history");
+  async function selectSession(id, confirmRecovery = false) {
+    if (readingLocked()) return;
+    saveDraft();
+    closeSidebar(); notice(""); setReadOperation(true);
     try {
+      let idle = false;
+      if (confirmRecovery) {
+        try { idle = (await request("/health")).busy === false; }
+        catch { /* 无法确认空闲时不解除恢复保护。 */ }
+      }
+      const revision = state.answerRevision;
       const record = await request(`/sessions/${encodeURIComponent(id)}`);
-      const turns = await loadHistory(id);
-      const businessState = await loadBusinessState(id);
-      state.current = record; state.turns = turns; state.pendingQuestion = ""; state.needsRefresh = false;
+      let turns = await loadHistory(id);
+      let businessState = await loadBusinessState(id);
+      // 读取期间原请求可能刚完成，重新读取已提交结果，避免旧快照覆盖它。
+      if (revision !== state.answerRevision) {
+        turns = await loadHistory(id);
+        businessState = await loadBusinessState(id);
+      }
+      state.current = record;
+      state.turns = [...turns, ...(state.unsavedAnswers.get(id) || [])];
+      state.pendingQuestion = pendingFor(id);
+      if (confirmRecovery && idle && !state.activeSend) state.uncertainSessions.delete(id);
+      state.needsRefresh = state.uncertainSessions.has(id);
       state.businessState = businessState;
-      resetSummaryPanel();
-      state.assessmentModeHint = false;
-      rememberSession(id); ui.question.value = ""; fitInput(); renderConversation();
+      resetSummaryPanel(); state.assessmentModeHint = false;
+      rememberSession(id); ui.question.value = state.drafts.get(id) || "";
+      fitInput(); renderConversation();
+      return true;
     } catch (error) {
-      if (error.status === 404 && state.current?.session_id === id) resetConversation();
       notice(error.message);
-    } finally { setOperation(null); }
+    } finally { setReadOperation(false); }
   }
 
   async function refreshHistory() {
-    if (chatControlsLocked() || !state.current) return;
-    notice(""); setOperation("history");
-    try {
-      state.turns = await loadHistory(state.current.session_id);
-      state.businessState = await loadBusinessState(state.current.session_id);
-      state.pendingQuestion = ""; state.needsRefresh = false;
-      renderConversation();
-      await loadSessions();
-      notice("历史已同步。", "info");
-    } catch (error) {
-      if (error.status === 404) resetConversation();
-      notice(error.message);
-    } finally { setOperation(null); }
+    if (readingLocked() || !state.current) return;
+    await selectSession(state.current.session_id, true);
   }
 
   async function sendQuestion(event, command = null) {
@@ -1542,50 +1559,71 @@
     const question = command === null ? ui.question.value.trim() : command;
     if (!question || chatControlsLocked() || state.needsRefresh) return;
     if (question.length > 10000) { notice(errorMessages.validation_error); return; }
+    const choice = command === null ? ui["skill-select"].value : "";
+    const skillMode = choice === "auto" ? "auto" : choice ? "manual" : "off";
+    const skillId = skillMode === "manual" ? choice : null;
+    // 先消费已提交草稿，此后的输入属于下一条消息，不在请求结束时清空。
+    if (command === null) ui.question.value = "";
+    saveDraft();
     notice(""); closeSidebar(); setOperation("send");
     let submitted = false;
+    let sessionId = state.current?.session_id;
     try {
-      if (!state.current) {
+      if (!sessionId) {
         state.current = await request("/sessions", { method: "POST", body: { title: question.slice(0, 80) }, timeout: 0 });
-        rememberSession(state.current.session_id);
-        state.sessions.unshift(state.current);
-        updateControls();
+        sessionId = state.current.session_id;
+        rememberSession(sessionId); state.sessions.unshift(state.current);
       }
-      state.pendingQuestion = question;
-      state.liveProgress = [];
-      // 卡片操作不覆盖输入框中尚未发送的学习问题。
-      if (command === null) ui.question.value = "";
-      fitInput(); renderConversation();
+      state.activeSend = { sessionId, question, initialTurnCount: state.turns.length };
+      state.pendingQuestion = question; state.liveProgress = [];
+      updateControls(); fitInput(); renderConversation();
       submitted = true;
-      // 不设置前端生成超时、不自动重发；后端负责模型超时，断连后人工刷新确认结果。
-      const choice = command === null ? ui["skill-select"].value : "";
-      const skillMode = choice === "auto" ? "auto" : choice ? "manual" : "off";
-      const skillId = skillMode === "manual" ? choice : null;
-      const result = await streamAnswer(`/sessions/${encodeURIComponent(state.current.session_id)}/messages/stream`,
+      const result = await streamAnswer(`/sessions/${encodeURIComponent(sessionId)}/messages/stream`,
         { question, skill_mode: skillMode, skill_id: skillId }, receiveProgress);
-      state.turns.push(result); state.pendingQuestion = "";
-      if (result.business_state && typeof result.business_state === "object") state.businessState = result.business_state;
-      renderConversation();
+      if (state.activeSend) state.activeSend.completed = true;
+      state.answerRevision += 1;
+      state.uncertainSessions.delete(sessionId);
+      if (state.current?.session_id === sessionId) {
+        // 历史刷新可能已读到本轮落库结果，避免 SSE 到达后再次追加。
+        const last = state.turns.at(-1);
+        const alreadyLoaded = state.turns.length > state.activeSend.initialTurnCount &&
+          last?.question === result.question && last?.answer === result.answer;
+        if (!alreadyLoaded) state.turns.push(result);
+        state.pendingQuestion = ""; state.needsRefresh = false;
+        if (result.business_state && typeof result.business_state === "object") state.businessState = result.business_state;
+        renderConversation();
+      } else {
+        notice("原会话的回答已完成，切回该会话可查看。", "info");
+      }
       try { await loadSessions(); }
       catch { notice("回答已返回，会话列表暂未刷新，可稍后手动刷新。", "info"); }
     } catch (error) {
+      if (state.activeSend) state.activeSend.completed = true;
+      state.answerRevision += 1;
+      const uncertain = submitted && ["network_error", "request_timeout", "invalid_response", "internal_error"].includes(error.code);
+      if (uncertain) state.uncertainSessions.add(sessionId);
       if (error.body?.result) {
-        state.turns.push({ ...error.body.result, unsaved: error.body.persisted !== true });
-        if (error.body.persisted === true && error.body.result.business_state) state.businessState = error.body.result.business_state;
-        state.pendingQuestion = "";
+        const result = { ...error.body.result, unsaved: error.body.persisted !== true };
+        if (result.unsaved) state.unsavedAnswers.set(sessionId, [...(state.unsavedAnswers.get(sessionId) || []), result]);
+        if (state.current?.session_id === sessionId) {
+          state.turns.push(result);
+          if (error.body.persisted === true && result.business_state) state.businessState = result.business_state;
+        }
       }
-      state.needsRefresh = submitted && ["network_error", "request_timeout", "invalid_response", "internal_error"].includes(error.code);
-      if (!error.body?.result && command === null) ui.question.value = question;
-      const recovery = state.needsRefresh ? " 后台可能仍在处理，请稍后刷新历史，避免重复提交。" : "";
-      notice(error.message + recovery);
-      if (error.status === 404 && state.current) {
-        state.sessions = state.sessions.filter((item) => item.session_id !== state.current.session_id);
-        const draft = command === null ? question : ui.question.value;
-        resetConversation(); ui.question.value = draft;
+      if (state.current?.session_id === sessionId || !sessionId) {
+        state.pendingQuestion = ""; state.needsRefresh = uncertain;
+        if (!error.body?.result && command === null && !ui.question.value) {
+          ui.question.value = question;
+          state.drafts.set(sessionId || "", question);
+        }
+      } else if (!error.body?.result && command === null && !state.drafts.get(sessionId)) {
+        state.drafts.set(sessionId, question);
       }
+      notice(error.message + (uncertain ? " 后台可能仍在处理，请稍后刷新原会话历史，避免重复提交。" : ""));
     } finally {
-      state.liveProgress = [];
-      setOperation(null); renderConversation(); fitInput(); ui.question.focus();
+      state.activeSend = null; state.liveProgress = []; state.pendingQuestion = "";
+      setOperation(null); renderConversation(); fitInput();
+      if (!state.readOperation) ui.question.focus();
       if (!state.needsRefresh && ui["session-summary"].open) void refreshSummary();
     }
   }
@@ -1613,6 +1651,7 @@
     notice(""); setOperation(kind);
     try {
       await request(`/sessions/${encodeURIComponent(id)}${kind === "clear" ? "/messages" : ""}`, { method: "DELETE", timeout: 0 });
+      state.unsavedAnswers.delete(id); state.uncertainSessions.delete(id); state.drafts.delete(id);
       if (kind === "delete") {
         state.sessions = state.sessions.filter((item) => item.session_id !== id);
         resetConversation();
@@ -1641,11 +1680,11 @@
   }
 
   async function refreshSessions(append = false) {
-    if (chatControlsLocked()) return;
-    notice(""); setOperation("sessions");
+    if (readingLocked()) return;
+    notice(""); setReadOperation(true);
     try { await loadSessions(append); }
     catch (error) { notice(error.message); }
-    finally { setOperation(null); }
+    finally { setReadOperation(false); }
     void checkHealth();
   }
 

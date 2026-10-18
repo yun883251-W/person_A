@@ -310,6 +310,7 @@ class SQLiteSessionStore:
         *,
         lock_timeout: float = 5.0,
         max_write_retries: int = 2,
+        read_only: bool = False,
     ) -> None:
         if not math.isfinite(lock_timeout) or lock_timeout <= 0:
             raise ValueError("lock_timeout must be a finite positive number")
@@ -320,6 +321,7 @@ class SQLiteSessionStore:
         ):
             raise ValueError("max_write_retries must be a non-negative integer")
 
+        self.read_only = read_only
         self.db_path = Path(db_path)
         self.lock_timeout = float(lock_timeout)
         self.max_write_retries = max_write_retries
@@ -328,6 +330,28 @@ class SQLiteSessionStore:
     def initialize(self) -> None:
         """必要时打开并配置数据库连接。"""
         if self._connection is not None:
+            return
+
+        if self.read_only:
+            # 每个只读连接由自己的线程创建和关闭；不迁移表、不申请写锁。
+            connection = None
+            try:
+                connection = sqlite3.connect(
+                    self.db_path.resolve().as_uri() + "?mode=ro", uri=True,
+                    timeout=self.lock_timeout, isolation_level=None,
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA query_only = ON")
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if version != DATABASE_SCHEMA_VERSION:
+                    raise SessionStoreSchemaError("Read-only session schema version mismatch")
+            except BaseException as exc:
+                if connection is not None:
+                    connection.close()
+                if isinstance(exc, (OSError, sqlite3.Error)):
+                    raise _storage_error(exc, operation="open", write=False) from exc
+                raise
+            self._connection = connection
             return
 
         try:

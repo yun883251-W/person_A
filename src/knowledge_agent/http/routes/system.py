@@ -51,10 +51,11 @@ def register_routes(application: FastAPI, *, web_directory: Path) -> None:
         "/health",
         response_model=HealthResponse,
         summary="检查服务状态",
-        description="仅返回服务名称、版本和存活状态，不调用模型或知识库。",
+        description="仅返回服务名称、版本、忙碌状态和存活状态，不调用模型或知识库。",
     )
     async def health() -> HealthResponse:
         return HealthResponse(
+            busy=application.state.runtime.busy,
             service=application.title,
             version=application.version,
         )

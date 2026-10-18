@@ -388,6 +388,7 @@ class ValidationErrorResponse(_PublicModel):
 
 
 class HealthResponse(_PublicModel):
+    busy: bool = False
     service: str
     version: str
     status: Literal["ok"] = "ok"

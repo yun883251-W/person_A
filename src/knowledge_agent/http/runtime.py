@@ -1,4 +1,4 @@
-"""单工作线程及资源生命周期：SQLite、Agent 与知识库操作共享线程归属。"""
+"""Agent 与写操作共享工作线程；会话查询使用独立线程中的只读连接。"""
 
 from __future__ import annotations
 
@@ -42,6 +42,8 @@ class ServiceRuntime:
             max_workers=1,
             thread_name_prefix="knowledge-agent-service",
         )
+        self._read_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="knowledge-agent-reader")
+        self._reader_factory: StoreFactory | None = None
         self._state_lock = Lock()
         self._worker_thread_id: int | None = None
         self._store: Any = None
@@ -83,6 +85,7 @@ class ServiceRuntime:
             with self._state_lock:
                 self._closing = True
             self._executor.shutdown(wait=True, cancel_futures=True)
+            self._read_executor.shutdown(wait=True, cancel_futures=True)
             with self._state_lock:
                 self._closed = True
                 self._closing = False
@@ -100,6 +103,11 @@ class ServiceRuntime:
             store.close()
             raise
         self._store = store
+        from knowledge_agent.session.store import SQLiteSessionStore
+
+        if isinstance(store, SQLiteSessionStore):
+            path, timeout = store.db_path.resolve(), store.lock_timeout
+            self._reader_factory = lambda: SQLiteSessionStore(path, lock_timeout=timeout, read_only=True)
 
     def _require_worker_thread(self) -> None:
         if get_ident() != self._worker_thread_id:
@@ -216,6 +224,25 @@ class ServiceRuntime:
             self.submit_store(function, *args, **kwargs)
         )
 
+    async def read_store(self, function: Callable[..., Any]) -> Any:
+        """读取已提交的会话快照，使用独立只读连接，不占用 Agent 工作线程。"""
+        if self._reader_factory is None:
+            # 自定义存储仍遵守原线程协议，不假设它支持并发。
+            return await self.run_store(function)
+        with self._state_lock:
+            if not self._initialized or self._closing or self._closed:
+                raise RuntimeError("service runtime is not available")
+            future = self._read_executor.submit(self._read_store_snapshot, function)
+        return await self._wait_for_future(future)
+
+    def _read_store_snapshot(self, function: Callable[..., Any]) -> Any:
+        store = self._reader_factory()
+        try:
+            store.initialize()
+            return function(store)
+        finally:
+            store.close()
+
     def _call_with_store(
         self,
         function: Callable[..., Any],
@@ -325,20 +352,12 @@ class ServiceRuntime:
         self, session_id: str, *, limit: int, offset: int
     ) -> Any | None:
         """按时间顺序加载一页；会话不存在时返回 ``None``。"""
-        return await self.run(
-            self._load_turns_on_worker,
-            session_id,
-            limit,
-            offset,
-        )
+        def read_turns(store):
+            if store.get_session(session_id) is None:
+                return None
+            return store.load_turns(session_id, limit=limit, offset=offset)
 
-    def _load_turns_on_worker(
-        self, session_id: str, limit: int, offset: int
-    ) -> Any | None:
-        self._require_worker_thread()
-        if self.store.get_session(session_id) is None:
-            return None
-        return self.store.load_turns(session_id, limit=limit, offset=offset)
+        return await self.read_store(read_turns)
 
     async def clear_session(self, session_id: str) -> bool:
         """清空已持久化的问答轮，并释放对应的内存历史。"""
@@ -376,6 +395,7 @@ class ServiceRuntime:
             if initialized:
                 self._executor.submit(self._close_on_worker).result()
         finally:
+            self._read_executor.shutdown(wait=True, cancel_futures=False)
             self._executor.shutdown(wait=True, cancel_futures=False)
             with self._state_lock:
                 self._initialized = False
