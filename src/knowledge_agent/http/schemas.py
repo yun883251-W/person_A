@@ -6,8 +6,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from ..agent.skill_selector import normalize_skill_request
-from ..agent.trace import (
+from knowledge_agent.skills.selector import normalize_skill_request
+from knowledge_agent.observability.trace import (
     TraceDecisionSource,
     TraceInitiator,
     TraceIntentKind,

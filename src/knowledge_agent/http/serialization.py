@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..agent.trace import TurnTrace, trace_to_dict
-from ..agent.answer_diagnostics import public_answer_diagnostics
+from knowledge_agent.observability.trace import TurnTrace, trace_to_dict
+from knowledge_agent.agent.answering.diagnostics import public_answer_diagnostics
 from ..knowledge.manager import DocumentSummary, IndexOperationResult, IndexStatus
 from ..schemas import AnswerResult, AnswerSource
-from ..session_store import SessionRecord, StoredTurn
+from knowledge_agent.session.store import SessionRecord, StoredTurn
 from .schemas import (
     AnswerResponse,
     AnswerSourceResponse,
@@ -84,7 +84,7 @@ def _plan_response(snapshot: dict[str, Any] | None) -> PlanSummaryResponse | Non
     """Validate and expose the plan's public fields for answers and history."""
     if snapshot is None:
         return None
-    from ..agent.planner import validate_plan_summary
+    from knowledge_agent.agent.planning.planner import validate_plan_summary
 
     return PlanSummaryResponse.model_validate(validate_plan_summary(snapshot))
 

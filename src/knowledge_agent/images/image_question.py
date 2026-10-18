@@ -73,7 +73,7 @@ agent/answers.py 校验来源；图片接入继续复用已有预算，不另建
 # 沿用现有失败轮不保存和 TurnPersistenceError 携带未保存结果的语义。
 
 # TODO 08：扩展执行详情，准确区分 OCR 和回答模型。
-# 在 agent/trace.py 阶段类型、白名单与序列化中增加 ocr，并兼容已保存的旧 Trace。
+# 在 observability/trace.py 阶段类型、白名单与序列化中增加 ocr，并兼容已保存的旧 Trace。
 # 同步更新 api.py 响应类型与前端阶段名称；OCR 由程序发起，记录真实状态和耗时。
 # 现有 model_calls 保持 DeepSeek 问答逻辑调用次数，tool_calls 保持现有知识库工具口径；
 # OCR 以独立阶段展示，不无说明地把新调用混进原统计。
@@ -81,7 +81,7 @@ agent/answers.py 校验来源；图片接入继续复用已有预算，不另建
 # trace 只显示 OCR 状态、模型与耗时等必要摘要，完整识别文字放图片上下文展示。
 
 # TODO 09：保存图片关联与 OCR 快照。
-# session_store.py 的 result_json 支持可选 image_context，旧记录缺失时为 None。
+# session/store.py 的 result_json 支持可选 image_context，旧记录缺失时为 None。
 # 同步修改严格字段校验、序列化、反序列化和公开响应，不随意提高共享消息序列化版本。
 # OCR 文本、图片指纹和模型信息随该轮回答提交；原图由附件目录保存。
 # 构造 HumanMessage 时包含本轮图片上下文，使已保存且受 max_history_turns 限制的历史

@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from ..application import ApplicationBusyError, TurnPersistenceError
-from ..models import ChatModelAuthenticationError, ChatModelInvocationError, ChatModelTimeoutError
+from knowledge_agent.models.provider import ChatModelAuthenticationError, ChatModelInvocationError, ChatModelTimeoutError
 from ..knowledge.manager import (
     DocumentAlreadyExistsError,
     DocumentReferenceMismatchError,
@@ -22,7 +22,7 @@ from ..knowledge.manager import (
     InvalidUploadFilenameError,
     UploadTooLargeError,
 )
-from ..session_store import (
+from knowledge_agent.session.store import (
     DuplicateSessionError,
     DuplicateTurnError,
     SessionNotFoundError,

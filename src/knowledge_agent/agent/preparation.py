@@ -22,9 +22,9 @@ from ..knowledge.skill_retrieval import (
     reconcile_retrieval_outcome,
     retrieval_summary,
 )
-from ..models import bind_chat_tools, initialize_chat_model, invoke_chat_model
+from knowledge_agent.models.provider import bind_chat_tools, initialize_chat_model, invoke_chat_model
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
-from ..skill_loader import prepare_skill
+from knowledge_agent.skills.loader import prepare_skill
 from ..tools.knowledge import (
     READ_KNOWLEDGE_SECTION_DESCRIPTION,
     SEARCH_KNOWLEDGE_DESCRIPTION,
@@ -33,21 +33,21 @@ from ..tools.knowledge import (
     create_search_executor,
 )
 from ..tools.registry import InMemoryToolRegistry, create_tool_registry
-from .answer_contract import ANSWER_CONTRACT_INSTRUCTION
-from .answers import _public_failure_answer
-from .dependencies import DependencyContext, evidence_identity, unique_evidence
+from knowledge_agent.agent.answering.contract import ANSWER_CONTRACT_INSTRUCTION
+from knowledge_agent.agent.answering.answers import _public_failure_answer
+from knowledge_agent.agent.planning.dependencies import DependencyContext, evidence_identity, unique_evidence
 from .dialogue.classifier import identify_intent
 from .dialogue.intent_types import IntentDecision, IntentModelBudgetError
 from .prompts import SYSTEM_PROMPT
 from .router import RouteKind
-from .skill_selector import (
+from knowledge_agent.skills.selector import (
     SkillSelectionSettings,
     load_selected_skill,
     normalize_skill_request,
     select_skill_for_step,
 )
 from .state import KnowledgeTools, PreparedModelTurn, PreparedQuestion, QuestionKind, ToolExecutor, TurnState
-from .trace import TraceRecorder
+from knowledge_agent.observability.trace import TraceRecorder
 
 
 def create_knowledge_tools(

@@ -8,7 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock, get_ident
 from typing import Any
 
-from ..agent.trace import TraceSkillMode, observe_trace_progress
+from knowledge_agent.observability.trace import TraceSkillMode, observe_trace_progress
 from ..knowledge.manager import KnowledgeBaseService, IndexStatus, load_knowledge_base_config
 
 RuntimeFactory = Callable[[], Any]
@@ -55,7 +55,7 @@ class ServiceRuntime:
     @staticmethod
     def _default_store_factory() -> Any:
         from ..config import get_session_store_settings
-        from ..session_store import SQLiteSessionStore
+        from knowledge_agent.session.store import SQLiteSessionStore
 
         settings = get_session_store_settings()
         return SQLiteSessionStore(

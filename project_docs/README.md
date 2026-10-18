@@ -4,52 +4,34 @@
 
 | 文档 | 用途 |
 | --- | --- |
-| [规划、检索与回答可靠性修复](RELIABILITY_FIXES.md) | 本轮十项问题的处理、相关性门槛、回答状态协议、日志与未验证范围 |
-| [语义意图、多任务组合与长对话摘要](SEMANTIC_PLANS_MEMORY.md) | 新增能力、配置、调用预算、摘要存储和未执行的使用用例 |
-| [意图边界与任务规划](INTENT_PLANNING.md) | 知识咨询、工具指令边界，以及有限步骤规划与共享预算 |
-| [会话意图与任务承接开发清单](DIALOGUE_INTENT_TODO.md) | 一期已接入；记录单焦点/单 pending、SQLite v3、公开投影及剩余真实联调项 |
-| [自动 Skill 与检索策略](AUTO_SKILL_TODO.md) | 自动选择、技能专用检索、前后端接入和未执行的验收清单 |
-| [MBTI MCP 接入](MBTI_MCP.md) | 内置问卷、评分工具、会话答题及配置方式 |
-| [B 站搜索 MCP](BROWSER_MCP.md) | 自然语言提取搜索主题、固定 B 站链接、本机浏览器唤起及待验收项 |
-| [意图与 MCP 初始计划](INTENT_MCP_TODO.md) | 原始开发任务存档；不作为当前实现完成度的判断依据 |
+| [规划、检索与回答可靠性修复](archive/RELIABILITY_FIXES.md) | 本轮十项问题的处理、相关性门槛、回答状态协议、日志与未验证范围 |
+| [语义意图、多任务组合与长对话摘要](features/SEMANTIC_PLANS_MEMORY.md) | 新增能力、配置、调用预算、摘要存储和未执行的使用用例 |
+| [意图边界与任务规划](architecture/INTENT_PLANNING.md) | 知识咨询、工具指令边界，以及有限步骤规划与共享预算 |
+| [会话意图与任务承接开发清单](architecture/DIALOGUE_INTENT_TODO.md) | 一期已接入；记录单焦点/单 pending、SQLite v3、公开投影及剩余真实联调项 |
+| [自动 Skill 与检索策略](features/AUTO_SKILL_TODO.md) | 自动选择、技能专用检索、前后端接入和未执行的验收清单 |
+| [MBTI MCP 接入](features/MBTI_MCP.md) | 内置问卷、评分工具、会话答题及配置方式 |
+| [B 站搜索 MCP](features/BROWSER_MCP.md) | 自然语言提取搜索主题、固定 B 站链接、本机浏览器唤起及待验收项 |
+| [意图与 MCP 初始计划](archive/INTENT_MCP_TODO.md) | 原始开发任务存档；不作为当前实现完成度的判断依据 |
 
 ## 本次目录迁移
 
-Python 路径以下均相对 `src/knowledge_agent/`。调整按职责拆分现有代码，不新增评估模块或请求级断线恢复。
+当前目录与全部迁移映射见 [项目目录与迁移说明](architecture/LAYOUT.md)。
 
-| 原位置或职责 | 当前位置 |
-| --- | --- |
-| 根目录四份开发 Markdown 文档 | `project_docs/`，保留原文件名 |
-| `agent/runner.py` 的应用及持久化会话生命周期 | `application.py` |
-| `agent/runner.py` 的单轮状态和准备结果 | `agent/state.py` |
-| `agent/runner.py` 的技能、检索与上下文准备 | `agent/preparation.py` |
-| `agent/runner.py` 的模型和工具调用循环 | `agent/model_loop.py` |
-| `agent/runner.py` 的回答、引用校验与结果摘要 | `agent/answers.py` |
-| `agent/runner.py` 的 KnowledgeAgent 编排 | 继续位于 `agent/runner.py` |
-| `agent/intent.py` 的规则、类型和模型分类 | `agent/dialogue/rules.py`、`intent_types.py`、`classifier.py`；原路径保留兼容导出 |
-| 原意图与会话意图的重复分类 | 统一由 `agent/dialogue/resolver.py` 调度，最终决定交给 `agent/router.py` |
-| runner 内的会话 B 站搜索派发 | `agent/dialogue/browser_dispatch.py`，保留来源、修订号和实际结果校验 |
-| `api.py` 的应用创建和生命周期 | `http/app.py` |
-| `api.py` 的请求及公开响应模型 | `http/schemas.py` |
-| `api.py` 的领域结果到公开响应转换 | `http/serialization.py` |
-| `api.py` 的错误响应和异常处理 | `http/errors.py` |
-| `api.py` 的单工作线程运行时 | `http/runtime.py` |
-| `api.py` 的实时阶段通道和 SSE 输出 | `http/streaming.py` |
-| `api.py` 的提问、会话、知识库及系统路由 | `http/routes/chat.py`、`sessions.py`、`knowledge.py`、`system.py` |
-| 根 `tests/` 中的实际验证代码 | `tests/unit/agent/`、`tests/unit/storage/`、`tests/integration/http/` |
+- `architecture/`：当前项目结构、会话意图和任务规划。
+- `features/`：技能、MBTI、浏览器及摘要等功能说明。
+- `archive/`：旧开发计划和阶段性修复记录；其中的测试记录仅适用于对应历史版本。
 
-原有 `api.py` 继续提供兼容启动入口；应用生命周期类型从 `application.py` 导入，原 `agent.runner` 相关导出保留兼容。纯 TODO 测试占位不再与实际验证代码混放；待开发功能仍由其源码说明和开发清单记录。
+代码按 `agent/dialogue`、`browser`、`answering`、`planning` 归组，公共模型、会话、技能和执行记录分别位于 `models/`、`session/`、`skills/`、`observability/`。这些目录均相对 `src/knowledge_agent/`；独立 MCP 服务仍在 `src/browser_mcp/` 和 `src/mbti_mcp/`。
 
-启动命令保持原样，从项目根目录运行：
+正式 MCP 启动脚本在 `scripts/`，演示服务在 `examples/`。已有启动命令保持不变：
 
 ```powershell
 person-a build
 person-a ask "什么是 RAG？"
 person-a chat
-python -m knowledge_agent.cli ask "什么是 RAG？"
 python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-本次只完成目录整理和代码拆分，没有执行上述命令，也没有运行测试、导入检查、编译、服务或模型联调。原有验证项目需要在用户安排统一验收时再运行，不能把文件已迁移视为测试通过。
+本轮没有执行上述命令，也没有运行测试、项目导入、编译、服务或模型联调。当前仅完成迁移和文本审阅。
 
 返回 [项目 README](../README.md)。

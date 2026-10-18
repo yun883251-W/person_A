@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from .agent.trace import TurnTrace
+    from knowledge_agent.observability.trace import TurnTrace
 
 
 @dataclass(frozen=True, slots=True)

@@ -33,7 +33,7 @@ from urllib.request import Request, urlopen
 
 from ..config import get_ingest_settings
 from .keywords import extract_keywords
-from ..models import create_embedding_model
+from knowledge_agent.models.provider import create_embedding_model
 from ..schemas import DocumentChunk
 
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
-from ..models import (
+from knowledge_agent.models.provider import (
     ChatModelAuthenticationError,
     ChatModelInvocationError,
     ChatModelNotFoundError,
@@ -21,8 +21,8 @@ from ..models import (
 )
 from ..schemas import AnswerSource
 from ..tools.registry import create_tool_registry
-from .browser_execution import is_browser_search_turn, run_browser_search
-from .dependencies import evidence_identity
+from knowledge_agent.agent.browser.execution import is_browser_search_turn, run_browser_search
+from knowledge_agent.agent.planning.dependencies import evidence_identity
 from .router import RouteKind
 from .state import KnowledgeTools, ModelTurnResult, PreparedModelTurn, ToolCallResult, TurnState
 

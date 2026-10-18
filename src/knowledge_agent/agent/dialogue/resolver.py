@@ -14,9 +14,10 @@ from typing import Any
 
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL, validate_search_arguments
 
-from .. import assessment, planner
+from knowledge_agent.agent import assessment
+from knowledge_agent.agent.planning import planner
 from ...config import IntentSettings, get_intent_settings
-from ..browser_actions import extract_bilibili_topic, is_explicit_bilibili_topic
+from knowledge_agent.agent.browser.actions import extract_bilibili_topic, is_explicit_bilibili_topic
 from .intent_types import IntentDecision, IntentKind, IntentModelBudgetError, McpCapability
 from .rules import identify_intent_rules
 from .classifier import classify_rule_intent

@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 
 from knowledge_agent import config
 from knowledge_agent.agent import model_loop, preparation, runner
-from knowledge_agent.agent.trace import TraceRecorder
+from knowledge_agent.observability.trace import TraceRecorder
 from knowledge_agent.config import AgentConfig, IntentSettings
 from knowledge_agent.schemas import DocumentChunk, RetrievalResult
 

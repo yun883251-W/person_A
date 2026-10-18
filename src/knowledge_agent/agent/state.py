@@ -14,12 +14,12 @@ from langchain_core.tools import BaseTool
 
 from ..knowledge.skill_retrieval import SkillRetrievalOutcome, SkillRetrievalPlan
 from ..schemas import AnswerResult, AnswerSource, AnswerStatus, RetrievalResult
-from ..session_store import SessionStoreError
+from knowledge_agent.session.store import SessionStoreError
 from ..tools.registry import InMemoryToolRegistry
-from .citations import historical_answer_text
+from knowledge_agent.agent.answering.citations import historical_answer_text
 from .router import RouteKind
-from .skill_selector import SelectedSkillSnapshot
-from .trace import TraceRecorder
+from knowledge_agent.skills.selector import SelectedSkillSnapshot
+from knowledge_agent.observability.trace import TraceRecorder
 
 
 @dataclass(frozen=True, slots=True)

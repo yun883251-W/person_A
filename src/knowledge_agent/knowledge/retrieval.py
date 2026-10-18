@@ -35,7 +35,7 @@ from .ingest import (
 )
 from .keywords import extract_keywords
 from .relevance import extract_topic_terms, matching_topic_terms, topic_coverage
-from ..models import create_embedding_model
+from knowledge_agent.models.provider import create_embedding_model
 from ..schemas import DocumentChunk, RetrievalChannel, RetrievalResult
 
 

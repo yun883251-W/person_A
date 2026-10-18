@@ -4,7 +4,7 @@
     "mbti": {
       "enabled": true,
       "command": "$PYTHON",
-      "args": ["-u", "examples/mbti_mcp_server.py"],
+      "args": ["-u", "scripts/mbti_mcp_server.py"],
       "cwd": "..",
       "env_from": {},
       "allowed_tools": ["get_mbti_questionnaire", "score_mbti_answers", "get_mbti_description"],
@@ -15,7 +15,7 @@
     "browser": {
       "enabled": true,
       "command": "$PYTHON",
-      "args": ["-u", "examples/browser_mcp_server.py"],
+      "args": ["-u", "scripts/browser_mcp_server.py"],
       "cwd": "..",
       "env_from": {},
       "allowed_tools": ["search_bilibili"],

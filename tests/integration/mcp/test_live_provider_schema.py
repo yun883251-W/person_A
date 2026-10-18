@@ -33,7 +33,7 @@ _PROBE_PROMPT = "请只回复两个字：收到"
 @pytest.fixture(scope="module")
 def probe_model(require_live_probe: None) -> Any:
     """Return the production chat model under the operator's own configuration."""
-    from knowledge_agent.models import initialize_chat_model
+    from knowledge_agent.models.provider import initialize_chat_model
 
     return initialize_chat_model()
 
@@ -49,7 +49,7 @@ def _group_by_server(tools: Sequence[Any]) -> dict[str, list[Any]]:
 
 def _probe(model: Any, tools: Sequence[Any], label: str) -> None:
     """Send one tool-binding request; fail with the provider's verdict."""
-    from knowledge_agent.models import (
+    from knowledge_agent.models.provider import (
         ChatModelInvocationError,
         ChatModelRequestError,
         bind_chat_tools,
@@ -74,7 +74,7 @@ def _probe(model: Any, tools: Sequence[Any], label: str) -> None:
 
 def test_probe_control_request_without_tools_succeeds(probe_model: Any) -> None:
     """先确认不带工具的请求能通，再判断带工具的失败是否由 Schema 引起。"""
-    from knowledge_agent.models import ChatModelInvocationError, invoke_chat_model
+    from knowledge_agent.models.provider import ChatModelInvocationError, invoke_chat_model
 
     try:
         invoke_chat_model(

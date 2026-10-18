@@ -4,25 +4,21 @@
 
 ```text
 tests/
-├── README.md
-├── conftest.py          # 共享装置：真实 MCP 发布面、在线探测开关
-├── unit/
-│   ├── agent/
-│   │   └── test_intent_budget.py
-│   └── storage/
-│       └── test_session_store.py
-└── integration/
-    ├── http/
-    │   └── test_static_routes.py
-    └── mcp/
-        ├── test_published_tool_schema.py   # 离线：发布面保守子集
-        └── test_live_provider_schema.py    # 在线：真实提供方是否接受
+├─ conftest.py                  # 共用装置及在线探测开关
+├─ unit/
+│  ├─ agent/                    # 意图、路由、预算和dialogue/
+│  ├─ session/                  # 会话及业务状态存储
+│  ├─ skills/                   # 技能选择
+│  └─ evaluation/               # 评估数据、CLI及执行器
+└─ integration/
+   ├─ http/                     # 静态页面及HTTP路由
+   └─ mcp/                      # MCP运行时、Schema及在线探测
 ```
 
 ## 保留的覆盖
 
 - `unit/agent/test_intent_budget.py`：规则问候不调用模型，意图识别和回答共用预算，零预算拒绝执行，失败调用仍计费，以及异常信息不进入公开诊断。分类调用必须关闭传输重试，旧的“两次传输尝试算一次逻辑调用”断言已改为只尝试一次并回退。
-- `unit/storage/test_session_store.py`：SQLite 创建和读写、既有 `turn_id` 幂等与冲突、事务回滚、锁与路径错误，以及应用重启后的会话恢复、隔离、清空和删除。数据库只创建于 `tmp_path`，模型与检索器使用替身。这里验证已有会话存储行为，不代表已开发请求标识或断线恢复功能。
+- `unit/session/test_session_store.py`：SQLite 创建和读写、既有 `turn_id` 幂等与冲突、事务回滚、锁与路径错误，以及应用重启后的会话恢复、隔离、清空和删除。数据库只创建于 `tmp_path`，模型与检索器使用替身。这里验证已有会话存储行为，不代表已开发请求标识或断线恢复功能。
 - `integration/http/test_static_routes.py`：页面和资源路由、目录访问边界、健康检查、接口文档及会话不存在时的响应。通过 FastAPI `TestClient` 使用进程内请求和运行时替身，不启动外部服务器，不访问真实索引或会话数据库。
 
 拆分之后，替身应设置在函数实际使用的模块：意图入口在 `agent.runner`，问题与模型准备在 `agent.preparation`，回答调用在 `agent.model_loop`；静态资源根路径位于 `http.app`。`knowledge_agent.api.create_app` 仍作为兼容入口受到静态路由用例覆盖。
@@ -66,6 +62,10 @@ PowerShell：`$env:PERSON_A_LIVE_SCHEMA_PROBE="1"; ...`。已开启探测却读�
 - 文档入库：标题层级、代码与解释的关联、原文行号、文件名唯一性、文件增删改后的片段与索引一致性、Embedding 配置变更后的重建要求。
 - 检索：中文语义查询、技术标识符查询、结果去重与引用保留、未建立索引时的提示，以及删除文档后旧内容不再被召回。
 
-## 尚未清理的运行缓存
+## 临时文件与本轮迁移
 
-本次清理范围还发现旧 `tests/__pycache__/`、`.pytest_cache/`、`.pytest-tmp-session-store/` 及 `.tmp/` 内的 pytest 临时目录和 MCP smoke 文件。部分目录读取被操作系统拒绝；批量删除操作随后被自动审批策略拦截，未执行删除。以上本地缓存仍保留，已由 `.gitignore` 忽略；它们不属于迁移后保留的测试源码。
+本轮只移动了相关用例并同步源码导入；没有执行测试、项目导入、编译或模型联调。源码归属见 [迁移说明](../project_docs/architecture/LAYOUT.md)。
+
+pytest 缓存由 `pyproject.toml` 指向 `.tmp/pytest-cache/`。以后需要显式指定临时数据库目录时，使用专用 `.tmp/pytest/`，不要再在根目录新增 `.pytest-tmp-*`。
+
+旧临时目录有 2 个完整移动到 `.tmp/legacy-pytest/`。其余目录在移动中遇到 Windows 拒绝访问，原路径与归档路径可能各有残余，尚未完全整理；这些路径由 `.gitignore` 忽略。本轮没有删除缓存或修改权限。

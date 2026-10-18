@@ -1,7 +1,7 @@
 """知识问答、受控工具调用、MBTI 会话与多步骤任务的编排入口。
 
 state 保存阶段数据，preparation 准备检索与提示词，model_loop 执行模型工具循环，
-answers 校验引用并生成结果，应用生命周期由 knowledge_agent.application 管理。
+answering/answers 校验引用并生成结果，应用生命周期由 knowledge_agent.application 管理。
 本模块保留原公共类型与函数导入入口，已有 CLI/API 调用方式保持兼容。
 验证 TODO 18—21 留待统一执行；本次整理不运行测试或真实模型联调。
 """
@@ -20,7 +20,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from ..config import AgentConfig, get_intent_settings, get_skill_selection_settings
 from ..knowledge.retrieval import KnowledgeRetriever
-from ..models import (
+from knowledge_agent.models.provider import (
     ChatModelInvocationError,
     initialize_chat_model,
     invoke_chat_model,
@@ -28,12 +28,13 @@ from ..models import (
 from ..schemas import (
     AnswerResult, AnswerStatus, BusinessStateSummary, DialogueSummary, RouteSummary,
 )
-from ..session_store import SessionStore, SessionStoreError, StoredTurn
-from ..skill_loader import load_skill
+from knowledge_agent.session.store import SessionStore, SessionStoreError, StoredTurn
+from knowledge_agent.skills.loader import load_skill
 from ..tools.registry import InMemoryToolRegistry
-from . import assessment, planner
-from .answers import _attach_completed_trace, _attach_routing, finalize_answer, finalize_mcp_answer
-from .dependencies import DependencyContext, cited_evidence, is_dependency_transform
+from knowledge_agent.agent import assessment
+from knowledge_agent.agent.planning import planner
+from knowledge_agent.agent.answering.answers import _attach_completed_trace, _attach_routing, finalize_answer, finalize_mcp_answer
+from knowledge_agent.agent.planning.dependencies import DependencyContext, cited_evidence, is_dependency_transform
 from .dialogue.classifier import identify_intent
 from .dialogue.intent_types import (
     IntentDecision, IntentKind, IntentModelBudgetError, McpCapability,
@@ -52,7 +53,7 @@ from .model_loop import (
     invoke_model_turn,
     run_model_loop,
 )
-from .plan_executor import StepBudget, StepOutcome, execute_plan, minimum_step_budget
+from knowledge_agent.agent.planning.executor import StepBudget, StepOutcome, execute_plan, minimum_step_budget
 from .preparation import (
     _PLAN_STEP_CONTEXT_INSTRUCTION,
     PreparedContextLimitError,
@@ -66,7 +67,7 @@ from .preparation import (
 )
 from .prompts import SYSTEM_PROMPT
 from .router import RouteDecision, RouteKind, intent_from_dialogue, resolve_route
-from .skill_selector import SkillSelectionSettings, normalize_skill_request
+from knowledge_agent.skills.selector import SkillSelectionSettings, normalize_skill_request
 from .state import (
     ConversationHistory,
     ConversationTurn,
@@ -84,8 +85,8 @@ from .state import (
     TurnState,
     _complete_history_messages,
 )
-from .trace import TraceRecorder, finish_trace_safely
-from .topic_references import validate_topic_binding
+from knowledge_agent.observability.trace import TraceRecorder, finish_trace_safely
+from knowledge_agent.agent.planning.topic_references import validate_topic_binding
 from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 

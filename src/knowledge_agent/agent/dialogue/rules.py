@@ -340,7 +340,7 @@ def _identify_intent_with_rules(
 
     cleaned = question.strip()
     normalized = _normalized_intent_text(cleaned)
-    from ..browser_actions import SEARCH_BILIBILI_TOOL, classify_bilibili_request
+    from knowledge_agent.agent.browser.actions import SEARCH_BILIBILI_TOOL, classify_bilibili_request
 
     browser = classify_bilibili_request(cleaned)
     if browser is not None:
@@ -505,6 +505,6 @@ def _validate_manual_skill_selection(skill_id: str | None) -> None:
     if skill_id is None:
         return
 
-    from ...skill_loader import load_skill
+    from knowledge_agent.skills.loader import load_skill
 
     load_skill(skill_id)

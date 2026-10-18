@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from ...skill_loader import discover_skills
+from knowledge_agent.skills.loader import discover_skills
 from ..schemas import HealthResponse, SkillListResponse, SkillResponse
 
 

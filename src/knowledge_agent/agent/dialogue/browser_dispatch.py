@@ -21,13 +21,13 @@ from browser_mcp.contracts import SEARCH_BILIBILI_TOOL, build_search_url, valida
 from ...config import AgentConfig
 from ...schemas import AnswerResult, AnswerStatus, DialogueSummary, RouteSummary
 from ...tools.registry import ToolRegistry
-from ..answers import _attach_completed_trace
-from ..browser_actions import (
+from knowledge_agent.agent.answering.answers import _attach_completed_trace
+from knowledge_agent.agent.browser.actions import (
     classify_bilibili_request, extract_bilibili_topic, is_explicit_bilibili_topic,
 )
-from ..browser_execution import _verified_payload
+from knowledge_agent.agent.browser.execution import _verified_payload
 from ..state import TurnState
-from ..trace import TraceRecorder
+from knowledge_agent.observability.trace import TraceRecorder
 from .contracts import (
     BusinessPhase, BusinessType, DialogueContractError, DialogueDecision,
     DialogueIntent, ExecutionMode, SessionBusinessState, SlotSource,

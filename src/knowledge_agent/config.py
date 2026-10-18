@@ -187,7 +187,7 @@ def get_intent_settings() -> IntentSettings:
 
 def get_memory_settings():
     """Read optional conversation-summary limits without loading a model."""
-    from .agent.memory import MemorySettings
+    from knowledge_agent.session.memory import MemorySettings
 
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 
@@ -209,7 +209,7 @@ def get_memory_settings():
 def get_skill_selection_settings():
     """Read bounded auto-selection options without initializing a model."""
     # Local import avoids a config -> loader -> config import cycle.
-    from .agent.skill_selector import SkillSelectionSettings
+    from knowledge_agent.skills.selector import SkillSelectionSettings
 
     dotenv = _dotenv_values(PROJECT_ROOT / ".env")
 

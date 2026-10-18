@@ -24,7 +24,7 @@ def test_live_knowledge_and_demo_tool_round_trip(tmp_path: Path) -> None:
     from knowledge_agent.agent.intent import IntentKind, identify_intent
     from knowledge_agent.agent.router import RouteKind, resolve_route
     from knowledge_agent.config import IntentSettings
-    from knowledge_agent.models import bind_chat_tools, initialize_chat_model, invoke_chat_model
+    from knowledge_agent.models.provider import bind_chat_tools, initialize_chat_model, invoke_chat_model
 
     config = tmp_path / "mcp-demo.json"
     config.write_text(json.dumps({

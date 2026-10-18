@@ -10,14 +10,14 @@ from threading import Lock
 from typing import Any
 
 from .agent import assessment
-from .agent.memory import MemorySettings, MemoryUpdate, safe_summary_text, update_session_summary
+from knowledge_agent.session.memory import MemorySettings, MemoryUpdate, safe_summary_text, update_session_summary
 from .agent.runner import KnowledgeAgent
 from .agent.state import ConversationHistory, ConversationTurn, TurnPersistenceError, TurnState
 from .config import AgentConfig, get_memory_settings
 from .knowledge.retrieval import KnowledgeRetriever
-from .models import invoke_chat_model
+from knowledge_agent.models.provider import invoke_chat_model
 from .schemas import AnswerResult
-from .session_store import SessionNotFoundError, SessionStore
+from knowledge_agent.session.store import SessionNotFoundError, SessionStore
 from .tools.registry import InMemoryToolRegistry
 
 

@@ -24,6 +24,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+cache_dir = ".tmp/pytest-cache"
 markers = [
     "live: 真实提供方在线探测；默认跳过，需由对应用例的环境变量显式开启",
 ]

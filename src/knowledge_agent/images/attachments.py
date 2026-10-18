@@ -9,7 +9,7 @@
 第一版支持 PNG/JPEG，每轮最多引用一张图，可与同一会话里的后续提问共用。
 会话已保存的问答应能恢复当时的图片关联，附件读取必须核对所属会话。
 
-本模块负责附件文件；session_store.py 负责同一工作线程上的 SQLite 元数据操作。
+本模块负责附件文件；session/store.py 负责同一工作线程上的 SQLite 元数据操作。
 OCR 由 images/ocr.py 实现，问答接入与前端流程见 images/image_question.py。
 当前只有说明和 TODO；不创建附件目录、数据库表、API 路由或可执行占位函数。
 开发顺序：TODO 01—10；后续集中执行 TODO 11—12，不提前运行验证。
@@ -24,7 +24,7 @@ OCR 由 images/ocr.py 实现，问答接入与前端流程见 images/image_quest
 # AttachmentRecord 字段至少有 attachment_id、session_id、display_name、media_type、
 # size_bytes、width、height、sha256、created_at，以及仅供内部使用的存储键。
 # 对外只返回附件 ID 与公开元数据，不暴露绝对路径或以客户端路径作为读取依据。
-# 类型与存储协议分层，避免 images/attachments.py 和 session_store.py 循环导入。
+# 类型与存储协议分层，避免 images/attachments.py 和 session/store.py 循环导入。
 
 # TODO 02：校验实际图片内容。
 # 文件扩展名和 Content-Type 只作为提示，实际格式通过图片解码确认。
@@ -51,7 +51,7 @@ OCR 由 images/ocr.py 实现，问答接入与前端流程见 images/image_quest
 
 # 第二阶段：SQLite 元数据、接口与生命周期。
 
-# TODO 05：扩展 session_store.py 的附件元数据接口。
+# TODO 05：扩展 session/store.py 的附件元数据接口。
 # 在现有数据库新增 attachments 表，关联 sessions，至少记录 TODO 01 中的字段。
 # 只通过当前固定工作线程的 SQLite 连接访问，不为图片另开跨线程写连接。
 # 现有 initialize() 只接受固定 DATABASE_SCHEMA_VERSION，应新增明确的增量迁移：

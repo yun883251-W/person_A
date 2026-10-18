@@ -85,7 +85,7 @@ def _hybrid_model_decision(
     """Run the isolated classifier once and accept only its routing JSON."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from ...models import initialize_chat_model, invoke_chat_model
+    from knowledge_agent.models.provider import initialize_chat_model, invoke_chat_model
 
     history = _knowledge_history_questions(
         context,
@@ -211,8 +211,8 @@ def _identify_browser_semantics(
     """Resolve an admitted browser candidate once; errors never grant tools."""
     from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
-    from ...models import ChatModelTimeoutError
-    from ..semantic_intent import (
+    from knowledge_agent.models.provider import ChatModelTimeoutError
+    from knowledge_agent.agent.browser.semantic import (
         BrowserSemanticValidationError, classify_bilibili_semantics,
     )
 
@@ -311,7 +311,7 @@ def classify_rule_intent(
         return rules_decision
 
     capabilities = snapshot_mcp_capabilities(available_tools)
-    from ...models import ChatModelTimeoutError
+    from knowledge_agent.models.provider import ChatModelTimeoutError
 
     try:
         model_decision = _hybrid_model_decision(

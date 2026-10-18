@@ -247,9 +247,9 @@ def _run_ingest(command: str, *, json_output: bool) -> int:
 def _public_answer_payload(result: AnswerResult) -> dict[str, Any]:
     """Serialize CLI answers with the same public assessment boundary as HTTP."""
     from .agent.assessment import public_assessment
-    from .agent.answer_diagnostics import public_answer_result_dict
-    from .agent.planner import validate_plan_summary
-    from .agent.trace import trace_to_dict
+    from knowledge_agent.agent.answering.diagnostics import public_answer_result_dict
+    from knowledge_agent.agent.planning.planner import validate_plan_summary
+    from knowledge_agent.observability.trace import trace_to_dict
 
     payload = public_answer_result_dict(result)
     payload.pop("assessment_state", None)
@@ -301,7 +301,7 @@ def _display_answer(result: AnswerResult, *, json_output: bool = False) -> int:
 def _create_session_store() -> Any:
     """Create storage without constructing model or retrieval services."""
     from .config import get_session_store_settings
-    from .session_store import SQLiteSessionStore
+    from knowledge_agent.session.store import SQLiteSessionStore
 
     settings = get_session_store_settings()
     return SQLiteSessionStore(settings.db_path, lock_timeout=settings.lock_timeout)
@@ -447,7 +447,7 @@ def _run_delete_session(session_id: str, *, json_output: bool) -> int:
     with _storage() as store:
         deleted = store.delete_session(session_id)
     if not deleted:
-        from .session_store import SessionNotFoundError
+        from knowledge_agent.session.store import SessionNotFoundError
 
         raise SessionNotFoundError("Session does not exist")
     if json_output:

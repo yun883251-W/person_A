@@ -8,7 +8,7 @@ from browser_mcp.contracts import (
 
 from knowledge_agent.agent.dialogue.contracts import BusinessPhase
 from knowledge_agent.agent.runner import KnowledgeAgent
-from knowledge_agent.session_store import SQLiteSessionStore
+from knowledge_agent.session.store import SQLiteSessionStore
 
 
 class _Definition:

@@ -6,7 +6,7 @@
       "command": "$PYTHON",
       "args": [
         "-u",
-        "examples/mbti_mcp_server.py"
+        "scripts/mbti_mcp_server.py"
       ],
       "cwd": "..",
       "env_from": {},

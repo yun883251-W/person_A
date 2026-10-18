@@ -4,13 +4,13 @@
 
 浏览器 MCP 工具支持“我想在 bili 学习数据结构”这类请求：模型提取搜索主题，程序向后端电脑的默认浏览器发出 B 站搜索页打开请求，并返回请求状态与链接。工具不读取页面或视频，也不确认搜索结果。
 
-文档入库、检索、模型适配、Agent、意图识别、MCP 接入、MBTI 答题、命令行、HTTP API 和本地网页已有实现。会话业务意图一期已有离线测试记录；2026-10-18 的意图合并及 B 站补参修复仅完成开发和文本审阅，未运行测试或联调。当前结构与待验收用例见 [会话意图说明](project_docs/DIALOGUE_INTENT_TODO.md)。
+文档入库、检索、模型适配、Agent、意图识别、MCP 接入、MBTI 答题、命令行、HTTP API 和本地网页已有实现。会话业务意图一期已有离线测试记录；2026-10-18 的意图合并及 B 站补参修复仅完成开发和文本审阅，未运行测试或联调。当前结构与待验收用例见 [会话意图说明](project_docs/architecture/DIALOGUE_INTENT_TODO.md)。
 
-本次进一步细化咨询与操作的意图边界，并加入本轮最多 3 步、共享调用预算的任务规划。执行结果随回答保存，页面可展开“任务执行步骤”查看完成和跳过情况；简单问题继续使用原流程。实现边界、示例与待验收事项见 [意图边界与多步骤任务规划](project_docs/INTENT_PLANNING.md)。**这两项同样只完成开发，尚未测试。**
+本次进一步细化咨询与操作的意图边界，并加入本轮最多 3 步、共享调用预算的任务规划。执行结果随回答保存，页面可展开“任务执行步骤”查看完成和跳过情况；简单问题继续使用原流程。实现边界、示例与待验收事项见 [意图边界与多步骤任务规划](project_docs/architecture/INTENT_PLANNING.md)。**这两项同样只完成开发，尚未测试。**
 
 ## 快速开始
 
-新增 B 站未知表达的语义补充、自然语言多任务组合和长对话摘要。例如“帮我在B站找点数据结构的视频”“先解释Python装饰器，再在B站搜索Python装饰器”。较早知识对话可压缩为 SQLite 摘要，在页面“早期对话摘要”中查看；完整历史保留。默认启用，无新增依赖，配置与使用用例见 [三项功能说明](project_docs/SEMANTIC_PLANS_MEMORY.md)。**本次只完成开发与文本审阅，未运行测试、服务、数据库迁移或模型联调。**
+新增 B 站未知表达的语义补充、自然语言多任务组合和长对话摘要。例如“帮我在B站找点数据结构的视频”“先解释Python装饰器，再在B站搜索Python装饰器”。较早知识对话可压缩为 SQLite 摘要，在页面“早期对话摘要”中查看；完整历史保留。默认启用，无新增依赖，配置与使用用例见 [三项功能说明](project_docs/features/SEMANTIC_PLANS_MEMORY.md)。**本次只完成开发与文本审阅，未运行测试、服务、数据库迁移或模型联调。**
 
 在项目根目录打开终端，以可编辑方式安装到准备使用的 Python 环境：
 
@@ -173,7 +173,7 @@ MBTI 已接入 API 和 CLI 的 MCP 生命周期。宿主启动本地 stdio 子�
 python -m pip install -e ".[api,mcp]"
 ```
 
-项目默认配置 `config/mcp_servers.json` 启用 `mbti`。配置的 `command: "$PYTHON"` 由宿主替换为当前 Person_A 的 Python 解释器，参数只指定项目内的 `examples/mbti_mcp_server.py` 启动文件，不含外部项目路径或 `--mindcare-root` 参数。移动整个 Person_A 目录时，无需另行定位 MindCare，也不需要手动启动 MCP 服务。
+项目默认配置 `config/mcp_servers.json` 启用 `mbti`。配置的 `command: "$PYTHON"` 由宿主替换为当前 Person_A 的 Python 解释器，参数只指定项目内的 `scripts/mbti_mcp_server.py` 启动文件，不含外部项目路径或 `--mindcare-root` 参数。移动整个 Person_A 目录时，无需另行定位 MindCare，也不需要手动启动 MCP 服务。
 
 未在环境变量或 `.env` 中设置 `MCP_CONFIG_PATH` 时，使用上述默认配置；如果旧 `.env` 已有空值 `MCP_CONFIG_PATH=`，MCP 会保持关闭，需要自行改为 `MCP_CONFIG_PATH=./config/mcp_servers.json`。开发过程没有覆盖实际 `.env`。`config/mcp_servers.mbti.example.json` 是默认禁用的独立模板，区别于已启用的运行配置。
 
@@ -181,7 +181,7 @@ python -m pip install -e ".[api,mcp]"
 
 答题进度与问答轮一起保存在现有 SQLite 的 `turns.result_json.assessment_state`，没有新建数据库或答题表；恢复会话时单独读取最新状态，不受模型历史窗口长度限制。清空或删除会话也会删除其中的答题记录。普通 MBTI 答题、评分与类型描述由程序调用 MCP，不消耗 DeepSeek 模型次数；知识问答仍走原检索与 DeepSeek 流程。
 
-这是源自 MindCare 项目、现内置于 Person_A 的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](project_docs/MBTI_MCP.md)。
+这是源自 MindCare 项目、现内置于 Person_A 的人格倾向自评问卷。得分比例表示两极答题分值的占比，不能解释为置信度；平局保留原项目的默认规则并明确显示，不把默认字母当成明确倾向。完整配置、工具契约与待验收事项见 [MBTI_MCP.md](project_docs/features/MBTI_MCP.md)。
 
 ## B 站搜索与本机浏览器
 
@@ -193,133 +193,74 @@ python -m pip install -e ".[api,mcp]"
 
 工具只能打开固定的 B 站搜索地址，参数不接受其他 URL、命令或额外字段。使用模型生成参数的分支关闭传输重试，至多首次生成和一次修正；会话执行器直接使用已经确认并绑定来源的参数。实际调用后本轮不重复打开。**最终状态和链接由程序核对工具返回的身份、关键词、URL 和动作后生成。** 普通知识问答不打开浏览器；手动知识 Skill 与 MCP 操作冲突时提示切换回答方式。
 
-浏览器位于运行后端的电脑，远程网页不会直接控制访问者的浏览器。返回“已发出打开请求”不表示网页已加载或已找到视频；工具不读取搜索结果。本次没有启动浏览器或运行联调，完整边界及待验收项见 [BROWSER_MCP.md](project_docs/BROWSER_MCP.md)。
+浏览器位于运行后端的电脑，远程网页不会直接控制访问者的浏览器。返回“已发出打开请求”不表示网页已加载或已找到视频；工具不读取搜索结果。本次没有启动浏览器或运行联调，完整边界及待验收项见 [BROWSER_MCP.md](project_docs/features/BROWSER_MCP.md)。
 
 ## 项目结构
 
 ```text
 Person_A/
-├── docs/                         # 本地 Markdown 知识文档
-├── project_docs/                 # 项目设计、实现记录与待验收清单
-│   ├── README.md                # 开发文档导航及本次迁移说明
-│   ├── INTENT_PLANNING.md       # 意图边界与多步骤任务规划
-│   ├── INTENT_MCP_TODO.md       # 意图与 MCP 初始开发计划存档
-│   ├── AUTO_SKILL_TODO.md       # 自动 Skill 实现记录与待验收项
-│   ├── MBTI_MCP.md              # 内置 MBTI 接入说明
-│   └── BROWSER_MCP.md           # B 站搜索与浏览器 MCP 接入说明
-├── src/knowledge_agent/
-│   ├── __init__.py
-│   ├── cli.py                    # 建库、更新、单次与多轮问答入口
-│   ├── api.py                    # HTTP 兼容启动入口
-│   ├── application.py            # 应用生命周期、持久化会话与资源管理
-│   ├── config.py                 # 配置读取与校验
-│   ├── models.py                 # 对话与 Embedding 模型适配
-│   ├── schemas.py                # 片段、检索结果与回答的数据结构
-│   ├── session_store.py          # 本地 SQLite 会话持久化
-│   ├── skill_loader.py           # 项目 Skill 的发现、加载与工具约束
-│   ├── evaluation.py             # 效果评估 TODO
-│   ├── agent/                    # Agent 执行流程、提示词与执行记录
-│   │   ├── __init__.py
-│   │   ├── runner.py             # KnowledgeAgent 单轮与多步编排入口
-│   │   ├── state.py              # 单轮状态与准备结果结构
-│   │   ├── preparation.py        # 技能选择、检索与模型上下文准备
-│   │   ├── model_loop.py         # 模型 / 工具循环及预算控制
-│   │   ├── browser_actions.py    # B 站搜索意图与操作边界
-│   │   ├── browser_execution.py  # 浏览器单动作执行、有限修正与结果生成
-│   │   ├── answers.py            # 回答整理、引用校验与结果摘要
-│   │   ├── intent.py             # 旧意图导入路径的兼容入口
-│   │   ├── dialogue/             # 统一意图与会话业务状态
-│   │   │   ├── intent_types.py   # 共享分类类型与能力快照
-│   │   │   ├── rules.py          # 确定性识别、追问与能力匹配
-│   │   │   ├── classifier.py     # 唯一 rules/hybrid 分类策略
-│   │   │   ├── resolver.py       # 生命周期、补参和最终决策
-│   │   │   ├── contracts.py      # 会话契约与参数来源
-│   │   │   ├── transitions.py    # 纯状态转移
-│   │   │   └── browser_dispatch.py # 有状态搜索派发与结果校验
-│   │   ├── router.py             # 知识 / MCP / 直接回复路由
-│   │   ├── skill_selector.py     # 自动技能选择及本步快照
-│   │   ├── planner.py            # 有限步骤规划
-│   │   ├── plan_executor.py      # 依赖调度和共享预算
-│   │   ├── assessment.py         # 会话内 MBTI 答题状态与工具编排
-│   │   ├── prompts.py            # 问答约束与来源标记规则
-│   │   └── trace.py              # 单轮执行事件、耗时与公开摘要
-│   ├── http/                     # HTTP 传输层，业务继续复用 Agent
-│   │   ├── app.py                # FastAPI 创建、生命周期与路由装配
-│   │   ├── schemas.py            # 请求与公开响应模型
-│   │   ├── serialization.py      # 领域结果转公开响应，统一来源及摘要字段
-│   │   ├── errors.py             # HTTP 错误映射与公开错误结构
-│   │   ├── runtime.py            # 单工作线程与 SQLite 线程归属
-│   │   ├── streaming.py          # 有界进度通道与 SSE 输出
-│   │   └── routes/
-│   │       ├── chat.py           # 提问、完整回答与实时阶段进度
-│   │       ├── sessions.py       # 会话 CRUD 与历史
-│   │       ├── knowledge.py      # 文档与索引管理
-│   │       └── system.py         # 健康检查、技能列表与页面入口
-│   ├── knowledge/                # 文档、索引、检索与知识库管理
-│   │   ├── __init__.py
-│   │   ├── ingest.py             # 文档读取、分块、索引构建与同步
-│   │   ├── retrieval.py          # 向量与关键词检索、上下文补查
-│   │   ├── skill_retrieval.py    # 技能检索策略和实际证据覆盖
-│   │   ├── code_analysis.py      # 选择器与检索共用的可见代码识别
-│   │   ├── keywords.py           # 共享关键词分词规则
-│   │   └── manager.py            # 文档上传、预览与索引管理
-│   ├── tools/                    # 本地工具与统一注册、执行校验
-│   │   ├── __init__.py
-│   │   ├── registry.py
-│   │   └── knowledge.py
-│   ├── mcp/                      # 外部工具连接与注册器适配
-│   │   ├── __init__.py
-│   │   ├── client.py
-│   │   ├── bootstrap.py          # API / CLI 共享的 MCP 启动与关闭
-│   │   └── adapter.py
-│   └── images/                   # 图片提问扩展 TODO，暂缓开发
-│       ├── __init__.py
-│       ├── ocr.py
-│       ├── attachments.py
-│       └── image_question.py
-├── src/mbti_mcp/                 # 内置 MBTI 核心与独立 MCP 服务
-│   ├── __init__.py
-│   ├── service.py                # 题库分页、严格校验、评分与描述
-│   ├── server.py                 # stdio MCP 工具入口
-│   └── core/                     # 从 MindCare 复制并适配的本地核心
-│       ├── __init__.py
-│       ├── questions.py          # 48 题题库与作答选项
-│       ├── scoring.py            # 确定性计分与类型判定
-│       └── descriptions.py       # 类型名称与说明
-├── src/browser_mcp/              # 固定 B 站搜索链接与本机浏览器 MCP 工具
-├── skills/                       # 概念讲解、概念比较、代码解读的 Skill
-├── config/
-│   ├── mcp_servers.json          # 运行配置，启用内置 MBTI 与 browser
-│   ├── mcp_servers.mbti.example.json # MBTI 模板，默认禁用
-│   ├── mcp_servers.browser.example.json # 浏览器工具模板，默认禁用
-│   └── mcp_servers.example.json  # 演示服务模板，默认禁用
-├── examples/
-│   ├── mbti_mcp_server.py        # 确保源码包可导入的 MBTI 启动入口
-│   ├── browser_mcp_server.py     # 本地浏览器 MCP 启动入口
-│   └── mcp_demo_server.py        # 无副作用演示 MCP 服务 TODO
-├── web/
-│   ├── index.html                # 本地问答页面
-│   └── assets/                   # 原生 JavaScript 与 CSS
-├── data/index/                   # 建库后发布的索引与清单
-├── data/sessions/                # 本地会话数据库（不提交）
-├── evaluation/questions.jsonl    # 5 条人工验收问题草案
-├── tests/                        # 按验证层次整理；本次未执行
-│   ├── unit/agent/              # Agent 与执行记录验证
-│   ├── unit/storage/            # 会话存储验证
-│   └── integration/http/        # 静态资源及基础路由验证
-├── .env                          # 本地配置，不提交真实凭据
-├── .env.example                  # 配置模板
-├── pyproject.toml                # 依赖声明与命令入口
-└── README.md
+├─ src/
+│  ├─ knowledge_agent/
+│  │  ├─ application.py         # 应用和会话生命周期
+│  │  ├─ cli.py                 # 命令行入口
+│  │  ├─ api.py                 # 原 Uvicorn 启动入口
+│  │  ├─ config.py              # 公共配置
+│  │  ├─ schemas.py             # 共享数据结构
+│  │  ├─ agent/
+│  │  │  ├─ runner.py           # 总编排
+│  │  │  ├─ router.py           # 执行分支选择
+│  │  │  ├─ state.py            # 单轮状态
+│  │  │  ├─ preparation.py      # 检索和上下文准备
+│  │  │  ├─ model_loop.py       # 模型与工具循环
+│  │  │  ├─ prompts.py          # 系统提示词
+│  │  │  ├─ assessment.py       # MBTI会话流程
+│  │  │  ├─ intent.py           # 原意图接口的兼容导出
+│  │  │  ├─ dialogue/           # 意图、待补参数和业务状态
+│  │  │  ├─ browser/            # actions、semantic、execution
+│  │  │  ├─ answering/          # answers、contract、diagnostics、citations
+│  │  │  └─ planning/           # planner、executor、dependencies、topic_references
+│  │  ├─ models/               # provider.py、diagnostics.py
+│  │  ├─ session/              # store.py、memory.py
+│  │  ├─ skills/               # loader.py、selector.py
+│  │  ├─ observability/        # trace.py
+│  │  ├─ knowledge/            # 文档、索引、检索及知识库管理
+│  │  ├─ tools/                # 工具注册与本地知识工具
+│  │  ├─ mcp/                  # 外部MCP客户端及适配
+│  │  ├─ http/                 # HTTP应用、序列化、SSE及routes/
+│  │  ├─ images/               # 图片提问扩展预留
+│  │  ├─ evaluation.py         # 现有评估实现
+│  │  ├─ session_store.py      # 旧存储导入路径的兼容入口
+│  │  └─ skill_loader.py       # 旧技能加载路径的兼容入口
+│  ├─ browser_mcp/             # 独立浏览器MCP服务
+│  └─ mbti_mcp/                # 独立MBTI服务、题库及评分
+├─ web/                       # 前端页面、JS和CSS
+├─ config/                    # MCP运行配置及模板
+├─ scripts/                   # MBTI和浏览器MCP启动脚本
+├─ examples/                  # 演示MCP服务
+├─ skills/                    # 技能正文SKILL.md
+├─ docs/                      # 用户知识库教材
+├─ project_docs/
+│  ├─ README.md               # 开发文档导航
+│  ├─ architecture/           # 当前目录、意图与规划设计
+│  ├─ features/               # 各功能说明与待验收项
+│  └─ archive/                # 旧计划和阶段性修复记录
+├─ tests/
+│  ├─ unit/                   # agent、session、skills、evaluation
+│  └─ integration/            # HTTP和MCP集成用例
+├─ evaluation/                # 题集和评估报告
+├─ data/                      # 索引与会话数据库
+├─ .tmp/                      # 临时文件与pytest缓存
+├─ .env                       # 本地配置，不提交
+├─ .env.example               # 配置模板
+├─ pyproject.toml             # 包声明、依赖和命令入口
+└─ README.md
 ```
 
-Python 模块按功能分包：`agent/` 组织问答与答题执行，`http/` 处理 HTTP 请求与实时阶段传输，`knowledge/` 处理知识库，`tools/` 统一注册和校验工具，`mcp/` 管理外部工具接入，`images/` 预留图片提问。公共配置、数据结构、模型适配、会话存储和 Skill 加载仍放在包根目录；`application.py` 负责应用及会话生命周期。
+本轮按职责迁移现有文件，内部导入和默认 MCP 启动配置已同步。根目录 `skills/` 保存技能正文，`src/knowledge_agent/skills/` 保存加载与选择代码；`docs/` 仍是知识库材料，不与开发说明混用。索引、会话数据库、真实 `.env`、用户教材及评估报告未移动或修改。
 
-本次目录整理把大文件按职责拆开，并将开发说明集中到 `project_docs/`。知识库教材仍在 `docs/`，不会把项目设计说明加入默认检索材料；索引、会话数据库、技能目录和运行配置路径保持不变。`cli.py`、`api.py` 保留原入口，`person-a`、`python -m knowledge_agent.cli` 和 `uvicorn knowledge_agent.api:create_app` 的命令不变。迁移对应关系见 [开发文档导航](project_docs/README.md)。**目录调整只完成开发，未运行测试、导入检查、编译或服务联调。**
+`api.py`、`agent/intent.py` 保留原入口，模型公共 API、旧存储与技能加载导入路径保留兼容。`person-a`、`python -m knowledge_agent.cli`、`uvicorn knowledge_agent.api:create_app` 的启动方式不变；默认配置的 MCP 启动脚本已由 `examples/` 调整到 `scripts/`。完整映射见 [目录与迁移说明](project_docs/architecture/LAYOUT.md)。**本轮未运行测试、项目导入、编译或服务联调，重启后端后需按清单统一验证。**
 
-意图识别、路由、MCP 和 MBTI 已有实现，运行结果仍待统一验证；图片提问与效果评估继续保留 TODO。
-
-索引以本地文件保存，无需另行安装数据库服务。实际索引文件路径以 `manifest.json` 中的记录为准，不要手动修改片段、向量或清单来绕过建库流程。
+2 个旧测试临时目录已完整归入 `.tmp/legacy-pytest/`；其他目录移动中因 Windows 拒绝访问而未完全整理，原路径和归档路径可能各有残余。后续 pytest 缓存写入 `.tmp/pytest-cache/`。
 
 ## 数据与问答规则
 
@@ -334,7 +275,7 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`http/` �
 
 ## 待统一验收
 
-自动 Skill 选择、技能检索策略边界修正、API/CLI/页面接入及 SSE 阶段进度已完成代码开发，尚未运行测试、语法检查、模型或服务联调。开发说明与未执行的验收清单见 [AUTO_SKILL_TODO.md](project_docs/AUTO_SKILL_TODO.md)。效果评估、请求标识与断线恢复继续暂缓。
+自动 Skill 选择、技能检索策略边界修正、API/CLI/页面接入及 SSE 阶段进度已完成代码开发，尚未运行测试、语法检查、模型或服务联调。开发说明与未执行的验收清单见 [AUTO_SKILL_TODO.md](project_docs/features/AUTO_SKILL_TODO.md)。效果评估、请求标识与断线恢复继续暂缓。
 
 `src/knowledge_agent/agent/prompts.py` 已与 Agent 统一为 `[S1]` 来源标记协议；最终文档名称、小节和行号由程序校验并生成，引用正确性仍需在真实问答中核对。
 
@@ -342,6 +283,6 @@ Python 模块按功能分包：`agent/` 组织问答与答题执行，`http/` �
 
 开发完成后统一检查：首次建库与文档更新是否正确；检索是否命中对应章节；回答是否有原文支持；引用能否定位实际片段；多轮追问、清空会话和索引刷新是否符合预期；模型服务异常、参数错误与中断时是否正确退出。网页的会话切换、历史分页、清空与删除确认、请求异常提示也需纳入完整端到端联调。假运行时下的页面和路由检查不能代替真实模型与索引的验收。
 
-新增 MBTI 接入还需统一验证：三工具发现与调用、完整 48 题评分、分页和版本不一致处理、暂停恢复与重启续答、会话隔离、旧题目卡重复点击、存储失败及 MCP 退出清理。具体清单见 [MBTI_MCP.md](project_docs/MBTI_MCP.md#待统一验收)。以上均为待执行项目，没有本次测试通过结论。
+新增 MBTI 接入还需统一验证：三工具发现与调用、完整 48 题评分、分页和版本不一致处理、暂停恢复与重启续答、会话隔离、旧题目卡重复点击、存储失败及 MCP 退出清理。具体清单见 [MBTI_MCP.md](project_docs/features/MBTI_MCP.md#待统一验收)。以上均为待执行项目，没有本次测试通过结论。
 
-B 站搜索 MCP 的自然语言路由、参数双端校验、一次修正与防重复打开、真实浏览器唤起及旧流程兼容也尚未验证，清单见 [BROWSER_MCP.md](project_docs/BROWSER_MCP.md#待统一验收)。没有运行测试、导入检查、编译、安装或服务启动。
+B 站搜索 MCP 的自然语言路由、参数双端校验、一次修正与防重复打开、真实浏览器唤起及旧流程兼容也尚未验证，清单见 [BROWSER_MCP.md](project_docs/features/BROWSER_MCP.md#待统一验收)。没有运行测试、导入检查、编译、安装或服务启动。
