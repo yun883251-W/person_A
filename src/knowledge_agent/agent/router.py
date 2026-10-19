@@ -86,7 +86,10 @@ def intent_from_dialogue(decision: DialogueDecision, *, current_input: str) -> I
         return IntentDecision(
             IntentKind.MCP_TOOL,
             allowed_tool_names=TOOLS if decision.business_type is BusinessType.MBTI else decision.allowed_tool_names,
-            authorized_user_input=decision.authorized_user_input, **common,
+            authorized_user_input=decision.authorized_user_input,
+            search_topic=decision.confirmed_slots.get("query", "") if decision.business_type is BusinessType.BILIBILI_SEARCH else "",
+            search_limit=decision.confirmed_slots.get("limit") if decision.business_type is BusinessType.BILIBILI_SEARCH else None,
+            **common,
         )
     return IntentDecision(
         IntentKind.NEEDS_CLARIFICATION,

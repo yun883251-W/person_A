@@ -174,6 +174,7 @@ class TurnState:
     # 来自本请求从句、由宿主绑定的主题；绝不从历史
     # 或另一个模型回答推断。浏览器派发必须精确匹配它。
     browser_search_topic: str | None = None
+    browser_search_limit: int | None = None
 
     def __post_init__(self) -> None:
         if self.retrieval_question is None:

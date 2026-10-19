@@ -313,9 +313,11 @@ def validate_business_slots(
             _fail("knowledge_slots_not_allowed")
         return {}
     if business_type is BusinessType.BILIBILI_SEARCH:
-        if set(frozen) - {"query"} or set(missing) - {"query"}:
+        if set(frozen) - {"query", "limit"} or set(missing) - {"query"}:
             _fail("invalid_business_arguments")
         if "query" not in frozen:
+            if "limit" in frozen:
+                _fail("invalid_business_arguments")
             return {}
         from browser_mcp.contracts import InvalidSearchArguments, validate_search_arguments
 
@@ -875,6 +877,10 @@ def public_business_state(state: SessionBusinessState) -> dict[str, Any]:
         query = pending.confirmed_slots.get("query")
         if type(query) is str:
             parameters["query"] = query
+        limit = pending.confirmed_slots.get("limit")
+        parameters["mode"] = "results" if limit is not None else "open"
+        if limit is not None:
+            parameters["limit"] = limit
     allowed_actions: list[str] = []
     if state.focus.phase in {BusinessPhase.AWAITING_INPUT, BusinessPhase.READY}:
         allowed_actions.append("cancel")

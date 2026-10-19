@@ -160,6 +160,11 @@ def _finish_tool_trace(
             result_count = len(raw_results)
         elif isinstance(raw_chunks, list):
             result_count = len(raw_chunks)
+        structured = output.get("structured_content")
+        if output.get("tool_name") == "mcp__browser__search_bilibili" and isinstance(structured, Mapping):
+            items = structured.get("items")
+            if isinstance(items, list):
+                result_count = len(items)
         raw_index_version = output.get("index_version")
         if raw_index_version is not None:
             index_version = str(raw_index_version)

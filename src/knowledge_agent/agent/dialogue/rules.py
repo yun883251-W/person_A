@@ -360,6 +360,7 @@ def _identify_intent_with_rules(
                 reason_code=browser.reason_code,
                 authorized_user_input=cleaned,
                 search_topic=browser.topic,
+                search_limit=browser.limit,
             )
         if browser.kind == "needs_clarification":
             return IntentDecision(

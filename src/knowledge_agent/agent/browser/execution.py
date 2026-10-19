@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -18,6 +19,9 @@ from browser_mcp.contracts import (
     search_success_payload,
     validate_search_arguments,
 )
+
+from browser_mcp.results import verified_video_payload
+from .actions import requested_video_limit
 
 from knowledge_agent.schemas import AnswerResult, AnswerStatus
 from knowledge_agent.agent.router import RouteKind
@@ -69,7 +73,7 @@ def _reject_parameters(state: TurnState, code: str) -> None:
         state.trace_recorder.finish_event(handle, "skipped", error_code=code)
 
 
-def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, Any], dict[str, str]]:
+def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, Any], dict[str, Any]]:
     # LangChain 可能把格式错误的 JSON 调用放进 invalid_tool_calls。
     # 绝不静默忽略它，却在同一批中执行另一个有效调用。
     if message.invalid_tool_calls or len(message.tool_calls) != 1:
@@ -83,10 +87,13 @@ def _validated_call(message: AIMessage, state: TurnState) -> tuple[Mapping[str, 
     arguments = validate_search_arguments(call.get("args"))
     if state.browser_search_topic is not None and arguments["query"] != state.browser_search_topic:
         raise _TopicBindingMismatch("browser_search_topic_mismatch")
+    expected_limit = state.browser_search_limit if state.browser_search_topic is not None else requested_video_limit(state.original_question)
+    if arguments.get("limit") != expected_limit:
+        raise ValueError("browser_result_limit_mismatch")
     return call, arguments
 
 
-def verified_search_payload(output: object, arguments: Mapping[str, str]) -> dict[str, Any] | None:
+def verified_search_payload(output: object, arguments: Mapping[str, Any]) -> dict[str, Any] | None:
     """只接受该工具针对所提交查询的精确结果契约。"""
     if not isinstance(output, Mapping) or output.get("status") != "success" or output.get("truncated"):
         return None
@@ -98,6 +105,8 @@ def verified_search_payload(output: object, arguments: Mapping[str, str]) -> dic
             payload = json.loads(output.get("text", ""))
         except (TypeError, ValueError):
             return None
+    if "limit" in arguments:
+        return verified_video_payload(payload, dict(arguments))
     expected = search_success_payload(arguments["query"])
     if (
         not isinstance(payload, dict)
@@ -116,6 +125,8 @@ SEARCH_NOT_DISPATCHED_ERRORS = frozenset({
 })
 _SEARCH_PUBLIC_ERRORS = SEARCH_NOT_DISPATCHED_ERRORS | {
     "timeout", "tool_timeout", "connection_lost", "remote_error",
+    "browser_dependency_missing", "browser_search_blocked", "browser_results_unavailable",
+    "browser_search_timeout", "browser_reader_failed",
 }
 
 
@@ -129,9 +140,25 @@ def search_error_code(output: object) -> str:
     return "browser_result_unconfirmed"
 
 
-def search_result_answer(query: str, *, success: bool, code: str) -> str:
+def search_result_answer(query: str, *, success: bool, code: str, payload: dict[str, Any] | None = None, limit: int | None = None) -> str:
     """两种执行入口共用公开文案，不宣称页面已经加载。"""
     url = build_search_url(query)
+    if success and payload is not None and payload.get("action") == "video_results_read":
+        def label(text: str) -> str:
+            return re.sub(r"([\\`*_{}\[\]()#!|>~<])", r"\\\1", text)
+        rows = [f"{index}. [{label(item['title'])}]({item['url']})" for index, item in enumerate(payload["items"], 1)]
+        count = len(rows)
+        note = "" if count == payload["limit"] else f"本次只读取到 {count} 条有效结果，未补写其他视频。\n\n"
+        return f"已从 B 站搜索页读取 {count} 个视频：\n\n" + note + "\n".join(rows) + "\n\n按页面顺序整理，未观看或评估视频质量。"
+    if limit is not None and not success:
+        explanations = {
+            "browser_dependency_missing": "尚未安装浏览器读取依赖及 Chromium。",
+            "browser_search_blocked": "B站拒绝访问搜索页。",
+            "browser_results_unavailable": "未读取到有效视频列表，可能需要登录或验证、没有结果，或页面结构发生变化。",
+            "browser_search_timeout": "读取搜索页超时。",
+            "browser_reader_failed": "浏览器读取失败，请检查 Playwright Chromium 是否已安装。",
+        }
+        return "未能完成视频列表读取。" + explanations.get(code, "工具未返回可验证的结果。") + f"\n\n可手动查看：[B站搜索页]({url})。"
     if success:
         return (
             "已向本机默认浏览器发送 B 站搜索打开请求。\n\n"
@@ -158,7 +185,7 @@ def run_browser_search(
 ) -> ModelTurnResult:
     """生成一个符合 schema 的搜索请求，并且最多派发一次。"""
     initial_messages = tuple(state.messages)
-    arguments: dict[str, str] | None = None
+    arguments: dict[str, Any] | None = None
     proposal: ModelTurnResult | None = None
     for attempt in range(2):
         if state.model_calls >= max_model_calls:
@@ -185,10 +212,11 @@ def run_browser_search(
                 state.messages.append(HumanMessage(content=(
                     "STRUCTURED_ARGUMENT_REPAIR: Your previous output was rejected before execution. "
                     "Call only mcp__browser__search_bilibili exactly once using native tool calling. "
-                    "Its arguments must be a JSON object with exactly one field, query: a nonblank "
+                    "Its arguments must contain query and, only when requested, limit (integer 1-10). Query is a nonblank "
                     "string of 1 to 200 characters without control characters. Extract the search "
                     "topic from the original user request; do not invent a different topic. "
-                    "Do not output JSON as plain answer text or issue additional calls." + topic_repair
+                    "Do not output JSON as plain answer text or issue additional calls. "
+                    + f"Required limit: {state.browser_search_limit if state.browser_search_topic is not None else requested_video_limit(state.original_question)!r}; omit if None." + topic_repair
                 )))
                 continue
             return _finish(
@@ -212,7 +240,7 @@ def run_browser_search(
     # 在执行外部操作前限制存储的工具消息大小。规范结果很小，
     # 最终回答也不需要更多模型上下文。
     canonical = search_success_payload(arguments["query"])
-    if state.context_chars + len(json.dumps(canonical, ensure_ascii=False)) > max_context_chars:
+    if state.context_chars + (2600 + arguments["limit"] * 550 if "limit" in arguments else len(json.dumps(canonical, ensure_ascii=False))) > max_context_chars:
         state.messages[:] = initial_messages
         return _finish(
             state, "本轮上下文预算不足，尚未请求打开浏览器。",
@@ -246,8 +274,8 @@ def run_browser_search(
         status="success" if payload is not None else "error",
     ))
     success = payload is not None
-    code = "browser_launch_requested" if success else state.last_tool_error_code or "browser_result_unconfirmed"
+    code = payload["action"] if success else state.last_tool_error_code or "browser_result_unconfirmed"
     return _finish(
-        state, search_result_answer(arguments["query"], success=success, code=code),
+        state, search_result_answer(arguments["query"], success=success, code=code, payload=payload, limit=arguments.get("limit")),
         status="success" if success else "service_error", code=code,
     )

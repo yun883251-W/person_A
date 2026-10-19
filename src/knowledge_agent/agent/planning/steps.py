@@ -200,6 +200,9 @@ def run_planned_step(
                 or step.intent.allowed_tool_names != step.allowed_tool_names
             ):
                 raise ValueError("Plan step differs from the authorized user clause")
+            if step.intent is not None:
+                state.browser_search_topic = step.intent.search_topic or None
+                state.browser_search_limit = step.intent.search_limit
             if step.topic_binding is not None:
                 event = trace.start_event("intent", "program", step_id=step.step_id)
                 valid_binding = (

@@ -800,6 +800,10 @@ class KnowledgeAgent:
                     dialogue_resolution.decision.confirmed_slots.get("query")
                     if dialogue_resolution is not None else intent.search_topic or None
                 )
+                state.browser_search_limit = (
+                    dialogue_resolution.decision.confirmed_slots.get("limit")
+                    if dialogue_resolution is not None else intent.search_limit
+                )
             turn = prepare_mcp_model_turn(
                 state,
                 model=self.model,

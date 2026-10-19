@@ -33,6 +33,8 @@ class IntentDecision:
     authorized_user_input: str = ""
     # 已校验的语义搜索主题；这不授予浏览器授权。
     search_topic: str = ""
+    # None表示打开搜索页；整数表示读取视频列表，已经宿主校验。
+    search_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

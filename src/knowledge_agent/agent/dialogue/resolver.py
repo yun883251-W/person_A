@@ -291,7 +291,7 @@ def _from_classification(
             raise DialogueContractError("invalid_authorized_input")
         return _decision(
             intent=DialogueIntent.NEW_BUSINESS, business_type=BusinessType.BILIBILI_SEARCH,
-            slots={"query": topic}, allowed_tools=classified.allowed_tool_names,
+            slots={"query": topic, **({"limit": classified.search_limit} if classified.search_limit is not None else {})}, allowed_tools=classified.allowed_tool_names,
             raw_input=question, session_id=session_id, turn_id=turn_id,
             authorized_user_input=classified.authorized_user_input, **common,
         )

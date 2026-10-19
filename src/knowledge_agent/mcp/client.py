@@ -628,6 +628,16 @@ class McpRuntime:
     def _convert_result(self, config: McpServerConfig, public_name: str,
                         result: Any) -> dict[str, Any]:
         if bool(_field(result, "isError", "is_error", default=False)):
+            # 只保留本机浏览器的固定诊断码，不转发远端任意异常文本。
+            if public_name == "mcp__browser__search_bilibili":
+                payload = _field(result, "structuredContent", "structured_content")
+                error = payload.get("error") if isinstance(payload, dict) else None
+                code = error.get("code") if isinstance(error, dict) else None
+                if isinstance(code, str) and code in {
+                    "browser_dependency_missing", "browser_search_blocked", "browser_results_unavailable",
+                    "browser_search_timeout", "browser_reader_failed",
+                }:
+                    return _error(code, "B站视频结果读取未完成")
             return _error("remote_error", "MCP 工具返回错误")
         content = _field(result, "content", default=[])
         if (not isinstance(content, Sequence)

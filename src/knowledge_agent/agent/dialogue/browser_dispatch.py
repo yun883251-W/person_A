@@ -22,7 +22,7 @@ from ...schemas import AnswerResult, AnswerStatus, DialogueSummary, RouteSummary
 from ...tools.registry import ToolRegistry
 from knowledge_agent.agent.answering.answers import _attach_completed_trace
 from knowledge_agent.agent.browser.actions import (
-    classify_bilibili_request, extract_bilibili_topic, is_explicit_bilibili_topic,
+    classify_bilibili_request, extract_bilibili_topic, is_explicit_bilibili_topic, requested_video_limit,
 )
 from knowledge_agent.agent.browser.execution import (
     SEARCH_NOT_DISPATCHED_ERRORS, search_error_code, search_result_answer,
@@ -47,7 +47,7 @@ def _utc_now() -> str:
 def _ready_arguments(
     question: str, session_id: str, ready: SessionBusinessState,
     decision: DialogueDecision, *, turn_id: str, registry: ToolRegistry[TurnState],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """独立于先前的分类器，重新检查当前轮次的授权。"""
     validate_business_state(ready)
     validate_dialogue_decision(decision)
@@ -75,9 +75,17 @@ def _ready_arguments(
     current_decision = replace(decision, expected_revision=ready.revision)
     proposal = prepare_execution(ready, current_decision)
     arguments = validate_search_arguments(proposal.arguments)
-    if arguments != dict(pending.confirmed_slots) or len(proposal.slot_bindings) != 1:
+    if arguments != dict(pending.confirmed_slots) or len(proposal.slot_bindings) != len(arguments):
         raise DialogueContractError("browser_pending_authorization_invalid")
-    binding = proposal.slot_bindings[0]
+    bindings = {item.slot_name: item for item in proposal.slot_bindings}
+    if set(bindings) != set(arguments):
+        raise DialogueContractError("browser_pending_authorization_invalid")
+    for name, item in bindings.items():
+        if (item.value != arguments[name] or item.session_id != session_id
+                or item.source_turn_id != turn_id or item.source is not SlotSource.CURRENT_USER_INPUT
+                or item.raw_input.strip() != question.strip()):
+            raise DialogueContractError("browser_pending_authorization_invalid")
+    binding = bindings["query"]
     topic = arguments["query"]
     if (
         binding.slot_name != "query" or binding.value != topic
@@ -90,6 +98,13 @@ def _ready_arguments(
         raise DialogueContractError("browser_pending_authorization_invalid")
 
     original_action = classify_bilibili_request(pending.original_request)
+    semantic_authorized = (
+        original_action is not None and original_action.kind == "semantic_candidate"
+        and decision.intent is DialogueIntent.NEW_BUSINESS
+        and decision.reason_code == "browser_bilibili_semantic_search"
+        and decision.decision_source.value == "model"
+        and decision.authorized_user_input.strip() == question.strip()
+    )
     if decision.intent is DialogueIntent.NEW_BUSINESS:
         if (
             pending.request_turn_id != turn_id
@@ -101,13 +116,6 @@ def _ready_arguments(
             # 语义分类器已经通过宿主的显式操作边界。
             # 保留这份精确的当前请求和字面主题；
             # 泛化澄清或历史模型内容都不够。
-            semantic_authorized = (
-                original_action is not None
-                and original_action.kind == "semantic_candidate"
-                and decision.reason_code == "browser_bilibili_semantic_search"
-                and decision.decision_source.value == "model"
-                and decision.authorized_user_input.strip() == question.strip()
-            )
             if not semantic_authorized:
                 raise DialogueContractError("browser_pending_authorization_invalid")
     elif (
@@ -121,6 +129,14 @@ def _ready_arguments(
         # 绝不是猜测出来的业务延续。
         raise DialogueContractError("browser_pending_authorization_invalid")
 
+    # 模型提取的limit必须来自本轮已验证决定及持久化绑定，不能在执行时再猜。
+    # 旧版待办只存query，仍可由原始请求恢复规则明确的数量。
+    limit = requested_video_limit(pending.original_request)
+    if not semantic_authorized:
+        if "limit" in arguments and arguments["limit"] != limit:
+            raise DialogueContractError("browser_pending_authorization_invalid")
+        if limit is not None:
+            arguments = validate_search_arguments({**arguments, "limit": limit})
     registration = registry.get(SEARCH_BILIBILI_TOOL)
     if registration is None:
         raise DialogueContractError("tool_unavailable")
@@ -188,7 +204,7 @@ def dispatch_pending_search(
         if config.max_tool_calls < 1:
             raise DialogueContractError("tool_budget_exhausted")
         canonical = search_success_payload(arguments["query"])
-        state.context_chars = len(question) + len(json.dumps(canonical, ensure_ascii=False))
+        state.context_chars = len(question) + (2600 + arguments["limit"] * 550 if "limit" in arguments else len(json.dumps(canonical, ensure_ascii=False)))
         if state.context_chars > config.max_context_chars:
             raise DialogueContractError("context_budget_exhausted")
     except (TypeError, ValueError) as exc:
@@ -238,7 +254,7 @@ def dispatch_pending_search(
         payload = verified_search_payload(output, arguments)
         if payload is not None:
             outcome = ExecutionOutcome.SUCCEEDED
-            code = "browser_launch_requested"
+            code = payload["action"]
         else:
             code = search_error_code(output)
             if code in SEARCH_NOT_DISPATCHED_ERRORS:
@@ -258,9 +274,9 @@ def dispatch_pending_search(
     else:
         state.failed_tool_calls += 1
         state.last_tool_error_code = code
-    answer = search_result_answer(arguments["query"], success=success, code=code)
+    answer = search_result_answer(arguments["query"], success=success, code=code, payload=payload, limit=arguments.get("limit"))
     trace.finish_event(
-        tool_event, "success" if success else "error", result_count=1 if success else 0,
+        tool_event, "success" if success else "error", result_count=len(payload["items"]) if success and "items" in payload else (1 if success else 0),
         reason_code=code, error_code=None if success else code,
     )
     final_transition = apply_execution_outcome(

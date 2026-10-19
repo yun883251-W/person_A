@@ -239,6 +239,7 @@ def _identify_browser_semantics(
                 reason_code=decision.reason_code,
                 authorized_user_input=question,
                 search_topic=decision.topic,
+                search_limit=decision.limit,
             )
         if decision.kind == "knowledge":
             return IntentDecision(
@@ -396,6 +397,7 @@ def classify_rule_intent(
         reason_code=reason_code,
         authorized_user_input=rules_decision.authorized_user_input,
         search_topic=rules_decision.search_topic,
+        search_limit=rules_decision.search_limit,
     )
 
 

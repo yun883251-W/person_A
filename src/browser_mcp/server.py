@@ -15,6 +15,7 @@ from typing import Any
 
 from .contracts import REMOTE_SEARCH_TOOL, InvalidSearchArguments, search_input_schema, validate_search_arguments
 from .service import BrowserLaunchError, BrowserService
+from .results import VideoSearchError, read_video_results
 
 
 def create_server(service: BrowserService | None = None) -> Any:
@@ -28,8 +29,8 @@ def create_server(service: BrowserService | None = None) -> Any:
         version="0.1.0",
         instructions=(
             "仅在用户明确要求时调用 search_bilibili，在本机默认浏览器请求打开 B 站搜索页。"
-            "成功仅表示浏览器启动接口接受请求；page_verified 始终为 false。"
-            "不会读取搜索结果、获取视频内容、登录或下载。一次真实尝试之后不得自动重试。"
+            "省略limit只请求打开搜索页；提供limit读取公开视频标题和链接。"
+            "不会获取视频正文、登录或下载。一次真实尝试之后不得自动重试。"
         ),
     )
 
@@ -40,8 +41,8 @@ def create_server(service: BrowserService | None = None) -> Any:
                 name=REMOTE_SEARCH_TOOL,
                 description=(
                     "在运行本 MCP 的电脑上请求默认浏览器打开 B 站搜索页。"
-                    "只接收 query 搜索词，用于用户明确提出的 B 站搜索操作。"
-                    "不会读取搜索结果或视频；返回 browser_launch_requested=true 仅表示"
+                    "接收query搜索词；用户要求整理标题链接或指定视频数量时传limit（1至10）。"
+                    "limit模式读取搜索结果标题和链接，不播放视频；返回 browser_launch_requested=true 仅表示"
                     "启动接口接受请求，page_verified=false 表示没有确认页面加载。"
                 ),
                 inputSchema=search_input_schema(),
@@ -77,10 +78,13 @@ def create_server(service: BrowserService | None = None) -> Any:
             validated = validate_search_arguments(arguments)
             # 默认浏览器调用可能阻塞；只提交一次，不阻塞 stdio 协议循环。
             # 若等待方取消，已经提交的本机动作仍可能完成，宿主不能自动重发。
-            result = await asyncio.to_thread(executor.search_bilibili, validated["query"])
+            if "limit" in validated:
+                result = await asyncio.to_thread(read_video_results, validated["query"], validated["limit"])
+            else:
+                result = await asyncio.to_thread(executor.search_bilibili, validated["query"])
         except InvalidSearchArguments as exc:
             return error_result(exc.code, str(exc))
-        except BrowserLaunchError as exc:
+        except (BrowserLaunchError, VideoSearchError) as exc:
             return error_result(exc.code, str(exc))
         except Exception:
             return error_result("browser_tool_failed", "浏览器工具执行失败；未自动重试，也未验证页面。")

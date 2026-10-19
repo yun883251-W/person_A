@@ -570,7 +570,7 @@
   // 模型输出始终作为文本构建 DOM，不将 Markdown/HTML 交给 innerHTML 执行。
   function inline(parent, text, depth = 0) {
     if (depth > 4) { parent.append(document.createTextNode(text)); return; }
-    const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g;
+    const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[(?:\\.|[^\]\\\n])+\]\(https?:\/\/[^\s)]+\))/g;
     let offset = 0;
     for (const match of text.matchAll(pattern)) {
       parent.append(document.createTextNode(text.slice(offset, match.index)));
@@ -581,8 +581,8 @@
         inline(strong, token.slice(2, -2), depth + 1);
         parent.append(strong);
       } else {
-        const parts = /^\[([^\]]+)\]\((.+)\)$/.exec(token);
-        const link = element("a", null, parts[1]);
+        const parts = /^\[((?:\\.|[^\]\\])+)\]\((.+)\)$/.exec(token);
+        const link = element("a", null, parts[1].replace(/\\([\\`*_{}\[\]()#!|>~<])/g, "$1"));
         link.href = parts[2]; link.target = "_blank"; link.rel = "noopener noreferrer";
         parent.append(link);
       }
@@ -710,6 +710,13 @@
     "concept-explanation": "概念讲解", "concept-comparison": "概念比较", "code-explanation": "代码解读",
   };
   const traceReasonLabels = {
+    video_results_read: "已读取视频标题和链接",
+    browser_result_limit_invalid: "视频数量应为1至10个",
+    browser_dependency_missing: "未安装浏览器读取依赖",
+    browser_search_blocked: "B站搜索页拒绝访问",
+    browser_results_unavailable: "未读取到有效视频列表",
+    browser_search_timeout: "读取搜索页超时",
+    browser_reader_failed: "浏览器读取失败",
     answer_completed: "回答完成", greeting_handled: "已回复问候", scope_explained: "已说明助手范围",
     question_is_ambiguous: "问题需要澄清", question_out_of_scope: "问题超出当前范围",
     index_not_built: "索引尚未建立", initial_retrieval_failed: "初始检索失败",

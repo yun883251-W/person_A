@@ -69,7 +69,7 @@ _NON_REQUEST_RE = re.compile(
 )
 _REQUEST_START_RE = re.compile(
     rf"^(?:(?:请你|请|麻烦你|麻烦|帮我|帮忙|替我|为我|给我|"
-    rf"我想要|我想|我要|我需要|能不能|能否|可不可以|可以|现在|先)|{_DESTINATION})",
+    rf"我想要|我想|我要|我需要|能不能|能否|可不可以|可以|现在|先|挑|找|搜|推荐)|{_DESTINATION})",
     re.I,
 )
 _CONSULTATION_RE = re.compile(
@@ -82,6 +82,37 @@ _GENERIC_TOPIC_RE = re.compile(
 )
 
 
+# 输出格式要求属于同一次搜索，不作为第二个外部动作。
+_RESULT_SUFFIX_RE = re.compile(
+    r"[，,]?\s*(?:并|然后|再)?\s*(?:请|帮我)?\s*(?:把|将)?\s*"
+    r"(?:视频的?)?(?:标题(?:和|及|与|、)链接|链接(?:和|及|与|、)标题)"
+    r"\s*(?:整理(?:出来|一下)?|列(?:出来|出)|汇总|发给我|给我)\s*[。！!]*$"
+)
+_RESULT_COUNT_RE = re.compile(r"^\s*(?P<count>[0-9]{1,3}|[一二两三四五六七八九十])\s*(?:个|条|部)\s*")
+
+
+def _result_request_parts(question: str) -> tuple[str, int | None]:
+    text = question.strip()
+    suffix = _RESULT_SUFFIX_RE.search(text)
+    base = text[:suffix.start()].strip() if suffix else text
+    match = _SEARCH_RE.fullmatch(base)
+    if match is None:
+        return text, None
+    count = _RESULT_COUNT_RE.match(match.group("topic"))
+    limit = 5 if suffix else None
+    if count:
+        value = count["count"]
+        limit = int(value) if value.isdigit() else {"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10}[value]
+        start = match.start("topic")
+        base = base[:start] + match.group("topic")[count.end():]
+    return base, limit
+
+
+def requested_video_limit(question: str) -> int | None:
+    """仅提取显式读取需求；执行前仍须通过完整搜索授权边界。"""
+    return _result_request_parts(question)[1]
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserActionDecision:
     """携带可选逐字主题证据的路由结果，而不是工具参数。"""
@@ -90,6 +121,7 @@ class BrowserActionDecision:
     reason_code: str
     clarification_question: str = ""
     topic: str = ""
+    limit: int | None = None
 
 
 def _topic_text(value: str) -> str:
@@ -135,14 +167,13 @@ def _unknown_bilibili_request(text: str) -> BrowserActionDecision:
     unquoted = _QUOTED_RE.sub(" ", text).strip().rstrip("。.!！?？")
     if (
         _SITE_RE.search(unquoted) is None
-        or _CURRENT_REQUEST_RE.search(unquoted) is None
         or _REQUEST_START_RE.search(unquoted) is None
         or _CONSULTATION_RE.search(unquoted) is not None
         or _NON_REQUEST_RE.search(unquoted) is not None
         or _META_REFERENCE_RE.search(unquoted) is not None
     ):
         return discussion
-    if _EXTRA_OPERATION_RE.search(unquoted):
+    if re.search(r"播放|下载|登录|点赞|投币|收藏|评论|发弹幕|发送|删除|执行|运行|解释|比较|总结|如果|假如|不要|不需要", unquoted):
         return BrowserActionDecision(
             "needs_clarification", "browser_bilibili_single_action_only",
             "请明确本次 B 站搜索的主题；组合任务中也需要分别写明每一步。",
@@ -161,7 +192,9 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
     """
     if not isinstance(question, str) or not question.strip():
         return None
-    text = question.strip()
+    text, result_limit = _result_request_parts(question)
+    if result_limit is not None and not 1 <= result_limit <= 10:
+        return BrowserActionDecision("needs_clarification", "browser_result_limit_invalid", "一次最多整理10个视频，请指定1至10个。")
     if _SITE_RE.search(text) is None:
         return None
     discussion = BrowserActionDecision("knowledge", "browser_bilibili_discussion")
@@ -204,17 +237,17 @@ def classify_bilibili_request(question: str) -> BrowserActionDecision | None:
         ):
             return discussion
     if _EXTRA_OPERATION_RE.search(unquoted_topic):
-        return BrowserActionDecision(
-            "needs_clarification", "browser_bilibili_single_action_only",
-            "请将 B 站搜索单独发送，并明确本次要搜索的主题。",
-        )
+        return _unknown_bilibili_request(question)
+    # 规则尚未覆盖的结果整理措辞交给模型，避免将数量/格式要求吞进搜索词。
+    if result_limit is None and re.search(r"清单|列表|链接|标题|挑|筛选|整理|推荐|(?:[0-9一二两三四五六七八九十]+)\s*(?:条|个|部)", unquoted_topic):
+        return _unknown_bilibili_request(question)
     topic = _matched_topic(match)
     if not is_explicit_bilibili_topic(topic):
         return BrowserActionDecision(
             "needs_clarification", "browser_bilibili_missing_topic",
             "你想在 B 站搜索什么内容？请补充主题或作品名称。",
         )
-    return BrowserActionDecision("search", "browser_bilibili_search", topic=topic)
+    return BrowserActionDecision("search", "browser_bilibili_search", topic=topic, limit=result_limit)
 
 
 def extract_bilibili_topic(question: str) -> str | None:

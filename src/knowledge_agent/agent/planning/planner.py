@@ -271,6 +271,10 @@ def should_plan(question: str) -> bool:
     """只为显式分隔的命令式任务请求选择规划。"""
     if not isinstance(question, str) or not question.strip():
         return False
+    from ..browser.actions import classify_bilibili_request, requested_video_limit
+    action = classify_bilibili_request(question)
+    if action is not None and (action.kind == "semantic_candidate" or (requested_video_limit(question) is not None and action.kind == "search")):
+        return False
     text = _operational_text(question).strip()
     numbered = _numbered_parts(question)
     if numbered is not None:
@@ -289,6 +293,10 @@ def should_plan(question: str) -> bool:
 def semantic_plan_candidate(question: str) -> bool:
     """仅把显式请求且存在候选边界的输入送到规划确认模型。"""
     if not isinstance(question, str) or len(question) > 8000 or should_plan(question):
+        return False
+    from ..browser.actions import classify_bilibili_request, requested_video_limit
+    action = classify_bilibili_request(question)
+    if action is not None and (action.kind == "semantic_candidate" or (requested_video_limit(question) is not None and action.kind == "search")):
         return False
     clauses = raw_plan_clauses(question)
     if not 2 <= len(clauses) <= 3 or len(set(clauses)) != len(clauses):

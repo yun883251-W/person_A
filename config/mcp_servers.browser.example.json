@@ -9,8 +9,8 @@
       "env_from": {},
       "allowed_tools": ["search_bilibili"],
       "startup_timeout_seconds": 15,
-      "call_timeout_seconds": 15,
-      "max_output_chars": 4000
+      "call_timeout_seconds": 45,
+      "max_output_chars": 8000
     }
   }
 }

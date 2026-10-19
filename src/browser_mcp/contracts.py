@@ -1,6 +1,6 @@
 """B 站搜索的固定契约，供宿主和 MCP 服务共享；仅依赖标准库。
 
-参数只能描述搜索词，不能提供 URL、浏览器命令、程序路径或执行脚本。
+参数只允许搜索词和可选结果数量，不能提供 URL、浏览器命令、程序路径或执行脚本。
 成功结果仅证明本机浏览器启动接口接受了请求，不证明网页加载或搜索结果可用。
 """
 
@@ -29,12 +29,12 @@ class InvalidSearchArguments(ValueError):
     code = "invalid_search_arguments"
 
     def __init__(self) -> None:
-        super().__init__("只接受 query：1 至 200 个字符的非空搜索词，不能包含控制字符。")
+        super().__init__("query必须是1至200个字符的非空搜索词，无控制字符；可选limit必须是1至10的整数。")
 
 
-def validate_search_arguments(arguments: Mapping[str, Any]) -> dict[str, str]:
+def validate_search_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
     """严格检查参数对象，再去除搜索词两端空白；不会执行浏览器动作。"""
-    if not isinstance(arguments, Mapping) or set(arguments) != {"query"}:
+    if not isinstance(arguments, Mapping) or set(arguments) not in ({"query"}, {"query", "limit"}):
         raise InvalidSearchArguments()
     query = arguments["query"]
     if (
@@ -44,7 +44,12 @@ def validate_search_arguments(arguments: Mapping[str, Any]) -> dict[str, str]:
         or not query.strip()
     ):
         raise InvalidSearchArguments()
-    return {"query": query.strip()}
+    result: dict[str, Any] = {"query": query.strip()}
+    if "limit" in arguments:
+        if type(arguments["limit"]) is not int or not 1 <= arguments["limit"] <= 10:
+            raise InvalidSearchArguments()
+        result["limit"] = arguments["limit"]
+    return result
 
 
 def build_search_url(query: str) -> str:
@@ -68,6 +73,8 @@ def search_input_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10,
+                      "description": "需要读取并整理视频标题和链接时提供，默认需求取5条，最多10条；仅打开搜索页时省略。"},
             "query": {
                 "type": "string",
                 "minLength": 1,
