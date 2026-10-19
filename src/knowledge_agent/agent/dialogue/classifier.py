@@ -290,6 +290,42 @@ def classify_rule_intent(
     if not isinstance(settings, IntentSettings):
         raise TypeError("settings must be an IntentSettings instance")
 
+    if (settings.semantic_mode == "hybrid" and model_invoker is not None
+            and rules_decision.reason_code == "knowledge_followup"):
+        from dataclasses import replace
+        from knowledge_agent.models.provider import ChatModelTimeoutError
+        from .semantic import rewrite_knowledge_followup, SemanticProposalError
+
+        history = _knowledge_history_questions(
+            context, max_history_turns=max_history_turns,
+            max_context_chars=max(1, min(max_context_chars // 2, 3500)),
+        )
+        if not history:
+            return rules_decision
+        try:
+            query, clarification = rewrite_knowledge_followup(
+                question, list(history), model_invoker, max_chars=min(max_context_chars, 8000),
+            )
+            if query is None:
+                return IntentDecision(
+                    kind=IntentKind.NEEDS_CLARIFICATION, decision_source="model",
+                    clarification_question=clarification, reason_code="followup_semantic_ambiguous",
+                )
+            return IntentDecision(
+                kind=IntentKind.KNOWLEDGE, decision_source="model",
+                retrieval_query=query, reason_code="knowledge_followup_semantic",
+            )
+        except IntentModelBudgetError:
+            reason = "followup_semantic_budget_exhausted"
+        except (ChatModelTimeoutError, TimeoutError):
+            reason = "followup_semantic_timeout"
+        except SemanticProposalError:
+            reason = "followup_semantic_invalid"
+        except Exception:
+            reason = "followup_semantic_error"
+        # 补充失败仍可使用原有检索问题，不把模型故障伪装成用户表达不清。
+        return replace(rules_decision, decision_source="fallback", reason_code=reason)
+
     if rules_decision.reason_code.startswith("browser_bilibili_"):
         # 浏览器候选只由 browser_mode 管理。当 browser_mode 为 rules 时，
         # 它们不得落入通用分类器。

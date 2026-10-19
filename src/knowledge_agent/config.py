@@ -90,6 +90,7 @@ class IntentSettings:
 
     mode: Literal["rules", "hybrid"] = "rules"
     browser_mode: Literal["rules", "hybrid"] = "hybrid"
+    semantic_mode: Literal["rules", "hybrid"] = "hybrid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +183,12 @@ def get_intent_settings() -> IntentSettings:
     ).strip().lower()
     if browser_mode not in {"rules", "hybrid"}:
         raise ValueError("BROWSER_INTENT_MODE 必须是 rules 或 hybrid")
-    return IntentSettings(mode=normalized_mode, browser_mode=browser_mode)  # type: ignore[arg-type]
+    semantic_mode = os.environ.get(
+        "SEMANTIC_ASSIST_MODE", dotenv.get("SEMANTIC_ASSIST_MODE", "hybrid")
+    ).strip().lower()
+    if semantic_mode not in {"rules", "hybrid"}:
+        raise ValueError("SEMANTIC_ASSIST_MODE 必须是 rules 或 hybrid")
+    return IntentSettings(mode=normalized_mode, browser_mode=browser_mode, semantic_mode=semantic_mode)  # type: ignore[arg-type]
 
 
 def get_memory_settings():

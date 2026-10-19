@@ -16,14 +16,14 @@ from browser_mcp.contracts import SEARCH_BILIBILI_TOOL
 
 from knowledge_agent.config import AgentConfig, get_intent_settings
 from knowledge_agent.knowledge.retrieval import KnowledgeRetriever
-from knowledge_agent.models.provider import ChatModelInvocationError
+from knowledge_agent.models.provider import ChatModelInvocationError, invoke_chat_model
 from knowledge_agent.schemas import AnswerResult
 from knowledge_agent.skills.selector import SkillSelectionSettings
 from knowledge_agent.tools.registry import InMemoryToolRegistry
 from knowledge_agent.observability.trace import TraceRecorder
 from ..answering.answers import finalize_answer, finalize_mcp_answer
 from ..dialogue.classifier import identify_intent
-from ..dialogue.intent_types import IntentDecision, IntentKind
+from ..dialogue.intent_types import IntentDecision, IntentKind, IntentModelBudgetError
 from ..model_loop import _model_error_code, run_model_loop
 from ..preparation import (
     _PLAN_STEP_CONTEXT_INSTRUCTION, PreparedContextLimitError,
@@ -31,7 +31,10 @@ from ..preparation import (
 )
 from ..state import TurnState
 from . import planner
-from .dependencies import DependencyContext, cited_evidence, is_dependency_transform
+from .dependencies import (
+    DependencyContext, cited_evidence, is_dependency_transform,
+    dependency_retrieval_rule, classify_dependency_retrieval,
+)
 from .executor import StepBudget, StepOutcome
 from .topic_references import validate_topic_binding
 
@@ -57,6 +60,43 @@ def run_planned_step(
             context_data: dict[str, Any] = {}
             clause_history = list(knowledge_history[-config.max_history_turns:])
             dependency_transform = is_dependency_transform(step.goal, bool(step.depends_on))
+            intent_settings = get_intent_settings()
+            retrieval_rule = dependency_retrieval_rule(step.goal, bool(step.depends_on))
+            if (retrieval_rule is None and dependency_context.steps and dependency_context.evidence
+                    and intent_settings.semantic_mode == "hybrid"):
+                from ..dialogue.semantic import SemanticProposalError
+                from knowledge_agent.models.provider import ChatModelTimeoutError
+
+                event = trace.start_event("intent", "program", step_id=step.step_id)
+                reason = "dependency_retrieval_required"
+                source = "model"
+
+                def invoke_retrieval_decision(messages):
+                    # 判断失败仍要能执行检索并生成最终回答。
+                    if state.model_calls + 1 >= budget.model_calls:
+                        raise IntentModelBudgetError()
+                    state.model_calls += 1
+                    return invoke_chat_model(model, messages, max_retries=0)
+
+                try:
+                    needs_retrieval = classify_dependency_retrieval(
+                        step.goal, dependency_context, invoke_retrieval_decision,
+                        max_chars=min(budget.context_chars, 8000),
+                    )
+                    dependency_transform = not needs_retrieval
+                    reason = "dependency_retrieval_required" if needs_retrieval else "dependency_evidence_reuse"
+                except IntentModelBudgetError:
+                    reason, source = "dependency_retrieval_budget_fallback", "fallback"
+                except (ChatModelTimeoutError, TimeoutError):
+                    reason, source = "dependency_retrieval_timeout_fallback", "fallback"
+                except SemanticProposalError:
+                    reason, source = "dependency_retrieval_invalid_fallback", "fallback"
+                except Exception:
+                    reason, source = "dependency_retrieval_error_fallback", "fallback"
+                trace.finish_event(
+                    event, "success" if source == "model" else "skipped",
+                    decision_source=source, reason_code=reason,
+                )
             if dependency_context.steps:
                 bounded_dependencies = []
                 for dependency in dependency_context.steps:
@@ -68,10 +108,29 @@ def run_planned_step(
                     })
                     clause_history.append({"question": goal, "route": "knowledge", "complete": True})
                 context_data["completed_steps"] = bounded_dependencies
+            def invoke_followup_model(messages):
+                # 初始检索不需要模型调用，但必须为最终回答保留一次。
+                if state.model_calls + 1 >= budget.model_calls:
+                    raise IntentModelBudgetError()
+                state.model_calls += 1
+                event = trace.start_event("model", "program", step_id=step.step_id)
+                try:
+                    response = invoke_chat_model(model, messages, max_retries=0)
+                except Exception as exc:
+                    code = _model_error_code(exc) if isinstance(exc, ChatModelInvocationError) else "followup_semantic_error"
+                    trace.finish_event(event, "error", error_code=code, reason_code=code)
+                    raise
+                trace.finish_event(event, "success", reason_code="followup_semantic_model")
+                return response
+
             decision = identify_intent(
                 step.goal, context=tuple(clause_history),
-                settings=replace(get_intent_settings(), mode="rules", browser_mode="rules"),
-                max_context_chars=background_limit,
+                settings=replace(
+                    intent_settings, mode="rules", browser_mode="rules",
+                    semantic_mode="rules" if dependency_transform else intent_settings.semantic_mode,
+                ),
+                model_invoker=invoke_followup_model,
+                max_context_chars=min(budget.context_chars, 8000),
                 max_history_turns=config.max_history_turns,
             )
             if dependency_transform and decision.kind in {
@@ -107,6 +166,7 @@ def run_planned_step(
                 step.goal, retriever=retriever,
                 max_context_chars=budget.context_chars,
                 trace_recorder=trace, intent_decision=decision,
+                intent_model_calls=state.model_calls,
                 max_model_calls=budget.model_calls,
                 max_tool_calls=budget.tool_calls,
                 max_followup_searches=budget.followup_searches,

@@ -506,30 +506,37 @@ class KnowledgeAgent:
         summary_messages = self._summary_messages(session_id)
         summary_text = str(summary_messages[0].content) if summary_messages else ""
 
+        def invoke_plan_semantics(messages: Sequence[BaseMessage]) -> object:
+            nonlocal planning_calls
+            # 每次语义补充都占用整轮预算，先为所有叶子保留执行机会。
+            reserved = 0
+            for requested_goal in planner.raw_plan_clauses(question):
+                names = planner.authorized_tool_names(requested_goal, capabilities)
+                reserved += minimum_step_budget(planner.PlanStep(
+                    "", requested_goal, "mcp" if names else "knowledge",
+                    allowed_tool_names=names,
+                ))[0]
+            if planning_calls + 1 + reserved > self.config.max_model_calls:
+                raise IntentModelBudgetError()
+            planning_calls += 1
+            model_event = trace.start_event("model", "program")
+            try:
+                response = invoke_chat_model(self.model, messages, max_retries=0)
+            except Exception as exc:
+                code = _model_error_code(exc) if isinstance(exc, ChatModelInvocationError) else "plan_semantic_unavailable"
+                trace.finish_event(model_event, "error", error_code=code, reason_code=code)
+                raise
+            trace.finish_event(model_event, "success", reason_code="plan_semantic_model")
+            return response
+
         def resolve_clause(clause: str) -> IntentDecision:
             # 只解析原始用户从句。规划器不能通过改写目标
             # 或查询对话记忆来创造权限。
-            def invoke_clause_model(messages: Sequence[BaseMessage]) -> object:
-                nonlocal planning_calls
-                # 计划由宿主构建。只有语义从句分类和
-                # 叶子执行会消耗模型调用。
-                reserved = 0
-                for requested_goal in planner.raw_plan_clauses(question):
-                    names = planner.authorized_tool_names(requested_goal, capabilities)
-                    reserved += minimum_step_budget(planner.PlanStep(
-                        "", requested_goal, "mcp" if names else "knowledge",
-                        allowed_tool_names=names,
-                    ))[0]
-                if planning_calls + 1 + reserved > self.config.max_model_calls:
-                    raise IntentModelBudgetError()
-                planning_calls += 1
-                return invoke_chat_model(self.model, messages, max_retries=0)
-
             handle = trace.start_event("intent", "program")
             decision = identify_intent(
                 clause, available_tools=capabilities,
                 settings=replace(get_intent_settings(), mode="rules"),
-                model_invoker=invoke_clause_model,
+                model_invoker=invoke_plan_semantics,
                 max_context_chars=self.config.max_context_chars,
             )
             trace.finish_event(
@@ -550,6 +557,9 @@ class KnowledgeAgent:
                 max_steps=3,
                 max_context_chars=self.config.max_context_chars,
                 clause_intent_resolver=resolve_clause,
+                model_invoker=(
+                    invoke_plan_semantics if get_intent_settings().semantic_mode == "hybrid" else None
+                ),
             )
             if skill_id is not None and any(step.kind == "mcp" for step in plan.steps):
                 raise planner.PlanValidationError("plan_manual_skill_mcp_conflict")

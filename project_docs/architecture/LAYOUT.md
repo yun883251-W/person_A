@@ -12,6 +12,7 @@
 | `config.py`、`schemas.py` | 公共配置和跨模块数据结构 |
 | `agent/runner.py`、`preparation.py`、`model_loop.py` | 总编排、上下文准备、模型与工具循环 |
 | `agent/dialogue/` | 唯一会话意图入口、待补参数、业务状态及受保护派发 |
+| `agent/dialogue/semantic.py` | 共用受限 JSON 提议边界、知识追问改写；不调用工具，模型调用器由宿主注入 |
 | `agent/browser/` | B 站请求边界、语义识别与单动作执行 |
 | `agent/planning/` | 多步骤计划、依赖关系和同轮主题引用 |
 | `agent/planning/steps.py` | 单个计划步骤的上下文准备、模型/工具执行和答案校验；依赖显式传入，不提交会话 |

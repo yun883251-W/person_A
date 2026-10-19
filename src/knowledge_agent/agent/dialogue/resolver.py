@@ -414,11 +414,12 @@ def resolve_dialogue(
                 transition = None
         return DialogueResolution(decision, transition)
 
-    if planner.should_plan(cleaned):
+    semantic_plan = settings.semantic_mode == "hybrid" and planner.semantic_plan_candidate(cleaned)
+    if planner.should_plan(cleaned) or semantic_plan:
         decision = _decision(
             intent=DialogueIntent.NEW_BUSINESS, revision=revision,
             execution_mode=ExecutionMode.PLAN,
-            reason_code="explicit_multi_task", raw_plan_request=question,
+            reason_code="semantic_plan_candidate" if semantic_plan else "explicit_multi_task", raw_plan_request=question,
         )
         transition = None
         if state is not None and state.pending is not None:
@@ -529,7 +530,8 @@ def resolve_dialogue(
         decision.intent is DialogueIntent.NEW_BUSINESS
         and decision.business_type is BusinessType.KNOWLEDGE
         and focus is not None and focus.business_type is BusinessType.KNOWLEDGE
-        and classified.reason_code == "knowledge_followup"
+        and (classified.reason_code in {"knowledge_followup", "knowledge_followup_semantic"}
+             or classified.reason_code.startswith("followup_semantic_"))
     ):
         decision = _decision(
             intent=DialogueIntent.CONTINUE_BUSINESS,
