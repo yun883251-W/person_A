@@ -10,6 +10,7 @@ from typing import Literal
 class IntentKind(str, Enum):
     """支持的意图类别。"""
 
+    CHAT = "chat"
     KNOWLEDGE = "knowledge"
     GREETING = "greeting"
     SCOPE = "scope"

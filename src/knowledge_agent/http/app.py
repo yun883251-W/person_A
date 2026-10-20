@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..config import PROJECT_ROOT
 from .errors import register_error_handlers
-from .routes import chat, knowledge, sessions, system
+from .routes import chat, knowledge, sessions, system, profile
 from .runtime import RuntimeFactory, ServiceRuntime
 
 LOCAL_API_HOST = "127.0.0.1"
@@ -92,6 +92,7 @@ def create_app(
     knowledge.register_routes(application)
     sessions.register_routes(application)
     chat.register_routes(application)
+    profile.register_routes(application)
     return application
 
 

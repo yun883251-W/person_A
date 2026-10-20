@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Response, status
 from datetime import datetime, timezone
+from pydantic import BaseModel, ConfigDict, Field
+from knowledge_agent.session.store import SessionNotFoundError, SessionSummaryConflictError
+from knowledge_agent.session.memory import safe_summary_text
 
 from ...agent.dialogue.contracts import empty_business_state, public_business_state
 
@@ -23,8 +26,39 @@ from ..schemas import (
 from ..serialization import _session_response, _turn_response
 
 
+class MemoryWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    summary: str = Field(max_length=2000, strict=True)
+    expected_turn_no: int = Field(ge=0, le=9223372036854775806, strict=True)
+    expected_updated_at: str | None = Field(max_length=128, strict=True)
+
+
 def register_routes(application: FastAPI) -> None:
     """注册会话与持久化历史相关端点。"""
+    @application.get("/sessions/{session_id}/memory", summary="读取可编辑记忆及版本")
+    async def read_memory(session_id: SessionId):
+        runtime: ServiceRuntime = application.state.runtime
+        try:
+            return await runtime.read_store(lambda store: store.memory_snapshot(session_id))
+        except SessionNotFoundError:
+            raise HTTPException(404, "Session not found") from None
+
+    @application.post("/sessions/{session_id}/memory", status_code=204, response_class=Response,
+                      summary="替换或遗忘会话记忆，保留聊天记录")
+    async def write_memory(session_id: SessionId, body: MemoryWrite):
+        runtime: ServiceRuntime = application.state.runtime
+        values = body.model_dump()
+        values["summary"] = safe_summary_text(body.summary, max_chars=2000)
+        try:
+            await runtime.replace_memory(session_id, **values)
+        except SessionNotFoundError:
+            raise HTTPException(404, "Session not found") from None
+        except SessionSummaryConflictError:
+            raise HTTPException(409, "记忆或聊天已更新，请重新读取后再保存。") from None
+        except ValueError:
+            raise HTTPException(422, "记忆内容无效；非空记忆需要已有聊天记录。") from None
+        return Response(status_code=204)
+
     @application.post(
         "/sessions",
         response_model=SessionResponse,

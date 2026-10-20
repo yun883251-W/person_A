@@ -73,6 +73,7 @@ class CreateSessionRequest(_PublicModel):
 
 
 class AskRequest(_PublicModel):
+    response_mode: Literal["auto", "knowledge", "chat"] = "auto"
     question: str = Field(
         min_length=1,
         max_length=MAX_QUESTION_LENGTH,
@@ -150,11 +151,15 @@ class TraceEventResponse(_PublicModel):
     tool_name: str | None = None
     tool_call_id: str | None = None
     result_count: int | None = Field(default=None, ge=0, strict=True)
+    history_turns: int | None = Field(default=None, ge=0, strict=True)
+    dropped_turns: int | None = Field(default=None, ge=0, strict=True)
+    summary_chars: int | None = Field(default=None, ge=0, strict=True)
+    memory_chars: int | None = Field(default=None, ge=0, strict=True)
     index_version: str | None = None
     error_code: str | None = None
     decision_source: TraceDecisionSource | None = None
     intent_kind: TraceIntentKind | None = None
-    route_kind: Literal["knowledge", "mcp", "direct"] | None = None
+    route_kind: Literal["knowledge", "mcp", "direct", "chat"] | None = None
     reason_code: str | None = None
     skill_mode: TraceSkillMode | None = None
     selected_skill_id: str | None = None
@@ -207,7 +212,7 @@ class TurnTraceResponse(_PublicModel):
 
 
 class RouteSummaryResponse(_PublicModel):
-    route: Literal["knowledge", "mcp", "direct"]
+    route: Literal["knowledge", "mcp", "direct", "chat"]
     intent: TraceIntentKind
     decision_source: TraceDecisionSource
     reason_code: str

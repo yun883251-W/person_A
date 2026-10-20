@@ -286,7 +286,7 @@ def _knowledge_history_questions(
             route = route.value
         if isinstance(kind, Enum):
             kind = kind.value
-        if route not in (None, "knowledge") or kind not in (None, "knowledge"):
+        if route not in (None, "knowledge", "chat") or kind not in (None, "knowledge", "chat"):
             continue
 
         question = _history_value(turn, "question")

@@ -47,7 +47,7 @@ def register_routes(application: FastAPI) -> None:
     ) -> AnswerResponse:
         runtime: ServiceRuntime = application.state.runtime
         try:
-            skill_options: dict[str, Any] = {}
+            skill_options: dict[str, Any] = {"response_mode": request.response_mode}
             if request.skill_id is not None:
                 skill_options["skill_id"] = request.skill_id
             if request.skill_mode is not None:

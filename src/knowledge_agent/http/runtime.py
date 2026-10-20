@@ -310,27 +310,30 @@ class ServiceRuntime:
         *,
         skill_id: str | None = None,
         skill_mode: TraceSkillMode | None = None,
+        response_mode: str = "auto",
     ) -> Any | None:
         """在已有的持久化会话中提出一个问题。"""
         return await self._wait_for_future(self.submit_ask_session(
-            session_id, question, skill_id=skill_id, skill_mode=skill_mode,
+            session_id, question, skill_id=skill_id, skill_mode=skill_mode, response_mode=response_mode,
         ))
 
     def submit_ask_session(
         self, session_id: str, question: str, *,
         skill_id: str | None = None,
         skill_mode: TraceSkillMode | None = None,
+        response_mode: str = "auto",
         progress_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> Future[Any]:
         """只提交一次；JSON 与 SSE 共用工作线程归属和加锁策略。"""
         return self.submit(
             self._ask_session_on_worker, session_id, question, skill_id, skill_mode,
-            progress_observer,
+            response_mode, progress_observer,
         )
 
     def _ask_session_on_worker(
         self, session_id: str, question: str, skill_id: str | None = None,
         skill_mode: TraceSkillMode | None = None,
+        response_mode: str = "auto",
         progress_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> Any | None:
         self._require_worker_thread()
@@ -341,7 +344,7 @@ class ServiceRuntime:
         with observe_trace_progress(progress_observer):
             application.resume_session(session_id)
             try:
-                options: dict[str, Any] = {"skill_id": skill_id}
+                options: dict[str, Any] = {"skill_id": skill_id, "response_mode": response_mode}
                 if skill_mode is not None:
                     options["skill_mode"] = skill_mode
                 return application.ask(question, **options)
@@ -358,6 +361,17 @@ class ServiceRuntime:
             return store.load_turns(session_id, limit=limit, offset=offset)
 
         return await self.read_store(read_turns)
+
+    async def replace_memory(self, session_id: str, **values) -> None:
+        """与问答串行执行；成功后释放缓存，下次从持久化边界恢复。"""
+        await self.run(self._replace_memory_on_worker, session_id, values)
+
+    def _replace_memory_on_worker(self, session_id: str, values: dict) -> None:
+        self._require_worker_thread()
+        self.store.replace_memory(session_id, **values)
+        application = self._application
+        if application is not None and application.session_id == session_id:
+            application.end_session()
 
     async def clear_session(self, session_id: str) -> bool:
         """清空已持久化的问答轮，并释放对应的内存历史。"""

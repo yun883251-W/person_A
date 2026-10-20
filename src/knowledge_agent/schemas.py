@@ -69,8 +69,9 @@ AnswerStatus = Literal[
     "limit_reached",
 ]
 
-RouteName = Literal["knowledge", "mcp", "direct"]
+RouteName = Literal["knowledge", "mcp", "direct", "chat"]
 IntentName = Literal[
+    "chat",
     "knowledge",
     "mcp_tool",
     "greeting",

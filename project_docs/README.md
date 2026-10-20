@@ -4,10 +4,12 @@
 
 | 文档 | 用途 |
 | --- | --- |
+| [聊天与会话记忆](features/CHAT_MEMORY.md) | 回答模式、上下文预算、摘要、纠错与遗忘边界、待验收项 |
+| [用户画像与候选提取](features/USER_PROFILE.md) | 字段来源时间、人工确认、模型候选、接口与边界 |
 | [规划、检索与回答可靠性修复](archive/RELIABILITY_FIXES.md) | 本轮十项问题的处理、相关性门槛、回答状态协议、日志与未验证范围 |
 | [语义意图、多任务组合与长对话摘要](features/SEMANTIC_PLANS_MEMORY.md) | 新增能力、配置、调用预算、摘要存储和未执行的使用用例 |
 | [意图边界与任务规划](architecture/INTENT_PLANNING.md) | 知识咨询、工具指令边界，以及有限步骤规划与共享预算 |
-| [会话意图与任务承接开发清单](architecture/DIALOGUE_INTENT_TODO.md) | 一期已接入；记录单焦点/单 pending、SQLite v3、公开投影及剩余真实联调项 |
+| [会话意图与任务承接开发清单](architecture/DIALOGUE_INTENT_TODO.md) | 一期开发记录；记录单焦点/单 pending、当时的 SQLite v3（当前为 v4）、公开投影及剩余真实联调项 |
 | [自动 Skill 与检索策略](features/AUTO_SKILL_TODO.md) | 自动选择、技能专用检索、前后端接入和未执行的验收清单 |
 | [MBTI MCP 接入](features/MBTI_MCP.md) | 内置问卷、评分工具、会话答题及配置方式 |
 | [B 站搜索 MCP](features/BROWSER_MCP.md) | 自然语言提取搜索主题、固定 B 站链接、本机浏览器唤起及待验收项 |
@@ -32,6 +34,6 @@ person-a chat
 python -m uvicorn knowledge_agent.api:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-本轮没有执行上述命令，也没有运行测试、项目导入、编译、服务或模型联调。当前仅完成迁移和文本审阅。
+最近的聊天、记忆和画像功能仅完成开发与文档同步，未执行上述命令、测试、服务或模型联调。历史迁移与验收记录不代表当前版本已通过验证。
 
 返回 [项目 README](../README.md)。

@@ -29,6 +29,7 @@ from .dialogue.contracts import (
 
 
 class RouteKind(str, Enum):
+    CHAT = "chat"
     KNOWLEDGE = "knowledge"
     MCP = "mcp"
     DIRECT = "direct"
@@ -43,6 +44,7 @@ class RouteDecision:
 
 
 _ROUTE_BY_INTENT = {
+    IntentKind.CHAT: RouteKind.CHAT,
     IntentKind.KNOWLEDGE: RouteKind.KNOWLEDGE,
     IntentKind.MCP_TOOL: RouteKind.MCP,
     IntentKind.GREETING: RouteKind.DIRECT,

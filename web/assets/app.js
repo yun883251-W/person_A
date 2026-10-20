@@ -8,7 +8,7 @@
     "session-search", "session-list", "load-more-sessions", "refresh-sessions",
     "service-status", "current-title", "session-subtitle", "refresh-history",
     "clear-session", "delete-session", "welcome", "conversation", "conversation-scroll",
-    "composer-form", "question", "skill-select", "send-button", "composer-hint", "char-count", "mbti-start",
+    "composer-form", "question", "response-mode", "skill-select", "send-button", "composer-hint", "char-count", "mbti-start",
     "notice", "notice-text", "notice-dismiss", "confirm-dialog", "confirm-title",
     "confirm-description", "confirm-cancel", "confirm-accept", "knowledge-open",
     "knowledge-dialog", "knowledge-close", "knowledge-message", "knowledge-refresh",
@@ -20,6 +20,8 @@
     "knowledge-preview-page", "knowledge-preview-jump-form", "knowledge-preview-line",
     "knowledge-preview-jump-button", "knowledge-preview-reload",
     "session-summary", "session-summary-meta", "session-summary-content", "session-summary-refresh",
+    "memory-open", "memory-dialog", "memory-text", "memory-message",
+    "memory-reload", "memory-forget", "memory-close", "memory-save",
   ].map((id) => [id, byId(id)]));
   const PAGE_SIZE = 100;
   const PREVIEW_PAGE_SIZE = 200;
@@ -34,6 +36,7 @@
     knowledgePreviewPath: null, knowledgePreview: null, knowledgePreviewRequest: null,
     knowledgePreviewReferenceHash: null, knowledgePreviewChanged: false,
     summaryRequestVersion: 0,
+    memorySnapshot: null, memoryBusy: false, memorySessionId: null,
     businessState: null,
     readOperation: false, activeSend: null, answerRevision: 0,
     drafts: new Map(), uncertainSessions: new Set(), unsavedAnswers: new Map(),
@@ -691,6 +694,8 @@
   }
 
   const traceStageLabels = {
+    memory: "组装会话记忆",
+    profile: "加载学习画像",
     classify: "理解问题", intent: "识别意图", route: "选择执行路线", initial_retrieval: "初始检索", skill_prepare: "准备 Skill",
     model: "模型调用", tool: "工具调用", finalize: "整理回答与核验引用",
     planning: "任务规划", plan_step: "执行计划步骤",
@@ -702,14 +707,27 @@
   const skillModeLabels = { off: "普通问答", auto: "自动选择", manual: "手动指定" };
   const strategyLabels = { default: "普通检索", concept: "概念讲解检索", comparison: "比较对象检索", code: "代码 API 检索" };
   const traceIntentKindLabels = {
+    chat: "普通聊天",
     knowledge: "知识问答", greeting: "问候", scope: "能力范围", needs_clarification: "需要澄清",
     out_of_scope: "超出范围", mcp_tool: "MCP 工具请求",
   };
-  const traceRouteKindLabels = { knowledge: "知识问答", mcp: "MCP 工具", direct: "直接回复" };
+  const traceRouteKindLabels = { chat: "普通聊天（未检索知识库）", knowledge: "知识问答", mcp: "MCP 工具", direct: "直接回复" };
   const traceSkillLabels = {
     "concept-explanation": "概念讲解", "concept-comparison": "概念比较", "code-explanation": "代码解读",
   };
   const traceReasonLabels = {
+    chat_completed: "聊天完成（未检索知识库）", chat_manual: "手动选择普通聊天",
+    chat_rule_match: "规则识别为聊天", chat_semantic_match: "模型识别为聊天",
+    chat_classifier_fallback: "聊天分类不可用，保守进入知识流程",
+    chat_budget_exhausted: "聊天预算不足", chat_invalid_response: "聊天响应无效",
+    knowledge_manual: "手动选择知识库",
+    memory_ready: "记忆已按上下文预算准备",
+    memory_trimmed: "上下文超限，已裁剪可选历史或摘要",
+    profile_injected: "已注入相关学习偏好",
+    profile_disabled: "已关闭学习画像",
+    profile_empty: "没有相关画像信息",
+    profile_load_failed: "画像读取失败，继续普通回答",
+    profile_budget_skipped: "上下文空间不足，已省略画像",
     video_results_read: "已读取视频标题和链接",
     browser_result_limit_invalid: "视频数量应为1至10个",
     browser_dependency_missing: "未安装浏览器读取依赖",
@@ -943,10 +961,18 @@
     if (traceText(event.selected_skill_id, "")) fields.push(["选中技能", traceSkill(event.selected_skill_id, "普通问答")]);
     if (traceText(event.strategy_id, "")) fields.push(["检索策略", traceLabel(strategyLabels, event.strategy_id)]);
     if (Number.isInteger(event.result_count) && event.result_count >= 0) {
-      const label = ["finalize", "plan_step"].includes(event.stage) ? "最终接受的引用数量" : "返回结果数量";
+      const label = event.stage === "profile" ? "注入字段数量" : ["finalize", "plan_step"].includes(event.stage) ? "最终接受的引用数量" : "返回结果数量";
       fields.push([label, traceNumber(event.result_count, " 个")]);
     }
     if (traceText(event.index_version, "")) fields.push(["阶段索引版本", event.index_version]);
+    for (const [key, label, unit] of [
+      ["history_turns", "注入历史", " 轮"],
+      ["dropped_turns", "预算裁剪历史", " 轮"],
+      ["summary_chars", "注入摘要（含包装）", " 字符"],
+      ["memory_chars", "历史背景总量（含包装，不含画像）", " 字符"],
+    ]) {
+      if (Number.isInteger(event[key]) && event[key] >= 0) fields.push([label, traceNumber(event[key], unit)]);
+    }
     if (traceText(event.tool_call_id, "")) fields.push(["工具调用 ID", event.tool_call_id]);
     if (traceText(event.decision_source, "")) {
       fields.push(["决策来源", traceLabel(traceDecisionSourceLabels, event.decision_source)]);
@@ -1413,6 +1439,7 @@
   }
 
   function resetSummaryPanel() {
+    state.memorySnapshot = null;
     state.summaryRequestVersion += 1;
     ui["session-summary"].open = false;
     ui["session-summary-meta"].textContent = "展开后读取当前会话已保存的摘要。";
@@ -1428,15 +1455,62 @@
     try {
       const result = await request(`/sessions/${encodeURIComponent(id)}/summary`);
       if (state.current?.session_id !== id || version !== state.summaryRequestVersion) return;
-      ui["session-summary-content"].textContent = result.summary || "尚未生成知识对话摘要。";
+      ui["session-summary-content"].textContent = result.summary || "当前没有会话摘要（可能尚未生成，或已被清空）。";
       ui["session-summary-meta"].textContent = result.covered_turn_no
-        ? `已整理至第 ${result.covered_turn_no} 轮；仅归纳知识问答，完整历史仍保留。`
-        : "较早的知识问答会在超出最近历史窗口后归纳；也可能尚未启用或更新未完成。";
+        ? `记忆处理至第 ${result.covered_turn_no} 轮（包含已归纳或主动遗忘的轮次）；完整历史仍保留。`
+        : "较早的知识问答和聊天会在超出最近历史窗口后归纳；也可能尚未启用或更新未完成。";
     } catch (error) {
       if (state.current?.session_id !== id || version !== state.summaryRequestVersion) return;
       ui["session-summary-meta"].textContent = `摘要暂未刷新：${error.message}`;
     } finally {
       setReadOperation(false);
+    }
+  }
+
+  function memoryControls(busy) {
+    state.memoryBusy = busy;
+    for (const id of ["memory-reload", "memory-close", "memory-text"]) ui[id].disabled = busy;
+    for (const id of ["memory-save", "memory-forget"]) ui[id].disabled = busy || !state.memorySnapshot;
+  }
+
+  async function loadEditableMemory() {
+    const id = state.memorySessionId;
+    if (!id || chatControlsLocked() || state.memoryBusy) return;
+    state.memorySnapshot = null;
+    memoryControls(true); setReadOperation(true);
+    ui["memory-message"].textContent = "正在读取…";
+    try {
+      const value = await request(`/sessions/${encodeURIComponent(id)}/memory`);
+      if (state.current?.session_id !== id) return;
+      state.memorySnapshot = value;
+      ui["memory-text"].value = value.summary;
+      ui["memory-message"].textContent = `当前共 ${value.expected_turn_no} 轮；前 ${value.excluded_through} 轮已排除出记忆。保存会替换背景并排除截至当前的全部旧轮次。`;
+    } catch (error) {
+      ui["memory-message"].textContent = `读取失败：${error.message}`;
+    } finally { setReadOperation(false); memoryControls(false); }
+  }
+
+  async function saveEditableMemory(forget) {
+    const snapshot = state.memorySnapshot;
+    if (!snapshot || state.memoryBusy || chatControlsLocked() || state.current?.session_id !== snapshot.session_id) return;
+    if (!window.confirm(forget ? "清空当前会话记忆，并停止注入截至现在的全部旧对话？聊天记录与学习画像会保留。" : "用编辑后的内容替换会话记忆，并停止注入截至现在的旧对话？")) return;
+    memoryControls(true); setOperation("memory");
+    ui["memory-message"].textContent = "正在保存…";
+    try {
+      await request(`/sessions/${encodeURIComponent(snapshot.session_id)}/memory`, {
+        method: "POST", body: { summary: forget ? "" : ui["memory-text"].value,
+          expected_turn_no: snapshot.expected_turn_no, expected_updated_at: snapshot.expected_updated_at },
+      });
+      state.summaryRequestVersion += 1;
+      ui["session-summary-content"].textContent = "记忆已更新，请刷新查看。";
+      ui["session-summary-meta"].textContent = "此前轮次已排除出自动记忆；新对话仍会积累记忆。";
+      ui["memory-message"].textContent = "已保存。旧聊天保留供查看；后续回答使用新的记忆边界。可重新读取确认内容。";
+      if (forget) ui["memory-text"].value = "";
+    } catch (error) {
+      ui["memory-message"].textContent = `保存未确认：${error.message} 请重新读取确认状态后再编辑，不要重复提交。`;
+    } finally {
+      state.memorySnapshot = null;
+      setOperation(null); memoryControls(false);
     }
   }
 
@@ -1466,12 +1540,14 @@
     const busy = chatControlsLocked();
     ui["session-summary"].hidden = !state.current;
     ui["session-summary-refresh"].disabled = readingLocked() || !state.current;
+    ui["memory-open"].disabled = chatControlsLocked() || !state.current;
     ui["new-session"].disabled = busy;
     for (const id of ["clear-session", "delete-session"]) ui[id].disabled = busy || !state.current;
     for (const id of ["refresh-sessions", "load-more-sessions"]) ui[id].disabled = readingLocked();
     ui["refresh-history"].disabled = readingLocked() || !state.current;
     ui.question.disabled = state.readOperation || Boolean(state.operation && state.operation !== "send");
-    ui["skill-select"].disabled = ui.question.disabled;
+    ui["response-mode"].disabled = ui.question.disabled;
+    ui["skill-select"].disabled = ui.question.disabled || ui["response-mode"].value === "chat";
     ui["mbti-start"].disabled = busy || state.needsRefresh;
     ui["send-button"].disabled = busy || state.needsRefresh || !ui.question.value.trim();
     ui["send-button"].setAttribute("aria-label", state.operation === "send" ? "正在生成回答" : "发送问题");
@@ -1581,7 +1657,8 @@
     const question = command === null ? ui.question.value.trim() : command;
     if (!question || chatControlsLocked() || state.needsRefresh) return;
     if (question.length > 10000) { notice(errorMessages.validation_error); return; }
-    const choice = command === null ? ui["skill-select"].value : "";
+    const responseMode = command === null ? ui["response-mode"].value : "auto";
+    const choice = command === null && responseMode !== "chat" ? ui["skill-select"].value : "";
     const skillMode = choice === "auto" ? "auto" : choice ? "manual" : "off";
     const skillId = skillMode === "manual" ? choice : null;
     // 先消费已提交草稿，此后的输入属于下一条消息，不在请求结束时清空。
@@ -1601,7 +1678,7 @@
       updateControls(); fitInput(); renderConversation();
       submitted = true;
       const result = await streamAnswer(`/sessions/${encodeURIComponent(sessionId)}/messages/stream`,
-        { question, skill_mode: skillMode, skill_id: skillId }, receiveProgress);
+        { question, skill_mode: skillMode, skill_id: skillId, response_mode: responseMode }, receiveProgress);
       if (state.activeSend) state.activeSend.completed = true;
       state.answerRevision += 1;
       state.uncertainSessions.delete(sessionId);
@@ -1712,6 +1789,7 @@
 
   ui["composer-form"].addEventListener("submit", sendQuestion);
   ui["mbti-start"].addEventListener("click", () => sendAssessmentCommand("开始 MBTI 测试"));
+  ui["response-mode"].addEventListener("change", updateControls);
   ui["skill-select"].addEventListener("change", () => { state.assessmentModeHint = false; updateControls(); });
   ui.question.addEventListener("input", () => { fitInput(); updateControls(); });
   ui.question.addEventListener("keydown", (event) => {
@@ -1727,6 +1805,17 @@
   ui["load-more-sessions"].addEventListener("click", () => refreshSessions(true));
   ui["refresh-sessions"].addEventListener("click", () => refreshSessions());
   ui["refresh-history"].addEventListener("click", refreshHistory);
+  ui["memory-open"].addEventListener("click", () => {
+    if (chatControlsLocked() || !state.current) return;
+    state.memorySessionId = state.current.session_id;
+    ui["memory-dialog"].showModal();
+    void loadEditableMemory();
+  });
+  ui["memory-reload"].addEventListener("click", loadEditableMemory);
+  ui["memory-save"].addEventListener("click", () => void saveEditableMemory(false));
+  ui["memory-forget"].addEventListener("click", () => void saveEditableMemory(true));
+  ui["memory-close"].addEventListener("click", () => { if (!state.memoryBusy) ui["memory-dialog"].close(); });
+  ui["memory-dialog"].addEventListener("cancel", (event) => { if (state.memoryBusy) event.preventDefault(); });
   ui["session-summary-refresh"].addEventListener("click", refreshSummary);
   ui["session-summary"].addEventListener("toggle", () => {
     if (ui["session-summary"].open) void refreshSummary();

@@ -230,7 +230,7 @@ class KnowledgeAgentApplication:
             self._finish_operation()
 
     def ask(
-        self, question: str, *, skill_id: str | None = None, skill_mode: str | None = None,
+        self, question: str, *, skill_id: str | None = None, skill_mode: str | None = None, response_mode: str = "auto",
     ) -> AnswerResult:
         """在活动会话中执行一个完整轮次。"""
         self._begin_operation("ask")
@@ -248,7 +248,7 @@ class KnowledgeAgentApplication:
                 question,
                 session_id=session_id,
                 skill_id=skill_id,
-                skill_mode=skill_mode,
+                skill_mode=skill_mode, response_mode=response_mode,
             )
             if result.status not in {"service_error", "limit_reached"}:
                 self._maintain_session_memory(session_id)

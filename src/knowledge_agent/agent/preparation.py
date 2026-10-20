@@ -900,6 +900,11 @@ def prepare_model_turn(
         raise ValueError("max_retries must be a non-negative integer")
 
     state = prepared.state
+    from knowledge_agent.profile.service import knowledge_profile, PROFILE_INSTRUCTION
+    profile_event = state.trace_recorder.start_event("profile", "program", step_id=state.step_id) if state.trace_recorder else None
+    profile_text, profile_count, profile_reason = knowledge_profile(state.original_question)
+    from knowledge_agent.session.context import MemoryContext
+    memory = MemoryContext(list(history), profile_text, profile_count, profile_reason, question=state.original_question)
     # 已准备的知识轮次拥有自己的选择。检索策略已经运行之后，
     # 后续调用方不能再替换指令。
     frozen = state.selected_skill
@@ -984,7 +989,9 @@ def prepare_model_turn(
                     "如果资料不足，请明确说明当前知识库资料不足以回答这个问题。"
                 )
             return (
-                SystemMessage(content=turn_prompt), *history,
+                SystemMessage(content=turn_prompt + PROFILE_INSTRUCTION),
+                *((HumanMessage(content=memory.profile),) if memory.profile else ()),
+                *memory.history,
                 HumanMessage(content=(
                     f"USER_QUESTION\n{state.original_question}\nEND_USER_QUESTION\n\n"
                     + evidence + strategy_text + reminder
@@ -999,6 +1006,8 @@ def prepare_model_turn(
             # 实际包装层、系统/Skill Prompt 和历史各计一次。
             # 只整块丢弃证据片段；绝不截断源行，
             # 也不为模型请求中省略的内容保留引用 ID。
+            memory.fit(lambda: build_messages(evidence), max_context_chars)
+            messages = build_messages(evidence)
             while sum(len(str(message.content)) for message in messages) > max_context_chars:
                 overflow = sum(len(str(message.content)) for message in messages) - max_context_chars
                 evidence_limit = len(evidence) - overflow
@@ -1021,6 +1030,12 @@ def prepare_model_turn(
                     )
                 messages = build_messages(evidence)
             state.context_chars = sum(len(str(message.content)) for message in messages)
+        if state.trace_recorder is not None and profile_event is not None:
+            state.trace_recorder.finish_event(
+                profile_event, "success" if memory.profile else "skipped",
+                result_count=memory.profile_count, reason_code=memory.profile_reason,
+            )
+        memory.record(state.trace_recorder, step_id=state.step_id)
         state.messages[:] = messages
     except Exception:  # noqa: BLE001 - record the boundary, then preserve the exception
         if (

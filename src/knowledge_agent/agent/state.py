@@ -80,10 +80,14 @@ class ConversationHistory:
         这个读取时投影覆盖已恢复的会话，无需迁移。
         """
         messages: list[BaseMessage] = []
+        recent_chat = {id(turn) for turn in self.turns(session_id)[-2:] if turn.route == "chat"}
         for turn in self.turns(session_id):
             if route is not None and turn.route != route.value:
-                continue
-            if turn.route == RouteKind.KNOWLEDGE.value:
+                if not (route is RouteKind.KNOWLEDGE and id(turn) in recent_chat):
+                    continue
+            if turn.route in {"knowledge", "chat"}:
+                if turn.result.assessment_state is not None or turn.result.status in {"service_error", "limit_reached"}:
+                    continue
                 answer = historical_answer_text(turn.result.answer, turn.result.sources)
                 messages.extend((
                     HumanMessage(content=turn.question),

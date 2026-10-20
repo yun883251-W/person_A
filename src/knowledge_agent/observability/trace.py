@@ -44,6 +44,8 @@ _TURN_INTERRUPTED = "turn_interrupted"
 # 第一阶段：数据协议与收集器。
 
 TraceStage = Literal[
+    "memory",
+    "profile",
     "planning",
     "plan_step",
     "classify",
@@ -63,9 +65,9 @@ TraceOutcome = Literal["completed", "failed", "interrupted"]
 TraceDecisionSource = Literal["rules", "model", "fallback", "manual", "disabled"]
 TraceSkillMode = Literal["off", "auto", "manual"]
 TraceIntentKind = Literal[
-    "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
+    "chat", "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ]
-TraceRouteKind = Literal["knowledge", "mcp", "direct"]
+TraceRouteKind = Literal["knowledge", "mcp", "direct", "chat"]
 
 _PROGRESS_OBSERVER: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
     "trace_progress_observer", default=None,
@@ -107,6 +109,10 @@ class TraceEvent:
     tool_name: str | None = None
     tool_call_id: str | None = None
     result_count: int | None = None
+    history_turns: int | None = None
+    dropped_turns: int | None = None
+    summary_chars: int | None = None
+    memory_chars: int | None = None
     index_version: str | None = None
     error_code: str | None = None
     decision_source: TraceDecisionSource | None = None
@@ -272,6 +278,10 @@ class TraceRecorder:
         status: TraceStatus,
         *,
         result_count: int | None = None,
+        history_turns: int | None = None,
+        dropped_turns: int | None = None,
+        summary_chars: int | None = None,
+        memory_chars: int | None = None,
         index_version: str | None = None,
         error_code: str | None = None,
         decision_source: TraceDecisionSource | None = None,
@@ -312,6 +322,10 @@ class TraceRecorder:
             tool_name=pending.tool_name,
             tool_call_id=pending.tool_call_id,
             result_count=result_count,
+            history_turns=history_turns,
+            dropped_turns=dropped_turns,
+            summary_chars=summary_chars,
+            memory_chars=memory_chars,
             index_version=self._bounded(index_version),
             error_code=self._bounded(error_code),
             decision_source=decision_source,
@@ -441,17 +455,17 @@ _EVENT_FIELDS = {
     "index_version",
     "error_code",
 }
-_OPTIONAL_EVENT_FIELDS = {"decision_source", "intent_kind", "route_kind", "reason_code", "skill_mode", "selected_skill_id", "strategy_id", "step_id", "declared_status", "validation_status", "validation_reason", "supplied_source_count", "dialogue_action", "business_type", "execution_mode"}
-_TRACE_STAGES = frozenset(("planning", "plan_step", "classify", "intent", "route", "initial_retrieval", "skill_select", "skill_retrieval", "skill_prepare", "model", "tool", "finalize"))
+_OPTIONAL_EVENT_FIELDS = {"history_turns", "dropped_turns", "summary_chars", "memory_chars", "decision_source", "intent_kind", "route_kind", "reason_code", "skill_mode", "selected_skill_id", "strategy_id", "step_id", "declared_status", "validation_status", "validation_reason", "supplied_source_count", "dialogue_action", "business_type", "execution_mode"}
+_TRACE_STAGES = frozenset(("memory", "profile", "planning", "plan_step", "classify", "intent", "route", "initial_retrieval", "skill_select", "skill_retrieval", "skill_prepare", "model", "tool", "finalize"))
 _TRACE_INITIATORS = frozenset(("program", "model"))
 _TRACE_STATUSES = frozenset(("success", "empty", "error", "skipped"))
 _TRACE_OUTCOMES = frozenset(("completed", "failed", "interrupted"))
 _TRACE_DECISION_SOURCES = frozenset(("rules", "model", "fallback", "manual", "disabled"))
 _TRACE_SKILL_MODES = frozenset(("off", "auto", "manual"))
 _TRACE_INTENT_KINDS = frozenset((
-    "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
+    "chat", "knowledge", "greeting", "scope", "needs_clarification", "out_of_scope", "mcp_tool",
 ))
-_TRACE_ROUTE_KINDS = frozenset(("knowledge", "mcp", "direct"))
+_TRACE_ROUTE_KINDS = frozenset(("knowledge", "mcp", "direct", "chat"))
 _DIALOGUE_ACTIONS = frozenset(("new_business", "continue_business", "cancel_business", "pause_business", "resume_business", "chitchat", "unclear", "unsupported"))
 _BUSINESS_TYPES = frozenset(("knowledge", "bilibili_search", "mbti", "mcp_tool"))
 _EXECUTION_MODES = frozenset(("single", "plan"))
@@ -500,6 +514,10 @@ def _enum(value: Any, allowed: frozenset[str], label: str) -> str:
 
 def _event_to_dict(event: TraceEvent, label: str) -> dict[str, Any]:
     return {
+        "history_turns": _non_negative_int(event.history_turns, f"{label}.history_turns", nullable=True),
+        "dropped_turns": _non_negative_int(event.dropped_turns, f"{label}.dropped_turns", nullable=True),
+        "summary_chars": _non_negative_int(event.summary_chars, f"{label}.summary_chars", nullable=True),
+        "memory_chars": _non_negative_int(event.memory_chars, f"{label}.memory_chars", nullable=True),
         "sequence": _non_negative_int(event.sequence, f"{label}.sequence"),
         "stage": _enum(event.stage, _TRACE_STAGES, f"{label}.stage"),
         "initiator": _enum(event.initiator, _TRACE_INITIATORS, f"{label}.initiator"),
@@ -616,6 +634,10 @@ def trace_from_dict(value: Any) -> TurnTrace:
             raise ValueError("trace.events must be in strictly increasing sequence order")
         previous_sequence = sequence
         events.append(TraceEvent(
+            history_turns=_non_negative_int(item.get("history_turns"), f"{label}.history_turns", nullable=True),
+            dropped_turns=_non_negative_int(item.get("dropped_turns"), f"{label}.dropped_turns", nullable=True),
+            summary_chars=_non_negative_int(item.get("summary_chars"), f"{label}.summary_chars", nullable=True),
+            memory_chars=_non_negative_int(item.get("memory_chars"), f"{label}.memory_chars", nullable=True),
             sequence=sequence,
             stage=_enum(item["stage"], _TRACE_STAGES, f"{label}.stage"),
             initiator=_enum(item["initiator"], _TRACE_INITIATORS, f"{label}.initiator"),

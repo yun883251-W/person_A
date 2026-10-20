@@ -60,6 +60,7 @@
         </nav>
 
         <div class="sidebar-footer">
+          <button id="profile-open" class="knowledge-open" type="button">我的学习偏好 →</button>
           <button id="knowledge-open" class="knowledge-open" type="button">
             <svg class="icon" aria-hidden="true"><use href="#icon-book"/></svg>
             <span>管理知识库</span>
@@ -101,6 +102,7 @@
               <p id="session-summary-meta">展开后读取当前会话已保存的摘要。</p>
               <p id="session-summary-content" role="status" aria-live="polite"></p>
               <button id="session-summary-refresh" type="button">刷新摘要</button>
+              <button id="memory-open" type="button">纠正或清空会话记忆</button>
             </div>
           </details>
           <section id="welcome" class="welcome" aria-labelledby="welcome-title">
@@ -158,6 +160,13 @@
             <label class="visually-hidden" for="question">输入你的学习问题</label>
             <textarea id="question" name="question" rows="2" maxlength="10000" placeholder="有什么想深入了解的？" aria-describedby="composer-hint char-count"></textarea>
             <div class="composer-footer">
+              <label class="skill-picker" for="response-mode">对话模式
+                <select id="response-mode" aria-label="选择对话模式">
+                  <option value="auto">自动</option>
+                  <option value="knowledge">知识库</option>
+                  <option value="chat">普通聊天</option>
+                </select>
+              </label>
               <label class="skill-picker" for="skill-select">回答方式
                 <select id="skill-select" name="skill_id" aria-label="选择本轮回答技能">
                   <option value="">普通问答</option>
@@ -241,6 +250,50 @@
       </div>
     </dialog>
     <noscript><div class="noscript-notice">此页面需要启用 JavaScript 才能加载会话和发送问题。</div></noscript>
+    <dialog id="profile-dialog" aria-labelledby="profile-title">
+      <form id="profile-form">
+        <h2 id="profile-title">我的学习偏好</h2>
+        <p>本机所有会话共享，仅保存你手动填写的信息。不要填写密码或 API Key。</p>
+        <details>
+          <summary>从我的描述提取候选偏好</summary>
+          <p>可粘贴你在对话中对自身的描述。只分析这里的文本，不扫描全部聊天；每次点击调用一次当前配置的聊天模型。候选不会自动保存。</p>
+          <label>我的描述<textarea id="profile-statement" maxlength="3000" rows="3" placeholder="例如：我是 Python 初学者，平时喜欢先看例子再看原理。我使用 Windows。"></textarea></label>
+          <button id="profile-propose" type="button">提取候选</button>
+          <div id="profile-candidates" aria-live="polite"></div>
+        </details>
+        <label><input id="profile-enabled" type="checkbox"> 在知识问答和普通聊天中使用这些偏好</label>
+        <label>Python 基础<input name="python_level" maxlength="100" placeholder="例如：初学者，了解基本语法"></label>
+        <label>学习目标<textarea name="learning_goal" maxlength="400" rows="2" placeholder="例如：使用 LangChain 构建本地知识库"></textarea></label>
+        <label>回答方式<textarea name="preferred_style" maxlength="300" rows="2" placeholder="例如：先解释原理，再给代码示例"></textarea></label>
+        <label>开发环境<textarea name="development_environment" maxlength="300" rows="2" placeholder="例如：Windows、Python 3.11、Ollama"></textarea></label>
+        <label>学习进度<textarea name="learning_progress" maxlength="400" rows="2" placeholder="填写你的自述进度，不会自动判定是否掌握"></textarea></label>
+        <label>语言偏好<input name="preferred_language" maxlength="80" placeholder="例如：中文解释，保留英文术语"></label>
+        <p id="profile-message" role="status" aria-live="polite"></p>
+        <p>填写内容属于自述，不代表已验证掌握。修改字段或点击“确认仍有效”后保存，会更新该字段时间；仅切换开关不会更新时间。较久未确认的提醒不会自动删除或停用字段。</p>
+        <p>本轮要求与明确更正优先。清空画像不会删除聊天历史或摘要；旧偏好仍可能出现在会话记忆中，可在“早期对话摘要 → 纠正或清空会话记忆”处理。</p>
+        <div class="dialog-actions">
+          <button id="profile-reload" type="button">重新加载</button>
+          <button id="profile-clear" type="button">清空并关闭</button>
+          <button id="profile-close" type="button">关闭</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="memory-dialog" aria-labelledby="memory-title">
+      <h2 id="memory-title">纠正或清空会话记忆</h2>
+      <p>保存后，当前及更早的聊天只用于历史展示，不再作为回答背景。请在下面保留仍需记住的内容；后续新对话仍会积累记忆。</p>
+      <p>学习画像、MBTI 进度和待办业务不会被清空。要忘记个人偏好，还需在“我的学习偏好”中删除对应内容。</p>
+      <label for="memory-text">替换后的会话背景（最多 2000 字符）</label>
+      <textarea id="memory-text" maxlength="2000" rows="9" placeholder="当前主题、已讨论的结论、尚未解决的问题。不要填写密码或 API Key。"></textarea>
+      <p id="memory-message" role="status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="memory-reload" type="button">重新读取</button>
+        <button id="memory-forget" type="button">清空会话记忆</button>
+        <button id="memory-close" type="button">关闭</button>
+        <button id="memory-save" type="button">保存替换</button>
+      </div>
+    </dialog>
     <script src="/assets/app.js" defer></script>
+    <script src="/assets/profile.js" defer></script>
   </body>
 </html>

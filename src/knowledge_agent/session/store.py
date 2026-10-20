@@ -61,7 +61,7 @@ from knowledge_agent.agent.dialogue.contracts import (
 
 # 存储层及应用接入。
 
-DATABASE_SCHEMA_VERSION = 3
+DATABASE_SCHEMA_VERSION = 4
 MESSAGE_SERIALIZATION_VERSION = 1
 
 
@@ -293,6 +293,17 @@ class SessionStore(Protocol):
         """删除一个会话的轮次，同时保留其元数据。"""
         ...
 
+    def memory_snapshot(self, session_id: str) -> dict[str, Any]:
+        """读取可编辑的记忆、摘要版本和当前轮次边界。"""
+        ...
+
+    def replace_memory(
+        self, session_id: str, *, summary: str, expected_turn_no: int,
+        expected_updated_at: str | None,
+    ) -> None:
+        """显式替换记忆；旧轮次保留供展示，但不再自动注入。"""
+        ...
+
     def delete_session(self, session_id: str) -> bool:
         """删除一个会话及其所有轮次。"""
         ...
@@ -397,7 +408,7 @@ class SQLiteSessionStore:
                     )
                     """
                 )
-            elif schema_version not in (1, 2, DATABASE_SCHEMA_VERSION):
+            elif schema_version not in (1, 2, 3, DATABASE_SCHEMA_VERSION):
                 raise SessionStoreSchemaError(
                     "Unsupported session database schema version: "
                     f"expected {DATABASE_SCHEMA_VERSION}, got {schema_version}"
@@ -433,6 +444,14 @@ class SQLiteSessionStore:
                     )
                     """
                 )
+            if schema_version in (0, 1, 2, 3):
+                connection.execute("""
+                    CREATE TABLE session_memory_boundaries (
+                        session_id TEXT PRIMARY KEY,
+                        excluded_through INTEGER NOT NULL CHECK (excluded_through >= 0),
+                        FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                    )
+                """)
                 connection.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             connection.commit()
         except BaseException as exc:
@@ -887,13 +906,13 @@ class SQLiteSessionStore:
                     SELECT turn_id, turn_no, question, retrieval_question,
                            messages_json, result_json, serialization_version
                     FROM turns
-                    WHERE session_id = ?
+                    WHERE session_id = ? AND turn_no > COALESCE((SELECT excluded_through FROM session_memory_boundaries WHERE session_id = ?), 0)
                     ORDER BY turn_no DESC
                     LIMIT ?
                 )
                 ORDER BY turn_no ASC
                 """,
-                (session_id, max_history_turns),
+                (session_id, session_id, max_history_turns),
             ).fetchall()
         except SessionStoreError:
             raise
@@ -988,7 +1007,7 @@ class SQLiteSessionStore:
                 """
                 SELECT turn_id, turn_no, question, result_json, serialization_version
                 FROM turns
-                WHERE session_id = ? AND turn_no > ? AND turn_no < (
+                WHERE session_id = ? AND turn_no > MAX(?, COALESCE((SELECT excluded_through FROM session_memory_boundaries WHERE session_id = ?), 0)) AND turn_no < (
                     SELECT MIN(turn_no) FROM (
                         SELECT turn_no FROM turns WHERE session_id = ?
                         ORDER BY turn_no DESC LIMIT ?
@@ -996,7 +1015,7 @@ class SQLiteSessionStore:
                 )
                 ORDER BY turn_no ASC LIMIT ?
                 """,
-                (session_id, after_turn_no, session_id, max_history_turns, limit),
+                (session_id, after_turn_no, session_id, session_id, max_history_turns, limit),
             ).fetchall()
             result: list[SummaryTurn] = []
             for row in rows:
@@ -1006,7 +1025,7 @@ class SQLiteSessionStore:
                 route = answer.routing.route if answer.routing is not None else None
                 eligible = (
                     answer.status in {"success", "insufficient_evidence"}
-                    and (route == "knowledge" or route is None and bool(answer.sources))
+                    and (route in {"knowledge", "chat"} or route is None and bool(answer.sources))
                     and answer.assessment_state is None and answer.plan is None
                 )
                 result.append(SummaryTurn(
@@ -1103,6 +1122,57 @@ class SQLiteSessionStore:
             row["covered_turn_no"], row["updated_at"],
         )
 
+    def memory_snapshot(self, session_id: str) -> dict[str, Any]:
+        """编辑用快照；轮数和摘要版本在同一读事务内取得。"""
+        with self._transaction(operation="read memory") as connection:
+            self._require_session(connection, session_id)
+            record = self.load_session_summary(session_id)
+            latest = connection.execute(
+                "SELECT COALESCE(MAX(turn_no), 0) FROM turns WHERE session_id = ?", (session_id,),
+            ).fetchone()[0]
+            boundary = connection.execute(
+                "SELECT excluded_through FROM session_memory_boundaries WHERE session_id = ?", (session_id,),
+            ).fetchone()
+            return {"session_id": session_id, "summary": record.summary if record else "",
+                    "expected_updated_at": record.updated_at if record else None,
+                    "expected_turn_no": latest, "excluded_through": boundary[0] if boundary else 0}
+
+    def replace_memory(
+        self, session_id: str, *, summary: str, expected_turn_no: int,
+        expected_updated_at: str | None,
+    ) -> None:
+        """显式替换记忆并阻止此前聊天重新注入；保留展示历史和业务状态。"""
+        self._validate_summary_text(summary)
+        if type(expected_turn_no) is not int or expected_turn_no < 0:
+            raise ValueError("invalid memory turn boundary")
+        with self._transaction(write=True, operation="replace memory") as connection:
+            self._require_session(connection, session_id)
+            latest = connection.execute(
+                "SELECT turn_id, turn_no FROM turns WHERE session_id = ? ORDER BY turn_no DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            current = connection.execute(
+                "SELECT updated_at FROM session_summaries WHERE session_id = ?", (session_id,),
+            ).fetchone()
+            turn_no = latest["turn_no"] if latest else 0
+            if turn_no != expected_turn_no or (current["updated_at"] if current else None) != expected_updated_at:
+                raise SessionSummaryConflictError("Memory changed; reload before saving")
+            if not latest and summary:
+                raise ValueError("Start a conversation before saving its memory")
+            connection.execute(
+                "INSERT INTO session_memory_boundaries VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET excluded_through=excluded.excluded_through",
+                (session_id, turn_no),
+            )
+            if latest:
+                connection.execute("""
+                    INSERT INTO session_summaries
+                    (session_id, summary, covered_turn_id, covered_turn_no, summary_version, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET summary=excluded.summary,
+                    covered_turn_id=excluded.covered_turn_id, covered_turn_no=excluded.covered_turn_no,
+                    updated_at=excluded.updated_at
+                """, (session_id, summary, latest["turn_id"], turn_no, datetime.now(timezone.utc).isoformat()))
+
     def clear_session(self, session_id: str) -> bool:
         """删除一个会话的所有轮次，同时保留其元数据。"""
         if not isinstance(session_id, str) or not session_id.strip():
@@ -1115,6 +1185,7 @@ class SQLiteSessionStore:
             )
             if updated.rowcount == 0:
                 return False
+            connection.execute("DELETE FROM session_memory_boundaries WHERE session_id = ?", (session_id,))
             connection.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
             connection.execute("DELETE FROM session_business_states WHERE session_id = ?", (session_id,))
             connection.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
@@ -1580,10 +1651,10 @@ def _result_from_json(value: str) -> AnswerResult:
         decision_source = _require_string(
             item["decision_source"], "result_json.routing.decision_source"
         )
-        if route not in {"knowledge", "mcp", "direct"}:
+        if route not in {"knowledge", "mcp", "direct", "chat"}:
             raise ValueError("Invalid result_json.routing.route")
         if intent not in {
-            "knowledge", "mcp_tool", "greeting", "scope",
+            "chat", "knowledge", "mcp_tool", "greeting", "scope",
             "needs_clarification", "out_of_scope",
         }:
             raise ValueError("Invalid result_json.routing.intent")

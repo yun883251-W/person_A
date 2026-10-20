@@ -309,6 +309,7 @@ class KnowledgeAgent:
             system_prompt=self.system_prompt,
             history=history,
             skill_id=skill_id,
+            max_context_chars=self.config.max_context_chars,
         )
 
     def invoke_model_turn(
@@ -341,10 +342,24 @@ class KnowledgeAgent:
         *,
         skill_id: str | None = None,
         skill_mode: str | None = None,
+        response_mode: str = "auto",
     ) -> AnswerResult:
         """解析一个对话动作，然后通过现有执行器派发。"""
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be a non-empty string")
+        if response_mode not in {"auto", "knowledge", "chat"}:
+            raise ValueError("response_mode must be auto, knowledge or chat")
+        if response_mode == "chat":
+            from .chat import run_chat
+            return run_chat(self, question.strip(), session_id)
+        if response_mode == "knowledge":
+            from .dialogue.rules import identify_intent_rules
+            hint = identify_intent_rules(question.strip(), context=self.history.turns(session_id) if session_id else ())
+            query = hint.retrieval_query if hint.kind is IntentKind.KNOWLEDGE and hint.retrieval_query else question.strip()
+            return self._ask_single(
+                question.strip(), session_id, skill_id=skill_id, skill_mode=skill_mode,
+                intent_decision=IntentDecision(IntentKind.KNOWLEDGE, retrieval_query=query, reason_code="knowledge_manual"),
+            )
         request = normalize_skill_request(skill_mode, skill_id)
         if request.mode == "manual":
             load_skill(request.skill_id)
@@ -377,6 +392,19 @@ class KnowledgeAgent:
         # 计数器才是 provider 预算核算的权威来源。
         model_calls = max(model_calls, resolution.model_calls)
         decision = resolution.decision
+        # 只在既有意图已排除工具/规划/补参后，补充分流普通聊天。
+        # 不提交聊天之外的业务状态转换，也不消费待办。
+        if (request.mode != "manual" and decision.execution_mode is ExecutionMode.SINGLE
+                and not (state is not None and state.pending is not None)
+                and (decision.business_type is BusinessType.KNOWLEDGE
+                     or decision.intent in {DialogueIntent.CHITCHAT, DialogueIntent.UNSUPPORTED})):
+            from .chat import select_chat, run_chat
+            is_chat, source, reason = select_chat(
+                question.strip(), self.history.turns(session_id) if session_id else (),
+                invoke_intent_model, allow_model=get_intent_settings().semantic_mode == "hybrid",
+            )
+            if is_chat:
+                return run_chat(self, question.strip(), session_id, model_calls=model_calls, source=source, reason=reason)
 
         if (
             request.mode == "manual"
@@ -855,6 +883,7 @@ class KnowledgeAgent:
             return result
 
         turn = self.prepare_model_turn(prepared, history=history, skill_id=skill_id)
+        current_message_start = len(turn.messages) - 1
         model_result = self.run_model_loop(turn, prepared.state)
         result = _attach_completed_trace(
             _attach_routing(self.finalize_answer(model_result, prepared.state), route),
@@ -863,7 +892,7 @@ class KnowledgeAgent:
         if dialogue_resolution is not None:
             result = replace(result, dialogue=_dialogue_summary(dialogue_resolution.decision))
         if session_id is not None:
-            current_messages = prepared.state.messages[1 + len(history) :]
+            current_messages = prepared.state.messages[current_message_start :]
             result = self._commit_turn(
                 session_id, prepared.state, result, current_messages,
                 business_transition=dialogue_resolution.state_transition if dialogue_resolution else None,

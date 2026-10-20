@@ -73,7 +73,7 @@ async def create_progress_response(
         # 使并发提问与修改操作继续遵守既有的忙碌策略。
         worker_future = runtime.submit_ask_session(
             session_id, request.question,
-            skill_id=request.skill_id, skill_mode=request.skill_mode,
+            skill_id=request.skill_id, skill_mode=request.skill_mode, response_mode=request.response_mode,
             progress_observer=channel.publish,
         )
     except BaseException:
