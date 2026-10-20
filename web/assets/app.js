@@ -718,6 +718,8 @@
   const traceReasonLabels = {
     chat_completed: "聊天完成（未检索知识库）", chat_manual: "手动选择普通聊天",
     chat_rule_match: "规则识别为聊天", chat_semantic_match: "模型识别为聊天",
+    chat_memory_statement: "用户提供会话信息，直接进入聊天",
+    chat_memory_recall: "回忆用户已提供的信息，使用会话上下文",
     chat_classifier_fallback: "聊天分类不可用，保守进入知识流程",
     chat_budget_exhausted: "聊天预算不足", chat_invalid_response: "聊天响应无效",
     knowledge_manual: "手动选择知识库",

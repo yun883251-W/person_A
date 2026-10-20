@@ -375,6 +375,14 @@ class KnowledgeAgent:
             model_calls += 1
             return invoke_chat_model(self.model, messages, max_retries=0)
 
+        # 明确的完整会话信息无需知识意图澄清。待补参数和手动技能仍优先，
+        # 不把复合操作/短槽值当作闲聊，也不改变已持久化的业务状态。
+        from .chat import conversation_memory_reason, run_chat
+        memory_reason = conversation_memory_reason(question)
+        if (request.mode != "manual" and memory_reason is not None
+                and not (state is not None and state.pending is not None)):
+            return run_chat(self, question.strip(), session_id, reason=memory_reason)
+
         dialogue_capabilities = self._dialogue_capabilities()
         resolution = resolve_dialogue(
             question, session_id=session_id, state=state,
@@ -397,7 +405,8 @@ class KnowledgeAgent:
         if (request.mode != "manual" and decision.execution_mode is ExecutionMode.SINGLE
                 and not (state is not None and state.pending is not None)
                 and (decision.business_type is BusinessType.KNOWLEDGE
-                     or decision.intent in {DialogueIntent.CHITCHAT, DialogueIntent.UNSUPPORTED})):
+                     or decision.intent in {DialogueIntent.CHITCHAT, DialogueIntent.UNSUPPORTED}
+                     or (decision.intent is DialogueIntent.UNCLEAR and decision.business_type is None))):
             from .chat import select_chat, run_chat
             is_chat, source, reason = select_chat(
                 question.strip(), self.history.turns(session_id) if session_id else (),
