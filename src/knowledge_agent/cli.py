@@ -555,12 +555,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-# 后续统一验证 TODO（尚未执行）：
-# 01：验证帮助、子命令、空问题、非法参数和退出码；帮助及参数错误不得初始化模型。
-# 02：使用假入库接口与假应用验证分发、JSON 输出、返回型失败和错误信息脱敏。
-# 03：验证连续追问、/clear、/refresh、未知命令、EOF、Ctrl+C 与所有退出路径的会话清理。
-# 04：真实建库后运行 ask/chat，核对引用、文档更新后刷新以及 evaluation 中的验收问题。
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

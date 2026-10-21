@@ -121,7 +121,9 @@ def test_classifier_uses_one_call_and_accepts_only_strict_contract() -> None:
 def test_semantic_bilibili_candidate_requires_verbatim_model_topic() -> None:
     payload = {
         "kind": "search",
-        "topic": "数据结构",
+        "query": "数据结构",
+        "mode": "open",
+        "limit": None,
     }
     result = _resolve(
         "帮我在B站寻一些数据结构的视频",

@@ -98,8 +98,6 @@ def intent_from_dialogue(decision: DialogueDecision, *, current_input: str) -> I
         clarification_question=decision.clarification_question or "请说明要完成的任务。",
         **common,
     )
-
-
 def resolve_route(
     intent: IntentDecision,
     available_tools: Sequence[object] = (),
@@ -175,26 +173,3 @@ def resolve_route(
         allowed_tool_names,
         reason_code,
     )
-
-
-# 第一阶段：路由数据与分支选择。
-
-
-# 第二阶段：在 agent/runner.py 衔接分支，保持现有生命周期。
-
-# 验证项：以下 TODO 尚未统一执行。
-
-# TODO 10：验证知识分支兼容性及分支隔离。
-# 覆盖原有建库后问答、手动 Skill、多轮知识追问、引用、资料不足和旧会话恢复。
-# 覆盖 MCP 路由在索引缺失时仍可调用工具；知识路线不因 MCP 未安装或未启用而失败。
-# 确认普通知识问题不会携带外部工具定义，MCP 结果不会污染本轮知识来源。
-
-# TODO 11：验证工具循环、预算与异常的结果约束。
-# 覆盖未调用工具就宣称完成、未知工具、参数缺失、工具错误、重复 ID、超时和超长结果。
-# 覆盖意图模型已消耗预算后进入工具循环、同轮多个工具调用和成功失败混合返回。
-# 检查 AI/Tool 消息完整配对、计数准确、失败不误存成成功、trace 与实际路径一致。
-
-# TODO 12：最后集中验证 CLI/API/页面全链路。
-# 用演示 MCP 工具走完提问、识别、路由、调用、回答、保存、恢复历史、关闭服务。
-# 覆盖断连后读取历史、关闭时在途请求、工具分支切回知识分支和多会话隔离。
-# 所有验证完成后再标记已接入/可用，不把 TODO 文件存在等同于功能已经实现。

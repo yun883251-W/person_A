@@ -26,7 +26,7 @@ def create_server(service: BrowserService | None = None) -> Any:
     executor = service if service is not None else BrowserService()
     server = Server(
         "Person A Local Browser",
-        version="0.1.0",
+        version="1.0.0",
         instructions=(
             "仅在用户明确要求时调用 search_bilibili，在本机默认浏览器请求打开 B 站搜索页。"
             "省略limit只请求打开搜索页；提供limit读取公开视频标题和链接。"

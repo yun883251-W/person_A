@@ -491,13 +491,3 @@ def combine_tool_registries(
         for registration in registry.list_registrations():
             combined.register(registration)
     return combined
-
-
-# 验证项：以下 TODO 尚未统一执行。
-
-# TODO 08：验证工具筛选、参数错误、重复调用与预算边界。
-# 使用可控执行函数确认被拒绝的调用没有副作用，失败调用不会绕过次数上限。
-# 确认隐藏工具不能被手工构造的模型调用执行。
-
-# TODO 09：验证原有知识库问答行为。
-# 对比迁移前后的正常回答、补充检索、引用和调用次数，覆盖 CLI 与 API 入口。

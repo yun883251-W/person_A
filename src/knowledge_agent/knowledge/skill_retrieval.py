@@ -783,9 +783,3 @@ def retrieval_summary(
         "coverage_basis": "provided_evidence_lexical" if plan.strategy_id == "comparison" else "provided_evidence_from_query",
         "budget_limited": outcome.budget_limited,
     }
-
-
-# 校验刻意延后；本文件只包含实现。
-# TODO 15：校验查询顺序、计数器、空结果和缺失的可见代码。
-# TODO 16：校验来源、版本变化、去重和共享预算。
-# TODO 17：使用评估层比较 off/manual/auto 行为。

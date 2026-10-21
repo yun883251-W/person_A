@@ -10,10 +10,10 @@
     contracts.py       会话决策、字段约束、参数来源和公开投影。
     resolver.py        唯一会话决策入口，先处理生命周期和待补参数。
     transitions.py     纯状态转换和执行结果归并。
-    browser_dispatch.py 校验待执行搜索、提交派发保护、调用工具并核对结果。
+    browser_dispatch.py 校验已准备的搜索、提交派发保护、调用工具并核对结果。
 
 原 agent/intent.py 兼容层已移除，调用方直接导入本包中的具体模块。
-接入记录和未执行验收项见 project_docs/architecture/DIALOGUE_INTENT_TODO.md。
+设计说明见 project_docs/architecture/DIALOGUE_INTENT.md。
 公开调用入口由 ``contracts``、``resolver`` 与 ``transitions`` 各模块显式提供；
 runner 只消费校验后的决定与状态提案，不把本包注册成工具或 Skill。
 

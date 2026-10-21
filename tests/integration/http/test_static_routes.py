@@ -27,6 +27,7 @@ class _DummyRuntime:
         self.initialized = False
         self.closed = False
         self.store_calls = 0
+        self.busy = False
 
     def initialize(self) -> None:
         self.initialized = True
@@ -37,6 +38,9 @@ class _DummyRuntime:
     async def run_store(self, operation: Any) -> Any:
         self.store_calls += 1
         return operation(_MissingSessionStore())
+
+    async def read_store(self, operation: Any) -> Any:
+        return await self.run_store(operation)
 
 
 @pytest.fixture

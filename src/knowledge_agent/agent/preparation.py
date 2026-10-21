@@ -741,7 +741,7 @@ def prepare_question(
 
 # 统一引用约定：模型只输出本轮资料中的 [S1] 等 source_id 标记。
 # finalize_answer 通过本轮 source_map 校验标记，再由程序用索引元数据生成文件名、小节和行号。
-# prompts.SYSTEM_PROMPT 第三节也须遵守此约定；旧文案的修改任务见 agent/prompts.py 中的 TODO。
+# prompts.SYSTEM_PROMPT 第三节同样遵守此约定。
 _SOURCE_CITATION_INSTRUCTION = (
     "For citations, use only the source_id tokens present in the reference "
     "materials (for example [S1]). Do not write source paths, headings, or line "

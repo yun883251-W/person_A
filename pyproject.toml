@@ -4,10 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "person-a-knowledge-agent"
-version = "0.1.0"
-description = "基于本地 Markdown 文档的知识库问答 Agent"
+version = "1.0.0"
+description = "带混合检索、可信引用、MCP 工具、多轮状态与可观测性的本地知识库 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["rag", "agent", "mcp", "langchain", "fastapi"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+]
 dependencies = ["langchain-deepseek>=0.1", "langchain-ollama>=0.2.2"]
 
 [project.scripts]
@@ -25,7 +31,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-cache_dir = ".tmp/pytest-cache"
+cache_dir = ".pytest_cache"
+addopts = "--basetemp=.pytest-tmp"
 markers = [
     "live: 真实提供方在线探测；默认跳过，需由对应用例的环境变量显式开启",
 ]

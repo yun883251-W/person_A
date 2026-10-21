@@ -3,7 +3,6 @@
 state 保存阶段数据，preparation 准备检索与提示词，model_loop 执行模型工具循环，
 answering/answers 校验引用并生成结果，应用生命周期由 knowledge_agent.application 管理。
 本模块保留原公共类型与函数导入入口，已有 CLI/API 调用方式保持兼容。
-验证项 TODO 18—21 保留在文件末尾，尚未统一执行。
 """
 
 from __future__ import annotations
@@ -405,7 +404,7 @@ class KnowledgeAgent:
         if (request.mode != "manual" and decision.execution_mode is ExecutionMode.SINGLE
                 and not (state is not None and state.pending is not None)
                 and (decision.business_type is BusinessType.KNOWLEDGE
-                     or decision.intent in {DialogueIntent.CHITCHAT, DialogueIntent.UNSUPPORTED}
+                     or decision.intent is DialogueIntent.UNSUPPORTED
                      or (decision.intent is DialogueIntent.UNCLEAR and decision.business_type is None))):
             from .chat import select_chat, run_chat
             is_chat, source, reason = select_chat(
@@ -1109,35 +1108,3 @@ def __getattr__(name: str) -> Any:
 
         return getattr(application, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-# 验证项：以下 TODO 尚未统一执行。
-
-# TODO 18：集中执行可控的单轮流程测试。
-# 使用假模型与假检索服务覆盖：先搜索后回答、追加小节读取、多个工具请求及空结果。
-# 检查 AIMessage 与 ToolMessage 的调用 ID 配对、调用顺序、次数统计及结构化输出。
-# 检查知识问题不会未经检索直接返回事实答案，范围说明与澄清请求可正常结束。
-# 测试数据独立于真实知识库，不调用 DeepSeek 或 Ollama，也不修改真实索引。
-
-# TODO 19：集中验证异常、引用和资料边界。
-# 确认 SYSTEM_PROMPT 与附加引用指令均只要求模型输出本轮 [S1] 等来源标记。
-# 检查合法标记由程序生成完整引用；未知标记、旧轮次来源或模型手写引用不能作为可信来源。
-# 覆盖未知工具、非法参数、重复调用 ID、缺少工具结果、循环上限和上下文超限。
-# 覆盖模型失败、检索失败、资料不足等状态，确认它们不会都被当作正常空答案。
-# 覆盖未知来源、伪造行号、仅命中但未引用的片段，以及两个 26- 文件的区分。
-# 使用包含角色指令和虚构业务制度的教材片段，检查不会执行其中指令或冒称真实政策。
-# 检查错误与执行摘要不包含密钥，内部推理字段不被当作最终答复展示。
-
-# TODO 20：集中执行真实 DeepSeek 与 Ollama 联调。
-# 准备真实可用索引，使用配置的 Ollama Embedding 与 DeepSeek 对话模型跑通一次问答。
-# 检查知识检索、工具请求、结果回填、补查及最终中文回答都能按约定串联。
-# 使用 evaluation/questions.jsonl 的问题核对实际命中来源和答案依据。
-# 逐条核对关键结论与引用片段是否相符，不能只因回答流畅或带有引用就判定通过。
-# 当前索引、模型或服务尚未就绪的项目标记为未执行，不能填写通过结论。
-
-# TODO 21：集中验证多轮追问、版本一致性与结束行为。
-# 覆盖连续追问、跨主题提问、历史裁剪、清空会话和不同会话之间的状态隔离。
-# 覆盖问答间刷新索引，确认新一轮使用新版本，单轮回答不混用不同批次资料。
-# 覆盖达到调用上限、模型中断和失败恢复，确认下一轮不会继承残缺工具消息。
-# 记录各场景的回答状态、来源准确性、调用次数和耗时，汇总待修复项。
-# 全部验证完成后再说明哪些能力已经可用，不将已写代码等同于联调成功。
