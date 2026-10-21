@@ -4,6 +4,7 @@
 
 | 文档 | 用途 |
 | --- | --- |
+| [单进程有界并发](features/CONCURRENCY.md) | 协程调度、独立通道、共享 MCP、限流、管理屏障及压测边界 |
 | [聊天与会话记忆](features/CHAT_MEMORY.md) | 回答模式、上下文预算、摘要、纠错与遗忘边界、待验收项 |
 | [用户画像与候选提取](features/USER_PROFILE.md) | 字段来源时间、人工确认、模型候选、接口与边界 |
 | [规划、检索与回答可靠性修复](archive/RELIABILITY_FIXES.md) | 本轮十项问题的处理、相关性门槛、回答状态协议、日志与未验证范围 |

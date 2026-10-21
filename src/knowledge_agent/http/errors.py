@@ -30,6 +30,7 @@ from knowledge_agent.session.store import (
     SessionStoreLockedError,
 )
 from .runtime import ServiceBusyError
+from .scheduling import QueueFullError, QueueTimeoutError
 from .schemas import AnswerResponse, ErrorResponse
 from .serialization import _answer_response
 
@@ -201,6 +202,13 @@ def register_error_handlers(application: FastAPI) -> None:
 
     for exception_type in (ServiceBusyError, SessionStoreLockedError):
         application.add_exception_handler(exception_type, unavailable_error_handler)
+
+    async def queue_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503, headers={"Retry-After": "3"},
+                            content=_error_content(exc.code, str(exc)))
+
+    for exception_type in (QueueFullError, QueueTimeoutError):
+        application.add_exception_handler(exception_type, queue_error_handler)
 
     def knowledge_error(
         status_code: int, code: str, message: str

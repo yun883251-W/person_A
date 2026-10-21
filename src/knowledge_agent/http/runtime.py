@@ -1,8 +1,9 @@
-"""Agent 与写操作共享工作线程；会话查询使用独立线程中的只读连接。"""
+"""有界协程调度与隔离 Agent 通道；管理操作独占，只读查询独立。"""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock, get_ident
@@ -27,13 +28,23 @@ class ServiceBusyError(RuntimeError):
 
 
 class ServiceRuntime:
-    """所有有状态服务操作都在同一条长期存活的工作线程上执行。"""
+    """每个通道持有自己的线程资源，外层调度器维护会话顺序与容量。"""
 
     def __init__(
         self,
         store_factory: StoreFactory | None = None,
         application_factory: ApplicationFactory | None = None,
+        *, concurrent_sessions: bool | None = None,
     ) -> None:
+        self._concurrent_sessions = (
+            store_factory is None and application_factory is None
+            if concurrent_sessions is None else concurrent_sessions
+        )
+        self._scheduler = None
+        self._shared_mcp = None
+        self._shared_mcp_error = None
+        self._uses_default_application = application_factory is None
+        self._lanes = []
         self._store_factory = store_factory or self._default_store_factory
         self._application_factory = (
             application_factory or self._default_application_factory
@@ -42,7 +53,8 @@ class ServiceRuntime:
             max_workers=1,
             thread_name_prefix="knowledge-agent-service",
         )
-        self._read_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="knowledge-agent-reader")
+        self._read_pending = 0
+        self._read_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="knowledge-agent-reader")
         self._reader_factory: StoreFactory | None = None
         self._state_lock = Lock()
         self._worker_thread_id: int | None = None
@@ -81,7 +93,21 @@ class ServiceRuntime:
 
         try:
             self._executor.submit(self._initialize_on_worker).result()
+            if self._uses_default_application:
+                self._initialize_shared_mcp()
+            if self._concurrent_sessions:
+                from .scheduling import RequestScheduler, setting
+                count = setting("API_SESSION_CONCURRENCY", 4, 1, 128)
+                for _ in range(count):
+                    lane = ServiceRuntime(self._store_factory, self._application_factory, concurrent_sessions=False)
+                    self._lanes.append(lane)
+                    lane.initialize()
+                self._scheduler = RequestScheduler(self._lanes, self._submit_serial)
         except BaseException:
+            for lane in self._lanes:
+                lane.close()
+            self._executor.submit(self._close_on_worker).result()
+            self._close_shared_mcp()
             with self._state_lock:
                 self._closing = True
             self._executor.shutdown(wait=True, cancel_futures=True)
@@ -93,6 +119,33 @@ class ServiceRuntime:
 
         with self._state_lock:
             self._initialized = True
+
+    def _initialize_shared_mcp(self) -> None:
+        """在接受请求前只启动一套 MCP；失败不阻断聊天和知识问答。"""
+        from ..config import get_mcp_settings
+        from ..mcp.client import McpRuntime
+        from ..mcp.bootstrap import create_configured_application
+
+        runtime = None
+        try:
+            runtime = McpRuntime(get_mcp_settings().config_path)
+            runtime.start()
+        except Exception:
+            self._shared_mcp_error = "mcp_startup_failed"
+            logging.getLogger(__name__).exception("Shared MCP startup failed; tools unavailable")
+            if runtime is not None:
+                runtime.close()
+            runtime = McpRuntime(None)
+            runtime.start()
+        self._shared_mcp = runtime
+        self._application_factory = lambda store: create_configured_application(
+            session_store=store, mcp_runtime=runtime,
+        )
+
+    def _close_shared_mcp(self) -> None:
+        runtime, self._shared_mcp = self._shared_mcp, None
+        if runtime is not None:
+            runtime.close()
 
     def _initialize_on_worker(self) -> None:
         self._worker_thread_id = get_ident()
@@ -144,16 +197,46 @@ class ServiceRuntime:
 
     def _refresh_index_on_worker(self) -> Any:
         self._require_worker_thread()
-        return self.application.refresh_index()
+        result = self.application.refresh_index()
+        # 调用方处于独占管理屏障，所有问答通道此时空闲。
+        failure = None
+        for lane in self._lanes:
+            try:
+                lane._executor.submit(lane._refresh_existing_index).result()
+            except Exception as exc:
+                failure = exc
+        if failure is not None:
+            raise failure
+        return result
 
-    def submit(
+    def _refresh_existing_index(self):
+        self._require_worker_thread()
+        if self._application is not None:
+            try:
+                self._application.refresh_index()
+            except Exception:
+                # 发布成功而刷新失败时，不能继续复用旧索引的应用。
+                self._close_on_worker()
+                self._initialize_on_worker()
+                raise
+
+    def submit(self, function, /, *args, **kwargs):
+        if self._scheduler is not None:
+            with self._state_lock:
+                if self._closing or self._closed:
+                    raise RuntimeError("service runtime is closed")
+            # 管理/删除/清空等操作作为全局屏障，不与任何问答并行。
+            return self._scheduler.submit(None, lambda _lane: function(*args, **kwargs))
+        return self._submit_serial(function, *args, **kwargs)
+
+    def _submit_serial(
         self, function: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Future[Any]:
         """向专用工作线程提交一个完整的业务操作。"""
         with self._state_lock:
             if not self._initialized:
                 raise RuntimeError("service runtime is not initialized")
-            if self._closing or self._closed:
+            if self._closed or (self._closing and self._scheduler is None):
                 raise RuntimeError("service runtime is closed")
             if self._busy:
                 raise ServiceBusyError()
@@ -178,7 +261,7 @@ class ServiceRuntime:
     def busy(self) -> bool:
         """返回已提交的业务操作是否仍在运行。"""
         with self._state_lock:
-            return self._busy
+            return self._busy or (self._scheduler is not None and self._scheduler.snapshot()["outstanding"] > 0)
 
     @property
     def closing(self) -> bool:
@@ -191,6 +274,18 @@ class ServiceRuntime:
     ) -> Any:
         """提交一个完整的业务操作并异步等待其完成。"""
         future = self.submit(function, *args, **kwargs)
+        return await self._wait_for_future(future)
+
+    async def run_auxiliary(self, function, /, *args, **kwargs):
+        """无会话写入的辅助模型操作共享通道和模型预算，不作为管理屏障。"""
+        if self._scheduler is None:
+            return await self.run(function, *args, **kwargs)
+        with self._state_lock:
+            if self._closing or self._closed:
+                raise RuntimeError("service runtime is closed")
+        from uuid import uuid4
+        future = self._scheduler.submit(("auxiliary", uuid4().hex),
+                                        lambda _lane: function(*args, **kwargs))
         return await self._wait_for_future(future)
 
     @staticmethod
@@ -232,8 +327,21 @@ class ServiceRuntime:
         with self._state_lock:
             if not self._initialized or self._closing or self._closed:
                 raise RuntimeError("service runtime is not available")
-            future = self._read_executor.submit(self._read_store_snapshot, function)
+            if self._read_pending >= 128:
+                from .scheduling import QueueFullError
+                raise QueueFullError("Read request queue is full")
+            self._read_pending += 1
+            try:
+                future = self._read_executor.submit(self._read_store_snapshot, function)
+            except BaseException:
+                self._read_pending -= 1
+                raise
+        future.add_done_callback(self._read_finished)
         return await self._wait_for_future(future)
+
+    def _read_finished(self, _future):
+        with self._state_lock:
+            self._read_pending -= 1
 
     def _read_store_snapshot(self, function: Callable[..., Any]) -> Any:
         store = self._reader_factory()
@@ -324,7 +432,14 @@ class ServiceRuntime:
         response_mode: str = "auto",
         progress_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> Future[Any]:
-        """只提交一次；JSON 与 SSE 共用工作线程归属和加锁策略。"""
+        """只提交一次；JSON 与 SSE 共用有界队列及会话 FIFO。"""
+        if self._scheduler is not None:
+            with self._state_lock:
+                if self._closing or self._closed:
+                    raise RuntimeError("service runtime is closed")
+            return self._scheduler.submit(("session", session_id), lambda lane: lane._ask_session_on_worker(
+                session_id, question, skill_id, skill_mode, response_mode, progress_observer,
+            ))
         return self.submit(
             self._ask_session_on_worker, session_id, question, skill_id, skill_mode,
             response_mode, progress_observer,
@@ -397,6 +512,19 @@ class ServiceRuntime:
             application.end_session()
         return deleted
 
+    def concurrency_status(self):
+        if self._scheduler is None:
+            result = {"mode": "serial", "worker_lanes": 1, "outstanding": int(self.busy)}
+        else:
+            result = self._scheduler.snapshot()
+        if self._shared_mcp is not None:
+            result["mcp_startup_error"] = self._shared_mcp_error
+            result["mcp_servers"] = [
+                {"name": item.server_name, "state": item.state.value}
+                for item in self._shared_mcp.list_server_statuses()
+            ]
+        return result
+
     def close(self) -> None:
         """等待在途任务结束、关闭自有资源并停止工作线程。"""
         with self._state_lock:
@@ -405,16 +533,33 @@ class ServiceRuntime:
             self._closing = True
             initialized = self._initialized
 
+        failures = []
         try:
+            if self._scheduler is not None:
+                self._scheduler.close()
+            for lane in self._lanes:
+                try:
+                    lane.close()
+                except Exception as exc:
+                    failures.append(exc)
             if initialized:
-                self._executor.submit(self._close_on_worker).result()
+                try:
+                    self._executor.submit(self._close_on_worker).result()
+                except Exception as exc:
+                    failures.append(exc)
         finally:
+            try:
+                self._close_shared_mcp()
+            except Exception as exc:
+                failures.append(exc)
             self._read_executor.shutdown(wait=True, cancel_futures=False)
             self._executor.shutdown(wait=True, cancel_futures=False)
             with self._state_lock:
                 self._initialized = False
                 self._closed = True
                 self._closing = False
+        if failures:
+            raise failures[0]
 
     def _close_on_worker(self) -> None:
         self._require_worker_thread()

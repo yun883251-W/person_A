@@ -50,6 +50,8 @@
     session_not_found: "这个会话已不存在，请新建会话。",
     conflict: "会话正在处理其他操作，请稍后再试。",
     service_unavailable: "服务暂时繁忙，请稍后刷新。",
+    request_queue_full: "服务等待队列已满，本次请求未接收，请稍后手动重试。",
+    request_queue_timeout: "请求排队超时，尚未执行，请稍后手动重试。",
     model_timeout: "模型响应超时，请稍后查看历史确认结果。",
     service_configuration_error: "模型配置有误，请检查服务端的模型配置和 API 密钥。",
     index_not_built: "知识库索引尚未准备好，请先执行 person-a build 并重启服务。",

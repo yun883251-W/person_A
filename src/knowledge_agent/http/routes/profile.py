@@ -54,7 +54,7 @@ def register_routes(app: FastAPI) -> None:
         from knowledge_agent.agent.dialogue.semantic import SemanticProposalError
         from knowledge_agent.models.provider import ChatModelInvocationError
         try:
-            return await app.state.runtime.run(propose_profile, body.text, body.expected_revision)
+            return await app.state.runtime.run_auxiliary(propose_profile, body.text, body.expected_revision)
         except ProfileConflictError as exc:
             raise HTTPException(409, str(exc)) from None
         except SemanticProposalError:

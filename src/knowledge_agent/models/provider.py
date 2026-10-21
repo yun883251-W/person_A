@@ -236,6 +236,10 @@ def initialize_chat_model() -> BaseChatModel:
     """
     from knowledge_agent.config import get_chat_settings
 
+    from .concurrency import current_gateway
+    gateway = current_gateway()
+    if gateway is not None:
+        return gateway.model_for(get_chat_settings(), _configured_chat_model.__wrapped__)
     return _configured_chat_model(get_chat_settings())
 
 
@@ -261,7 +265,7 @@ def invoke_chat_model(
 ) -> AIMessage:
     """同步返回一条完整消息，包括工具调用元数据。
 
-    该边界刻意使用 ``invoke`` 而不是消费 ``stream``：
+    HTTP 工作通道通过协程网关等待 ``ainvoke``；CLI 继续使用 ``invoke``。
     调用方只拿到提供方已完成的消息，工具执行仍留在 Agent 层。
     """
     retries = (
@@ -274,7 +278,8 @@ def invoke_chat_model(
 
     for attempt in range(retries + 1):
         try:
-            return cast("AIMessage", model.invoke(messages))
+            from .concurrency import invoke_with_gateway
+            return cast("AIMessage", invoke_with_gateway(model, messages))
         except Exception as exc:
             error, recoverable = _normalize_chat_model_error(exc)
             record_chat_failure(

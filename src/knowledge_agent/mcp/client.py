@@ -421,6 +421,14 @@ class McpRuntime:
             return tuple(self._statuses[name] for name in sorted(self._statuses))
 
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        from knowledge_agent.models.concurrency import tool_slot
+        try:
+            with tool_slot():
+                return self._call_tool_admitted(name, arguments)
+        except TimeoutError:
+            return _error("capacity_timeout", "工具并发等待超时，尚未向远端派发")
+
+    def _call_tool_admitted(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         with self._lock:
             if not any(item.enabled for item in self._configs):
                 return _error("disabled", "MCP 功能未启用")

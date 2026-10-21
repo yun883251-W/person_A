@@ -69,8 +69,8 @@ async def create_progress_response(
     """只提交一次，随后发送公开进度与已校验的最终响应。"""
     channel = _ProgressChannel(asyncio.get_running_loop())
     try:
-        # 在发送响应头之前先占用同一个工作线程，
-        # 使并发提问与修改操作继续遵守既有的忙碌策略。
+        # 响应头发出前完成有界准入。队列满立即返回 503；
+        # 接收后排队超时通过 error 事件返回，不能仅看 HTTP 200。
         worker_future = runtime.submit_ask_session(
             session_id, request.question,
             skill_id=request.skill_id, skill_mode=request.skill_mode, response_mode=request.response_mode,
